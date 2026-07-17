@@ -221,18 +221,8 @@ internal sealed class OneHandBridgeCoordinator
             }
 
             var devices = _runtime.EnumerateDevices();
-            tracker = SelectTracker(devices, profile.TrackerSerial);
+            tracker = SelectTracker(devices, profile.TrackerSerial, vmtSlot);
             controller = SelectController(devices, profile);
-            if (VmtDeviceAddress.TryParse(
-                    tracker.Identity.DevicePath,
-                    out var trackerVmtSlot) &&
-                trackerVmtSlot.Index == vmtSlot.Index)
-            {
-                throw new InvalidOperationException(
-                    $"Physical tracker '{tracker.StableDeviceId}' resolves to requested VMT slot " +
-                    $"{vmtSlot.Index}; a VMT device cannot follow itself.");
-            }
-
             var trackerSource = _runtime.CreateTrackedPoseSource(tracker);
             var initialTrackerSample = trackerSource.ReadPose();
             EnsureHealthyPoseSample(initialTrackerSample, staleAfter, "Tracker");
@@ -458,7 +448,11 @@ internal sealed class OneHandBridgeCoordinator
                 $"SteamVR identity check failed: {exception.Message}", exception);
         }
 
-        EnsureCurrentDescriptor(devices, tracker, "Tracker");
+        EnsureCurrentDescriptor(
+            devices,
+            tracker,
+            "Tracker",
+            requirePhysicalPoseSource: true);
         EnsureCurrentDescriptor(devices, controller, "Touch input controller");
     }
 
@@ -483,7 +477,11 @@ internal sealed class OneHandBridgeCoordinator
                 $"SteamVR device monitor failed: {exception.Message}", exception);
         }
 
-        EnsureCurrentDescriptor(devices, tracker, "Tracker");
+        EnsureCurrentDescriptor(
+            devices,
+            tracker,
+            "Tracker",
+            requirePhysicalPoseSource: true);
         EnsureCurrentDescriptor(devices, controller, "Touch input controller");
         EnsureCurrentDescriptor(devices, vmtDevice, "VMT pose source");
     }
@@ -728,7 +726,8 @@ internal sealed class OneHandBridgeCoordinator
     private static void EnsureCurrentDescriptor(
         IReadOnlyList<SteamVrDeviceDescriptor> devices,
         SteamVrDeviceDescriptor expected,
-        string sourceName)
+        string sourceName,
+        bool requirePhysicalPoseSource = false)
     {
         if (!expected.Identity.DevicePath.StartsWith("/devices/", StringComparison.Ordinal))
         {
@@ -751,6 +750,15 @@ internal sealed class OneHandBridgeCoordinator
                 exception);
         }
 
+        if (requirePhysicalPoseSource &&
+            bySerial is not null &&
+            !bySerial.CanUseAsPhysicalPoseSource)
+        {
+            throw new OneHandBridgeHealthException(
+                $"{sourceName} '{expected.StableDeviceId}' is no longer a connected, " +
+                "position-capable physical Lighthouse pose source.");
+        }
+
         if (bySerial is null || byPath is null || byIndex is null ||
             !DescriptorsMatch(expected, bySerial) ||
             !DescriptorsMatch(expected, byPath) ||
@@ -759,7 +767,7 @@ internal sealed class OneHandBridgeCoordinator
         {
             throw new OneHandBridgeHealthException(
                 $"{sourceName} '{expected.StableDeviceId}' disconnected, disappeared, changed " +
-                "path/category/role, or had its transient index reused.");
+                "path/category/role/metadata/capabilities, or had its transient index reused.");
         }
     }
 
@@ -773,7 +781,9 @@ internal sealed class OneHandBridgeCoordinator
             StringComparison.Ordinal) &&
         expected.TransientDeviceIndex == actual.TransientDeviceIndex &&
         expected.Category == actual.Category &&
-        expected.ControllerRole == actual.ControllerRole;
+        expected.ControllerRole == actual.ControllerRole &&
+        expected.Metadata == actual.Metadata &&
+        expected.Capabilities == actual.Capabilities;
 
     private static void EnsureVmtPoseMatchesMount(
         PoseSourceSample trackerSample,
@@ -812,7 +822,8 @@ internal sealed class OneHandBridgeCoordinator
 
     private static SteamVrDeviceDescriptor SelectTracker(
         IReadOnlyList<SteamVrDeviceDescriptor> devices,
-        string trackerSerial)
+        string trackerSerial,
+        VmtDeviceAddress requestedVmtSlot)
     {
         var matches = devices.Where(device =>
             string.Equals(device.StableDeviceId, trackerSerial, StringComparison.Ordinal)).ToArray();
@@ -823,16 +834,21 @@ internal sealed class OneHandBridgeCoordinator
         }
 
         var tracker = matches[0];
-        if (tracker.Category != SteamVrDeviceCategory.GenericTracker)
+        if (VmtDeviceAddress.TryParse(
+                tracker.Identity.DevicePath,
+                out var trackerVmtSlot) &&
+            trackerVmtSlot.Index == requestedVmtSlot.Index)
         {
             throw new InvalidOperationException(
-                $"Profile tracker '{trackerSerial}' is {tracker.Category}, not GenericTracker.");
+                $"Physical pose source '{tracker.StableDeviceId}' resolves to requested VMT " +
+                $"slot {requestedVmtSlot.Index}; a VMT device cannot follow itself.");
         }
 
-        if (!tracker.IsConnected)
+        if (!tracker.CanUseAsPhysicalPoseSource)
         {
             throw new InvalidOperationException(
-                $"Profile tracker '{trackerSerial}' is disconnected.");
+                $"Profile pose source '{trackerSerial}' is not a connected, position-capable " +
+                "physical Lighthouse device.");
         }
 
         return tracker;

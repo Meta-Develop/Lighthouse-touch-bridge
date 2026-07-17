@@ -118,9 +118,10 @@ public sealed record CalibrationProfileQuality
 }
 
 /// <summary>
-/// One complete schema-version-1 calibration profile. Profiles are matched for
-/// later runs by the exact <see cref="TrackerSerial"/> plus <see cref="Hand"/>
-/// pair; collection order and controller serial are not matching keys.
+/// One complete schema-version-1 calibration profile. Candidate profiles are
+/// located by the exact <see cref="TrackerSerial"/> plus <see cref="Hand"/>
+/// pair, then checked against the currently observed controller runtime and
+/// model. Collection order and controller serial are not matching keys.
 /// </summary>
 public sealed record CalibrationProfile
 {
@@ -243,6 +244,23 @@ public sealed record CalibrationProfile
     public CalibrationProfileQuality Quality { get; }
 
     public DateTimeOffset CreatedUtc { get; }
+
+    /// <summary>
+    /// Returns whether current controller observations are compatible with
+    /// this profile. Compatibility is intentionally driven by the persisted
+    /// schema-1 runtime/model values rather than model-specific code branches.
+    /// </summary>
+    public bool MatchesController(string controllerRuntime, string controllerModel)
+    {
+        var runtime = ProfileValidation.RequireText(
+            controllerRuntime,
+            nameof(controllerRuntime));
+        var model = ProfileValidation.RequireText(
+            controllerModel,
+            nameof(controllerModel));
+        return string.Equals(runtime, ControllerRuntime, StringComparison.Ordinal) &&
+            string.Equals(model, ControllerModel, StringComparison.Ordinal);
+    }
 }
 
 internal static class ProfileValidation

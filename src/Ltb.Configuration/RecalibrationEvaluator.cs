@@ -54,8 +54,6 @@ public static class RecalibrationEvaluator
         ArgumentNullException.ThrowIfNull(context);
 
         var trackerSerial = ProfileValidation.RequireIdentity(context.TrackerSerial, nameof(context.TrackerSerial));
-        var controllerRuntime = ProfileValidation.RequireText(context.ControllerRuntime, nameof(context.ControllerRuntime));
-        var controllerModel = ProfileValidation.RequireText(context.ControllerModel, nameof(context.ControllerModel));
         ProfileValidation.RequireDefined(context.Hand, nameof(context.Hand));
         ProfileValidation.RequireText(context.ExpectedTransformConvention, nameof(context.ExpectedTransformConvention));
 
@@ -89,8 +87,9 @@ public static class RecalibrationEvaluator
                 "The current validation check exceeded its configured threshold."));
         }
 
-        if (!string.Equals(controllerRuntime, profile.ControllerRuntime, StringComparison.Ordinal) ||
-            !string.Equals(controllerModel, profile.ControllerModel, StringComparison.Ordinal))
+        if (!profile.MatchesController(
+                context.ControllerRuntime,
+                context.ControllerModel))
         {
             triggers.Add(new RecalibrationTrigger(
                 RecalibrationTriggerKind.ControllerIdentityChanged,

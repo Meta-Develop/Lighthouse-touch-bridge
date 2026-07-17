@@ -239,7 +239,7 @@ internal static class ScriptedWizardCaptureFactory
                 $"controller-{hand.ToString().ToLowerInvariant()}",
                 PoseSourceKind.InputController,
                 serial,
-                $"Scripted {hand} Touch"),
+                $"Scripted {hand} Meta Touch"),
             samples);
 
     private static PoseStreamRecording TrackerStream(

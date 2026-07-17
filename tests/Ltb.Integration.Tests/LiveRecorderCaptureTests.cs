@@ -50,25 +50,63 @@ public sealed class LiveRecorderCaptureTests
     }
 
     [Fact]
-    public void InvalidStableSerialAndCategorySelectionsAreRejectedClearly()
+    public void InvalidStableSerialAndPoseSourceCapabilitySelectionsAreRejectedClearly()
     {
         var tracker = Tracker("tracker-a", 1);
         var controller = Controller("controller-left", 2, SteamVrControllerRole.LeftHand);
         var devices = new[] { tracker, controller };
 
-        var missing = Assert.Throws<ArgumentException>(() => Program.SelectDevices(
+        var missing = Assert.Throws<ArgumentException>(() => Program.SelectPhysicalPoseSources(
             devices,
             ["missing"],
-            "tracker",
-            SteamVrDeviceCategory.GenericTracker));
-        var wrongCategory = Assert.Throws<ArgumentException>(() => Program.SelectDevices(
-            devices,
-            ["controller-left"],
-            "tracker",
-            SteamVrDeviceCategory.GenericTracker));
+            "tracker"));
+        var incompatible = Assert.Throws<ArgumentException>(() =>
+            Program.SelectPhysicalPoseSources(
+                devices,
+                ["controller-left"],
+                "tracker"));
 
         Assert.Contains("No SteamVR device matches --tracker serial 'missing'", missing.Message);
-        Assert.Contains("expected GenericTracker", wrongCategory.Message);
+        Assert.Contains(
+            "not a connected, position-capable physical Lighthouse pose source",
+            incompatible.Message);
+    }
+
+    [Fact]
+    public void PhysicalPoseSourceSelectionUsesCapabilitiesInsteadOfDeviceClassOrModel()
+    {
+        var futureGenericDevice = new SteamVrDeviceDescriptor(
+            new SteamVrDeviceIdentity(
+                "generic-pose-source",
+                "/devices/lighthouse/generic-pose-source"),
+            7,
+            SteamVrDeviceCategory.Unknown,
+            SteamVrControllerRole.None,
+            true,
+            metadata: null,
+            capabilities: new SteamVrDeviceCapabilities(
+                hasPosition: true,
+                isPhysicalPoseSourceEligible: true,
+                isVirtualPoseSource: false));
+        var vmtOutput = new SteamVrDeviceDescriptor(
+            new SteamVrDeviceIdentity("VMT-1", "/devices/vmt/VMT_1"),
+            8,
+            SteamVrDeviceCategory.GenericTracker,
+            SteamVrControllerRole.None,
+            true);
+
+        var selected = Program.SelectPhysicalPoseSources(
+            [futureGenericDevice, vmtOutput],
+            [futureGenericDevice.StableDeviceId],
+            "tracker");
+
+        Assert.Equal(futureGenericDevice, Assert.Single(selected));
+        var virtualFailure = Assert.Throws<ArgumentException>(() =>
+            Program.SelectPhysicalPoseSources(
+                [futureGenericDevice, vmtOutput],
+                [vmtOutput.StableDeviceId],
+                "tracker"));
+        Assert.Contains("physical Lighthouse pose source", virtualFailure.Message);
     }
 
     [Fact]

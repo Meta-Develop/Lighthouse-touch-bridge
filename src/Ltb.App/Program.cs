@@ -266,25 +266,61 @@ internal static class Program
         foreach (var device in devices)
         {
             Console.WriteLine();
-            Console.WriteLine($"serial: {device.StableDeviceId}");
-            Console.WriteLine($"  category: {device.Category}");
-            Console.WriteLine($"  controller_role: {device.ControllerRole}");
-            Console.WriteLine($"  connected: {device.IsConnected.ToString().ToLowerInvariant()}");
-            Console.WriteLine($"  device_path: {device.Identity.DevicePath}");
-            Console.WriteLine($"  transient_index: {device.TransientDeviceIndex}");
+            WriteDeviceDetails(Console.Out, device);
         }
 
         return 0;
     }
 
+    internal static void WriteDeviceDetails(
+        TextWriter writer,
+        SteamVrDeviceDescriptor device)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(device);
+        var capabilities = device.Capabilities;
+        writer.WriteLine($"serial: {device.StableDeviceId}");
+        writer.WriteLine($"  category: {device.Category}");
+        writer.WriteLine($"  controller_role: {device.ControllerRole}");
+        writer.WriteLine($"  connected: {Format(device.IsConnected)}");
+        writer.WriteLine($"  has_position: {Format(capabilities.HasPosition)}");
+        writer.WriteLine(
+            $"  physical_pose_source_eligible: " +
+            $"{Format(capabilities.IsPhysicalPoseSourceEligible)}");
+        writer.WriteLine(
+            $"  virtual_pose_source: {Format(capabilities.IsVirtualPoseSource)}");
+        writer.WriteLine(
+            $"  controller_family: {Format(capabilities.ControllerFamily)}");
+        writer.WriteLine(
+            $"  controller_runtime: {Format(capabilities.ControllerRuntime)}");
+        writer.WriteLine(
+            $"  controller_model: {Format(capabilities.ControllerModel)}");
+        writer.WriteLine($"  input_profile: {Format(capabilities.InputProfile)}");
+        writer.WriteLine($"  device_path: {device.Identity.DevicePath}");
+        writer.WriteLine($"  transient_index: {device.TransientDeviceIndex}");
+    }
+
+    private static string Format(bool value) =>
+        value.ToString().ToLowerInvariant();
+
+    private static string Format(SteamVrControllerFamily family) => family switch
+    {
+        SteamVrControllerFamily.None => "none",
+        SteamVrControllerFamily.MetaTouch => "meta_touch",
+        SteamVrControllerFamily.Other => "other",
+        _ => throw new ArgumentOutOfRangeException(nameof(family)),
+    };
+
+    private static string Format(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "unavailable" : value;
+
     private static int Record(OpenVrSession session, AppCommandLineOptions options)
     {
         var devices = session.EnumerateDevices();
-        var trackerDevices = SelectDevices(
+        var trackerDevices = SelectPhysicalPoseSources(
             devices,
             options.TrackerSerials,
-            "tracker",
-            SteamVrDeviceCategory.GenericTracker);
+            "tracker");
         var controllerDevices = SelectDevices(
             devices,
             options.ControllerSerials,
@@ -363,10 +399,37 @@ internal static class Program
         IReadOnlyList<SteamVrDeviceDescriptor> devices,
         IReadOnlyList<string> stableSerials,
         string selectorName,
-        SteamVrDeviceCategory expectedCategory)
+        SteamVrDeviceCategory expectedCategory) =>
+        SelectDevices(
+            devices,
+            stableSerials,
+            selectorName,
+            device => device.Category == expectedCategory,
+            expectedCategory.ToString());
+
+    internal static IReadOnlyList<SteamVrDeviceDescriptor> SelectPhysicalPoseSources(
+        IReadOnlyList<SteamVrDeviceDescriptor> devices,
+        IReadOnlyList<string> stableSerials,
+        string selectorName) =>
+        SelectDevices(
+            devices,
+            stableSerials,
+            selectorName,
+            device => device.CanUseAsPhysicalPoseSource,
+            "a connected, position-capable physical Lighthouse pose source");
+
+    private static IReadOnlyList<SteamVrDeviceDescriptor> SelectDevices(
+        IReadOnlyList<SteamVrDeviceDescriptor> devices,
+        IReadOnlyList<string> stableSerials,
+        string selectorName,
+        Func<SteamVrDeviceDescriptor, bool> isCompatible,
+        string expectedDescription)
     {
         ArgumentNullException.ThrowIfNull(devices);
         ArgumentNullException.ThrowIfNull(stableSerials);
+        ArgumentException.ThrowIfNullOrWhiteSpace(selectorName);
+        ArgumentNullException.ThrowIfNull(isCompatible);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedDescription);
         var selected = new List<SteamVrDeviceDescriptor>(stableSerials.Count);
         foreach (var stableSerial in stableSerials)
         {
@@ -378,10 +441,11 @@ internal static class Program
                     $"No SteamVR device matches --{selectorName} serial '{stableSerial}'. Run the devices command to list stable serials.");
             }
 
-            if (device.Category != expectedCategory)
+            if (!isCompatible(device))
             {
                 throw new ArgumentException(
-                    $"Selected {selectorName} serial '{stableSerial}' has category {device.Category}; expected {expectedCategory}.");
+                    $"Selected {selectorName} serial '{stableSerial}' is not " +
+                    $"{expectedDescription}.");
             }
 
             selected.Add(device);

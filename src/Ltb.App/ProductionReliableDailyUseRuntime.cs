@@ -132,8 +132,8 @@ internal sealed class ProductionReliableDailyUseRuntime :
                 AlvrAvailable: alvr.IsAvailable,
                 VmtAvailable: true,
                 $"{alvr.Diagnostic}. The loopback VMT client and response pump initialized; " +
-                "VMT Alive is verified after SteamVR connects, and the current Quest 2 Touch " +
-                "OpenVR identity tuple remains mandatory before profile application.");
+                "VMT Alive is verified after SteamVR connects, and a supported current Meta " +
+                "Touch OpenVR identity remains mandatory before profile application.");
         }
 
         var vmtAvailable = false;
@@ -157,7 +157,7 @@ internal sealed class ProductionReliableDailyUseRuntime :
         return new CalibrationWizardDependencyStatus(
             AlvrAvailable: alvr.IsAvailable,
             VmtAvailable: vmtAvailable,
-            $"{alvr.Diagnostic}. {vmtDiagnostic}. Connected current Quest 2 Touch identity " +
+            $"{alvr.Diagnostic}. {vmtDiagnostic}. Connected supported Meta Touch identity " +
             "properties are mandatory before Ready.");
     }
 
@@ -249,7 +249,8 @@ internal sealed class ProductionReliableDailyUseRuntime :
         _currentDevices = devices.ToArray();
         return DailyUseDeviceReadiness.Ready(
             deviceSet!,
-            "Exact ALVR Quest 2 Touch roles, tracker candidates, and VMT heartbeat are ready.");
+            "Compatible Meta Touch roles, Lighthouse pose-source candidates, and VMT " +
+            "heartbeat are ready.");
     }
 
     public DailyUseProfileApplication CreateProfileApplication(
@@ -613,15 +614,14 @@ internal sealed class ProductionReliableDailyUseRuntime :
                             classification.Diagnostic;
                     }));
             diagnostic =
-                "Waiting for exactly one supported ALVR Quest 2 Touch controller per hand; " +
+                "Waiting for exactly one supported Meta Touch controller per hand; " +
                 $"supported left={leftControllers.Length}, right={rightControllers.Length}; " +
                 observations;
             return false;
         }
 
         var physicalTrackers = devices.Where(device =>
-            device.Category == SteamVrDeviceCategory.GenericTracker &&
-            device.IsConnected &&
+            device.CanUseAsPhysicalPoseSource &&
             !VmtDeviceAddress.TryParse(device.Identity.DevicePath, out _)).ToArray();
         if (!TrySelectTrackerPair(physicalTrackers, out var leftTracker, out var rightTracker))
         {
@@ -633,9 +633,22 @@ internal sealed class ProductionReliableDailyUseRuntime :
 
         var readyLeftTracker = leftTracker!;
         var readyRightTracker = rightTracker!;
-        var recalibration = CreateCurrentRecalibrationObservations(
-            readyLeftTracker,
-            readyRightTracker);
+        CalibrationWizardRecalibrationObservations recalibration;
+        try
+        {
+            recalibration = CreateCurrentRecalibrationObservations(
+                leftControllers[0],
+                rightControllers[0],
+                readyLeftTracker,
+                readyRightTracker);
+        }
+        catch (InvalidOperationException exception)
+        {
+            diagnostic =
+                $"Waiting for a compatible Meta Touch controller pair: {exception.Message}";
+            return false;
+        }
+
         deviceSet = new CalibrationWizardDeviceSet(
             leftControllers[0].StableDeviceId,
             rightControllers[0].StableDeviceId,
@@ -649,17 +662,57 @@ internal sealed class ProductionReliableDailyUseRuntime :
 
     internal static CalibrationWizardRecalibrationObservations
         CreateCurrentRecalibrationObservations(
+            SteamVrDeviceDescriptor leftController,
+            SteamVrDeviceDescriptor rightController,
             SteamVrDeviceDescriptor leftTracker,
             SteamVrDeviceDescriptor rightTracker)
     {
+        ArgumentNullException.ThrowIfNull(leftController);
+        ArgumentNullException.ThrowIfNull(rightController);
         ArgumentNullException.ThrowIfNull(leftTracker);
         ArgumentNullException.ThrowIfNull(rightTracker);
+        if (leftController.ControllerRole != SteamVrControllerRole.LeftHand ||
+            rightController.ControllerRole != SteamVrControllerRole.RightHand)
+        {
+            throw new InvalidOperationException(
+                "Controller compatibility observations require the current left controller " +
+                "followed by the current right controller.");
+        }
+
+        var left = SteamVrInputDeviceClassifier.Classify(leftController);
+        var right = SteamVrInputDeviceClassifier.Classify(rightController);
+        if (!left.IsSupported || !right.IsSupported ||
+            string.IsNullOrWhiteSpace(left.ControllerRuntime) ||
+            string.IsNullOrWhiteSpace(left.ControllerModel) ||
+            string.IsNullOrWhiteSpace(right.ControllerRuntime) ||
+            string.IsNullOrWhiteSpace(right.ControllerModel))
+        {
+            throw new InvalidOperationException(
+                "Current left and right controllers must both have supported runtime/model " +
+                "classifications before profile compatibility can be evaluated.");
+        }
+
+        if (!string.Equals(
+                left.ControllerRuntime,
+                right.ControllerRuntime,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                left.ControllerModel,
+                right.ControllerModel,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Current left and right controllers report incompatible runtime/model " +
+                $"identities: left={left.ControllerRuntime}/{left.ControllerModel}, " +
+                $"right={right.ControllerRuntime}/{right.ControllerModel}.");
+        }
+
         return new CalibrationWizardRecalibrationObservations
         {
             ObservedLeftTrackerSerial = leftTracker.StableDeviceId,
             ObservedRightTrackerSerial = rightTracker.StableDeviceId,
-            ControllerRuntime = SteamVrInputDeviceClassifier.SupportedRuntime,
-            ControllerModel = SteamVrInputDeviceClassifier.SupportedModel,
+            ControllerRuntime = left.ControllerRuntime,
+            ControllerModel = left.ControllerModel,
         };
     }
 
@@ -832,12 +885,12 @@ internal sealed class ProductionReliableDailyUseRuntime :
             serial,
             StringComparison.Ordinal)).ToArray();
         if (matches.Length != 1 ||
-            matches[0].Category != SteamVrDeviceCategory.GenericTracker ||
-            !matches[0].IsConnected ||
+            !matches[0].CanUseAsPhysicalPoseSource ||
             VmtDeviceAddress.TryParse(matches[0].Identity.DevicePath, out _))
         {
             throw new InvalidOperationException(
-                $"Expected one connected physical tracker with exact serial '{serial}'.");
+                "Expected one connected physical Lighthouse pose source with exact serial " +
+                $"'{serial}'.");
         }
 
         return matches[0];
@@ -906,7 +959,8 @@ internal sealed class ProductionReliableDailyUseRuntime :
             matches[0].TransientDeviceIndex == expected.TransientDeviceIndex &&
             matches[0].Category == expected.Category &&
             matches[0].ControllerRole == expected.ControllerRole &&
-            matches[0].Metadata == expected.Metadata;
+            matches[0].Metadata == expected.Metadata &&
+            matches[0].Capabilities == expected.Capabilities;
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

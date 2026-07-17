@@ -478,7 +478,8 @@ internal sealed class ReliableDailyUseCoordinator
         Transition(
             RuntimeApplicationState.WaitingForDevices,
             expectedProfiles is null
-                ? "waiting for two Touch controllers and two tracker candidates"
+                ? "waiting for two supported Meta Touch controllers and two Lighthouse " +
+                  "pose-source candidates"
                 : "waiting for the exact serial-matched devices to reconnect");
         return await WaitForDevicesAsync(expectedProfiles, cancellationToken)
             .ConfigureAwait(false);

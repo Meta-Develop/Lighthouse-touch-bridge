@@ -89,6 +89,28 @@ public sealed class CalibrationProfilePersistenceTests
         AssertProfileEqual(profile, loaded);
     }
 
+    [Theory]
+    [InlineData("Quest 2 Touch")]
+    [InlineData("Quest 3 Touch Plus")]
+    [InlineData("Quest Pro Touch")]
+    public void SchemaVersionOnePreservesDataDrivenTouchFamilyCompatibility(
+        string controllerModel)
+    {
+        var profile = Profile(
+            controllerRuntime: "ALVR",
+            controllerModel: controllerModel);
+
+        var loaded = CalibrationProfileJson.DeserializeProfile(
+            CalibrationProfileJson.SerializeProfile(profile));
+
+        Assert.Equal(1, loaded.SchemaVersion);
+        Assert.Equal("ALVR", loaded.ControllerRuntime);
+        Assert.Equal(controllerModel, loaded.ControllerModel);
+        Assert.True(loaded.MatchesController("ALVR", controllerModel));
+        Assert.False(loaded.MatchesController("ALVR", "Different Meta Touch family"));
+        Assert.False(loaded.MatchesController("Different runtime", controllerModel));
+    }
+
     [Fact]
     public void OptionalControllerSerialIsOmittedAndNullableQualityFieldsRemainExplicit()
     {
@@ -574,6 +596,8 @@ public sealed class CalibrationProfilePersistenceTests
         double? positionRmsMillimeters = 8.4d,
         double? translationCondition = 14.7d,
         string profileName = "Quest2 Touch + Vive Tracker test mount",
+        string controllerRuntime = "ALVR",
+        string controllerModel = "Quest 2 Touch",
         ProfileCalibrationPolicy policy = ProfileCalibrationPolicy.Auto,
         double estimatedLagMilliseconds = 11.5d,
         DateTimeOffset? createdUtc = null) =>
@@ -581,8 +605,8 @@ public sealed class CalibrationProfilePersistenceTests
             CalibrationProfileSchema.CurrentVersion,
             profileName,
             hand,
-            "ALVR",
-            "Quest 2 Touch",
+            controllerRuntime,
+            controllerModel,
             controllerSerial,
             trackerSerial,
             policy,

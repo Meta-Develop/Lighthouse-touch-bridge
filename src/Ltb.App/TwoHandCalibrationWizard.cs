@@ -331,7 +331,8 @@ internal sealed class TwoHandCalibrationWizard
         }
 
         Transition(CalibrationWizardState.WaitingForDevices,
-            "waiting for two Touch controllers and two tracker candidates");
+            "waiting for two supported Meta Touch controllers and two Lighthouse " +
+            "pose-source candidates");
         CalibrationWizardDeviceSet devices;
         try
         {

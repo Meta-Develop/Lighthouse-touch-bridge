@@ -434,6 +434,59 @@ public sealed class OneHandBridgeCoordinatorTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
+    public async Task TrackerCapabilityLossDuringMonitoringTriggersSafeDisable(
+        bool losesPosition)
+    {
+        var context = CreateContext(
+            [],
+            [
+                HealthySample(1d),
+                HealthySample(2d),
+                HealthySample(3d),
+                HealthySample(4d),
+            ]);
+        var initial = new[] { TrackerDescriptor(), TouchDescriptor() };
+        var active = new[]
+        {
+            TrackerDescriptor(), TouchDescriptor(), VmtDescriptor(isConnected: true),
+        };
+        var baseline = TrackerDescriptor();
+        var degradedTracker = new SteamVrDeviceDescriptor(
+            baseline.Identity,
+            baseline.TransientDeviceIndex,
+            baseline.Category,
+            baseline.ControllerRole,
+            isConnected: true,
+            metadata: baseline.Metadata,
+            capabilities: new SteamVrDeviceCapabilities(
+                hasPosition: !losesPosition,
+                isPhysicalPoseSourceEligible: losesPosition,
+                isVirtualPoseSource: false));
+        var degraded = new[]
+        {
+            degradedTracker, TouchDescriptor(), VmtDescriptor(isConnected: true),
+        };
+        context.Runtime.EnumerationFactory = callIndex => callIndex switch
+        {
+            < 2 => initial,
+            < 4 => active,
+            _ => degraded,
+        };
+
+        var result = await RunHealthFailureAsync(context);
+
+        Assert.Contains(
+            "no longer a connected, position-capable physical Lighthouse pose source",
+            result.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, context.Overrides.EnableCalls);
+        Assert.Equal(2, context.Vmt.DeactivateCalls);
+        Assert.Equal(1, context.Overrides.ReleaseCalls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
     public async Task ControllerRoleOrPathSwapTriggersSafeDisable(bool swapRole)
     {
         var context = CreateContext(

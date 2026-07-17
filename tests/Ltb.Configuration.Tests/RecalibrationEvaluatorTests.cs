@@ -12,6 +12,20 @@ public sealed class RecalibrationEvaluatorTests
     }
 
     [Theory]
+    [InlineData("Quest 2 Touch")]
+    [InlineData("Quest 3 Touch Plus")]
+    [InlineData("Quest Pro Touch")]
+    public void MatchingUsesPersistedControllerIdentityWithoutFamilySpecificBranches(
+        string controllerModel)
+    {
+        var evaluation = RecalibrationEvaluator.Evaluate(
+            Profile(controllerModel),
+            MatchingContext(controllerModel));
+
+        Assert.False(evaluation.IsRequired);
+    }
+
+    [Theory]
     [InlineData(RecalibrationTriggerKind.ExplicitRequest)]
     [InlineData(RecalibrationTriggerKind.TrackerHandAssociationChanged)]
     [InlineData(RecalibrationTriggerKind.MountMoved)]
@@ -115,12 +129,13 @@ public sealed class RecalibrationEvaluatorTests
             evaluation.Triggers.Select(trigger => trigger.Kind));
     }
 
-    private static CalibrationProfile Profile() => new(
+    private static CalibrationProfile Profile(
+        string controllerModel = "Quest 2 Touch") => new(
         CalibrationProfileSchema.CurrentVersion,
         "Synthetic left profile",
         ControllerHand.Left,
         "ALVR",
-        "Quest 2 Touch",
+        controllerModel,
         "CTRL-TEST0001",
         "LHR-TEST0001",
         ProfileCalibrationPolicy.Auto,
@@ -131,12 +146,13 @@ public sealed class RecalibrationEvaluatorTests
         new CalibrationProfileQuality(1d, null, null, 0.95d),
         new DateTimeOffset(2026, 7, 17, 0, 0, 0, TimeSpan.Zero));
 
-    private static RecalibrationContext MatchingContext() => new(
+    private static RecalibrationContext MatchingContext(
+        string controllerModel = "Quest 2 Touch") => new(
         ExplicitRequest: false,
         TrackerSerial: "LHR-TEST0001",
         Hand: ControllerHand.Left,
         ControllerRuntime: "ALVR",
-        ControllerModel: "Quest 2 Touch",
+        ControllerModel: controllerModel,
         MountMoved: false,
         ValidationThresholdExceeded: false);
 }

@@ -1,4 +1,5 @@
 using Ltb.App;
+using Ltb.OpenVr;
 
 namespace Ltb.Integration.Tests;
 
@@ -128,6 +129,40 @@ public sealed class DailyCommandLineTests
         Assert.Contains(DailyUsage, lines);
         Assert.Contains(WizardUsage, lines);
         Assert.Contains(DailyExitMeanings, lines);
+    }
+
+    [Fact]
+    public void DeviceDiagnosticsExposeGeneralizedCapabilitiesAndInputProfile()
+    {
+        var device = new SteamVrDeviceDescriptor(
+            new SteamVrDeviceIdentity(
+                "TOUCH-QUEST3-LEFT",
+                "/devices/alvr/TOUCH-QUEST3-LEFT"),
+            4,
+            SteamVrDeviceCategory.InputController,
+            SteamVrControllerRole.LeftHand,
+            true,
+            new SteamVrDeviceMetadata(
+                "alvr",
+                "ALVR",
+                "Meta",
+                "Meta Quest 3 Controller",
+                "meta_touch",
+                "/input/meta_quest_3_touch_plus_profile.json"));
+        using var writer = new StringWriter();
+
+        Program.WriteDeviceDetails(writer, device);
+
+        var output = writer.ToString();
+        Assert.Contains("has_position: true", output);
+        Assert.Contains("physical_pose_source_eligible: false", output);
+        Assert.Contains("virtual_pose_source: false", output);
+        Assert.Contains("controller_family: meta_touch", output);
+        Assert.Contains("controller_runtime: ALVR", output);
+        Assert.Contains("controller_model: Quest 3 Touch Plus", output);
+        Assert.Contains(
+            "input_profile: /input/meta_quest_3_touch_plus_profile.json",
+            output);
     }
 
     [Theory]
