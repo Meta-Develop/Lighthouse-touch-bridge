@@ -25,6 +25,17 @@ public sealed class OpenVrDevicePathTests
     }
 
     [Theory]
+    [InlineData("/devices/oculus/Quest2-Left_Controller_Left", "oculus")]
+    [InlineData("/devices/lighthouse/LHR-1234", "lighthouse")]
+    public void CanonicalDevicePathExposesRegisteredDriverIdentity(
+        string canonicalPath,
+        string expectedDriver)
+    {
+        Assert.True(OpenVrDevicePath.TryGetDriverId(canonicalPath, out var driver));
+        Assert.Equal(expectedDriver, driver);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]

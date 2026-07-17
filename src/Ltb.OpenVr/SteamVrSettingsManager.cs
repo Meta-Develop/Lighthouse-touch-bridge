@@ -124,10 +124,21 @@ public sealed class SteamVrSettingsManager
                 backupFilePath: null,
                 SteamVrSettingsOperation.RestoreBackup,
                 binding: null,
-                settingsChanged: false);
+                settingsChanged: false,
+                expectedPostImage: null);
         }
 
         using var operationLock = AcquireOperationLock();
+        var expectedPostImage = recoveryPoint.ExpectedPostImage
+            ?? throw new InvalidOperationException(
+                "The recovery point has no owned post-image and cannot be rolled back safely.");
+        if (!ReadSettingsBytes().AsSpan().SequenceEqual(expectedPostImage))
+        {
+            throw new IOException(
+                "steamvr.vrsettings changed after this recovery point; explicit rollback " +
+                "was refused so the later writer remains intact.");
+        }
+
         return RecoverFromBackupCore(
             recoveryPoint.BackupFilePath,
             requireValidBackupJson: false);
@@ -164,7 +175,8 @@ public sealed class SteamVrSettingsManager
                 backupFilePath: null,
                 SteamVrSettingsOperation.RestoreBackup,
                 binding: null,
-                settingsChanged: false);
+                settingsChanged: false,
+                expectedPostImage: null);
         }
 
         var safetyBackupPath = CreateUniqueBackup(currentBytes);
@@ -181,7 +193,8 @@ public sealed class SteamVrSettingsManager
                 safetyBackupPath,
                 SteamVrSettingsOperation.RestoreBackup,
                 binding: null,
-                settingsChanged: true);
+                settingsChanged: true,
+                expectedPostImage: restoredBytes);
         }
         catch (Exception failure) when (targetReplaced)
         {
@@ -228,7 +241,8 @@ public sealed class SteamVrSettingsManager
                 backupFilePath: null,
                 operation,
                 binding,
-                settingsChanged: false);
+                settingsChanged: false,
+                expectedPostImage: null);
         }
 
         var updatedBytes = Serialize(root);
@@ -257,7 +271,8 @@ public sealed class SteamVrSettingsManager
                 backupFilePath,
                 operation,
                 binding,
-                settingsChanged: true);
+                settingsChanged: true,
+                expectedPostImage: updatedBytes);
         }
         catch (Exception failure) when (targetReplaced)
         {

@@ -21,6 +21,42 @@ public enum SteamVrControllerRole
 }
 
 /// <summary>
+/// Current OpenVR driver and controller identity properties. These values are
+/// observations from the connected runtime and are never populated from a
+/// stored calibration profile.
+/// </summary>
+public sealed record SteamVrDeviceMetadata
+{
+    public SteamVrDeviceMetadata(
+        string driverId,
+        string? trackingSystemName,
+        string? manufacturerName,
+        string? modelNumber,
+        string? controllerType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(driverId);
+        DriverId = driverId;
+        TrackingSystemName = NormalizeOptional(trackingSystemName);
+        ManufacturerName = NormalizeOptional(manufacturerName);
+        ModelNumber = NormalizeOptional(modelNumber);
+        ControllerType = NormalizeOptional(controllerType);
+    }
+
+    public string DriverId { get; }
+
+    public string? TrackingSystemName { get; }
+
+    public string? ManufacturerName { get; }
+
+    public string? ModelNumber { get; }
+
+    public string? ControllerType { get; }
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
+
+/// <summary>
 /// Stable identity for a SteamVR device. The serial number is the canonical
 /// association key; the registered device path is retained for diagnostics.
 /// Neither value contains the transient OpenVR device index.
@@ -49,7 +85,8 @@ public sealed record SteamVrDeviceDescriptor
         uint transientDeviceIndex,
         SteamVrDeviceCategory category,
         SteamVrControllerRole controllerRole,
-        bool isConnected)
+        bool isConnected,
+        SteamVrDeviceMetadata? metadata = null)
     {
         Identity = identity ?? throw new ArgumentNullException(nameof(identity));
         if (!Enum.IsDefined(category))
@@ -74,6 +111,7 @@ public sealed record SteamVrDeviceDescriptor
         Category = category;
         ControllerRole = controllerRole;
         IsConnected = isConnected;
+        Metadata = metadata;
     }
 
     public SteamVrDeviceIdentity Identity { get; }
@@ -89,6 +127,8 @@ public sealed record SteamVrDeviceDescriptor
     public SteamVrControllerRole ControllerRole { get; }
 
     public bool IsConnected { get; }
+
+    public SteamVrDeviceMetadata? Metadata { get; }
 
     /// <summary>Canonical persistent key used for tracker association.</summary>
     public string StableDeviceId => Identity.SerialNumber;

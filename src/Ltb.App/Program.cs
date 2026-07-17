@@ -35,6 +35,11 @@ internal static class Program
                 return await WizardDemoAsync(options).ConfigureAwait(false);
             }
 
+            if (options.Command == AppCommand.Daily)
+            {
+                return await DailyAsync(options).ConfigureAwait(false);
+            }
+
             using var session = OpenVrSession.Open();
             if (options.Command == AppCommand.Bridge)
             {
@@ -71,15 +76,94 @@ internal static class Program
         }
     }
 
+    private static async Task<int> DailyAsync(AppCommandLineOptions options)
+    {
+        using var jsonLog = options.DailyLogPath is null
+            ? null
+            : new JsonLinesLtbLogSink(options.DailyLogPath);
+        var logSink = (ILtbLogSink?)jsonLog ?? NullLtbLogSink.Instance;
+        var reconnectDelay = TimeSpan.FromSeconds(options.DailyReconnectDelaySeconds);
+        await using var runtime = new ProductionReliableDailyUseRuntime(
+            options.DailyProfileStorePath!,
+            options.SteamVrSettingsPath!,
+            new VmtDeviceAddress(options.DailyLeftVmtSlot),
+            new VmtDeviceAddress(options.DailyRightVmtSlot),
+            staleAfter: TimeSpan.FromSeconds(0.5d),
+            reconnectDelay);
+        var coordinator = new ReliableDailyUseCoordinator(
+            runtime,
+            new FileCalibrationWizardBackend(options.DailyProfileStorePath!),
+            logSink,
+            new ReliableDailyUseOptions
+            {
+                MonitorInterval = TimeSpan.FromSeconds(1d / options.MonitorRateHz),
+                ReconnectRetryDelay = reconnectDelay,
+            });
+
+        using var stop = new CancellationTokenSource();
+        ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            stop.Cancel();
+        };
+        Console.CancelKeyPress += cancelHandler;
+        try
+        {
+            Console.WriteLine("Lighthouse Touch Bridge - Reliable Daily Use");
+            Console.WriteLine($"profiles: {Path.GetFullPath(options.DailyProfileStorePath!)}");
+            Console.WriteLine($"left_vmt_slot: {options.DailyLeftVmtSlot}");
+            Console.WriteLine($"right_vmt_slot: {options.DailyRightVmtSlot}");
+            Console.WriteLine($"steamvr_settings: {Path.GetFullPath(options.SteamVrSettingsPath!)}");
+            Console.WriteLine($"monitor_rate_hz: {options.MonitorRateHz:R}");
+            Console.WriteLine($"reconnect_delay_seconds: {options.DailyReconnectDelaySeconds:R}");
+            Console.WriteLine($"structured_log: {(options.DailyLogPath is null ? "disabled" : Path.GetFullPath(options.DailyLogPath))}");
+            Console.WriteLine("state: starting");
+
+            var result = await coordinator.RunAsync(stop.Token).ConfigureAwait(false);
+            Console.WriteLine($"state: {result.FinalState}");
+            Console.WriteLine($"stop_reason: {result.StopReason}");
+            Console.WriteLine($"safe_disable_failures: {result.SafeDisableFailures.Count}");
+            Console.WriteLine($"rollback_failures: {result.RollbackFailures.Count}");
+            Console.WriteLine($"message: {result.Diagnostic}");
+            foreach (var failure in result.SafeDisableFailures.Concat(result.RollbackFailures))
+            {
+                Console.Error.WriteLine($"Cleanup failure: {failure.Message}");
+            }
+
+            if (result.SafeDisableFailures.Count > 0 || result.RollbackFailures.Count > 0)
+            {
+                return 4;
+            }
+
+            return result.StopReason switch
+            {
+                ReliableDailyUseStopReason.Cancellation => 0,
+                ReliableDailyUseStopReason.SafeDisableFailed => 4,
+                ReliableDailyUseStopReason.SteamVrStopped or
+                ReliableDailyUseStopReason.RuntimeFailure => 3,
+                _ => 2,
+            };
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancelHandler;
+        }
+    }
+
     private static async Task<int> WizardDemoAsync(AppCommandLineOptions options)
     {
+        using var jsonLog = options.WizardLogPath is null
+            ? null
+            : new JsonLinesLtbLogSink(options.WizardLogPath);
+        var logSink = (ILtbLogSink?)jsonLog ?? NullLtbLogSink.Instance;
         var output = new ConsoleCalibrationWizardOutput(Console.Out);
         var runtime = new ScriptedCalibrationWizardRuntime(output);
         var backend = new FileCalibrationWizardBackend(options.WizardProfileStorePath!);
-        var wizard = new TwoHandCalibrationWizard(runtime, backend, output);
+        var wizard = new TwoHandCalibrationWizard(runtime, backend, output, logSink);
 
         Console.WriteLine("Lighthouse Touch Bridge - Scripted Two-Hand Calibration Wizard");
         Console.WriteLine($"profile_store: {Path.GetFullPath(options.WizardProfileStorePath!)}");
+        Console.WriteLine($"structured_log: {(options.WizardLogPath is null ? "disabled" : Path.GetFullPath(options.WizardLogPath))}");
         Console.WriteLine("runtime: deterministic fake devices (no SteamVR/OpenVR/VMT calls)");
         var result = await wizard.RunAsync().ConfigureAwait(false);
         Console.WriteLine($"wizard_result: {(result.Success ? "success" : "failed")}");
@@ -327,6 +411,19 @@ internal sealed record AppCommandLineOptions(
     private const double MaximumSampleRateHz = 1_000d;
     private const double MaximumStaleAfterSeconds = 300d;
     private const double MaximumMonitorRateHz = 1_000d;
+    private const double MaximumReconnectDelaySeconds = 300d;
+
+    public string? DailyProfileStorePath { get; init; }
+
+    public int DailyLeftVmtSlot { get; init; } = -1;
+
+    public int DailyRightVmtSlot { get; init; } = -1;
+
+    public string? DailyLogPath { get; init; }
+
+    public double DailyReconnectDelaySeconds { get; init; } = 0.25d;
+
+    public string? WizardLogPath { get; init; }
 
     public static bool TryParse(
         IReadOnlyList<string> arguments,
@@ -344,7 +441,7 @@ internal sealed record AppCommandLineOptions(
         if (arguments.Count == 0 || !TryParseCommand(arguments[0], out var command))
         {
             error = arguments.Count == 0
-                ? "A devices, record, bridge, or wizard-demo command is required."
+                ? "A devices, record, bridge, daily, or wizard-demo command is required."
                 : $"Unknown command '{arguments[0]}'.";
             return false;
         }
@@ -363,7 +460,14 @@ internal sealed record AppCommandLineOptions(
         var recorderOptionSpecified = false;
         var bridgeOptionSpecified = false;
         var wizardOptionSpecified = false;
+        var dailyOptionSpecified = false;
         string? wizardProfileStorePath = null;
+        string? wizardLogPath = null;
+        string? dailyProfileStorePath = null;
+        var dailyLeftVmtSlot = -1;
+        var dailyRightVmtSlot = -1;
+        string? dailyLogPath = null;
+        var dailyReconnectDelaySeconds = 0.25d;
         var showHelp = false;
         for (var index = 1; index < arguments.Count; index++)
         {
@@ -438,7 +542,14 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--steamvr-settings":
-                    bridgeOptionSpecified = true;
+                    if (command == AppCommand.Daily)
+                    {
+                        dailyOptionSpecified = true;
+                    }
+                    else
+                    {
+                        bridgeOptionSpecified = true;
+                    }
                     if (!TryReadValue(
                             arguments,
                             ref index,
@@ -464,7 +575,14 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--monitor-rate":
-                    bridgeOptionSpecified = true;
+                    if (command == AppCommand.Daily)
+                    {
+                        dailyOptionSpecified = true;
+                    }
+                    else
+                    {
+                        bridgeOptionSpecified = true;
+                    }
                     if (!TryReadDouble(
                             arguments,
                             ref index,
@@ -477,12 +595,100 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--profiles":
-                    wizardOptionSpecified = true;
+                    if (command == AppCommand.Daily)
+                    {
+                        dailyOptionSpecified = true;
+                    }
+                    else
+                    {
+                        wizardOptionSpecified = true;
+                    }
                     if (!TryReadValue(
                             arguments,
                             ref index,
                             argument,
-                            out wizardProfileStorePath,
+                            out var parsedProfileStorePath,
+                            out error))
+                    {
+                        return false;
+                    }
+
+                    if (command == AppCommand.Daily)
+                    {
+                        dailyProfileStorePath = parsedProfileStorePath;
+                    }
+                    else
+                    {
+                        wizardProfileStorePath = parsedProfileStorePath;
+                    }
+
+                    break;
+                case "--left-vmt-slot":
+                    dailyOptionSpecified = true;
+                    if (!TryReadInt32(
+                            arguments,
+                            ref index,
+                            argument,
+                            out dailyLeftVmtSlot,
+                            out error))
+                    {
+                        return false;
+                    }
+
+                    break;
+                case "--right-vmt-slot":
+                    dailyOptionSpecified = true;
+                    if (!TryReadInt32(
+                            arguments,
+                            ref index,
+                            argument,
+                            out dailyRightVmtSlot,
+                            out error))
+                    {
+                        return false;
+                    }
+
+                    break;
+                case "--log":
+                    if (command == AppCommand.Daily)
+                    {
+                        dailyOptionSpecified = true;
+                    }
+                    else if (command == AppCommand.WizardDemo)
+                    {
+                        wizardOptionSpecified = true;
+                    }
+                    else
+                    {
+                        dailyOptionSpecified = true;
+                    }
+                    if (!TryReadValue(
+                            arguments,
+                            ref index,
+                            argument,
+                            out var parsedLogPath,
+                            out error))
+                    {
+                        return false;
+                    }
+
+                    if (command == AppCommand.WizardDemo)
+                    {
+                        wizardLogPath = parsedLogPath;
+                    }
+                    else
+                    {
+                        dailyLogPath = parsedLogPath;
+                    }
+
+                    break;
+                case "--reconnect-delay":
+                    dailyOptionSpecified = true;
+                    if (!TryReadDouble(
+                            arguments,
+                            ref index,
+                            argument,
+                            out dailyReconnectDelaySeconds,
                             out error))
                     {
                         return false;
@@ -503,7 +709,8 @@ internal sealed record AppCommandLineOptions(
 
         if (command == AppCommand.Devices)
         {
-            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified)
+            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified ||
+                dailyOptionSpecified)
             {
                 error = "The devices command does not accept record, bridge, or wizard options.";
                 return false;
@@ -515,7 +722,7 @@ internal sealed record AppCommandLineOptions(
 
         if (command == AppCommand.Bridge)
         {
-            if (recorderOptionSpecified || wizardOptionSpecified)
+            if (recorderOptionSpecified || wizardOptionSpecified || dailyOptionSpecified)
             {
                 error = "The bridge command does not accept record or wizard options.";
                 return false;
@@ -561,9 +768,76 @@ internal sealed record AppCommandLineOptions(
             return true;
         }
 
+        if (command == AppCommand.Daily)
+        {
+            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified)
+            {
+                error = "The daily command accepts only daily-use options.";
+                return false;
+            }
+
+            if (dailyProfileStorePath is null ||
+                dailyLeftVmtSlot < 0 ||
+                dailyRightVmtSlot < 0 ||
+                steamVrSettingsPath is null)
+            {
+                error = "The daily command requires --profiles <profile-store.json>, " +
+                    "--left-vmt-slot <0..57>, --right-vmt-slot <0..57>, and " +
+                    "--steamvr-settings <steamvr.vrsettings>.";
+                return false;
+            }
+
+            if (dailyLeftVmtSlot is < VmtDeviceAddress.MinimumIndex or
+                    > VmtDeviceAddress.MaximumIndex ||
+                dailyRightVmtSlot is < VmtDeviceAddress.MinimumIndex or
+                    > VmtDeviceAddress.MaximumIndex)
+            {
+                error = $"Daily-use VMT slots must be between {VmtDeviceAddress.MinimumIndex} " +
+                    $"and {VmtDeviceAddress.MaximumIndex}.";
+                return false;
+            }
+
+            if (dailyLeftVmtSlot == dailyRightVmtSlot)
+            {
+                error = "--left-vmt-slot and --right-vmt-slot must be distinct.";
+                return false;
+            }
+
+            if (!double.IsFinite(monitorRateHz) ||
+                monitorRateHz <= 0d ||
+                monitorRateHz > MaximumMonitorRateHz)
+            {
+                error = $"--monitor-rate must be greater than zero and at most " +
+                    $"{MaximumMonitorRateHz:F0} Hz.";
+                return false;
+            }
+
+            if (!double.IsFinite(dailyReconnectDelaySeconds) ||
+                dailyReconnectDelaySeconds <= 0d ||
+                dailyReconnectDelaySeconds > MaximumReconnectDelaySeconds)
+            {
+                error = "--reconnect-delay must be greater than zero and at most " +
+                    $"{MaximumReconnectDelaySeconds:F0} seconds.";
+                return false;
+            }
+
+            options = Empty with
+            {
+                Command = command,
+                SteamVrSettingsPath = steamVrSettingsPath,
+                MonitorRateHz = monitorRateHz,
+                DailyProfileStorePath = dailyProfileStorePath,
+                DailyLeftVmtSlot = dailyLeftVmtSlot,
+                DailyRightVmtSlot = dailyRightVmtSlot,
+                DailyLogPath = dailyLogPath,
+                DailyReconnectDelaySeconds = dailyReconnectDelaySeconds,
+            };
+            return true;
+        }
+
         if (command == AppCommand.WizardDemo)
         {
-            if (recorderOptionSpecified || bridgeOptionSpecified)
+            if (recorderOptionSpecified || bridgeOptionSpecified || dailyOptionSpecified)
             {
                 error = "The wizard-demo command does not accept record or bridge options.";
                 return false;
@@ -579,11 +853,12 @@ internal sealed record AppCommandLineOptions(
             {
                 Command = command,
                 WizardProfileStorePath = wizardProfileStorePath,
+                WizardLogPath = wizardLogPath,
             };
             return true;
         }
 
-        if (bridgeOptionSpecified || wizardOptionSpecified)
+        if (bridgeOptionSpecified || wizardOptionSpecified || dailyOptionSpecified)
         {
             error = "The record command does not accept bridge or wizard options.";
             return false;
@@ -653,14 +928,16 @@ internal sealed record AppCommandLineOptions(
         writer.WriteLine("  dotnet run --project src/Ltb.App -- devices");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- record --tracker <stable-serial> [--tracker <stable-serial> ...] --controller <stable-serial> [--controller <stable-serial> ...] --output <recording.json> --override-released [--duration <seconds>] [--rate <hz>]");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]");
-        writer.WriteLine("  dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]");
         writer.WriteLine();
-        writer.WriteLine("Defaults: record --duration 10 --rate 90; bridge --stale-after 0.5 --monitor-rate 20.");
+        writer.WriteLine("Defaults: record --duration 10 --rate 90; bridge --stale-after 0.5 --monitor-rate 20; daily --monitor-rate 20 --reconnect-delay 0.25.");
         writer.WriteLine("The bridge command touches only the explicit --steamvr-settings path; it never searches for host settings.");
         writer.WriteLine("--stale-after governs reported tracker pose sample age when available; synchronous OpenVR reads still require connected, RunningOk, full-valid poses.");
         writer.WriteLine("VMT Alive heartbeat and post-activation connection use a separate conservative 5-second bound.");
         writer.WriteLine("--monitor-rate is a requested minimum rate; safety bounds automatically make the effective watchdog faster when required.");
         writer.WriteLine("Bridge exit codes: 0 cancelled+disabled, 2 startup/run failure, 3 health-triggered SafeDisable, 4 incomplete SafeDisable cleanup.");
+        writer.WriteLine("Daily exit codes: 0 clean cancellation, 2 startup/profile/application failure, 3 SteamVR/runtime health termination, 4 any incomplete cleanup or rollback.");
         writer.WriteLine("--override-released explicitly acknowledges that VMT and SteamVR pose overrides are inactive, so the original controller pose is sampled.");
         writer.WriteLine("The record command does not inspect or modify SteamVR settings.");
         writer.WriteLine("wizard-demo uses deterministic fake devices and never opens SteamVR, VMT, or host settings; rerun with the same store to exercise profile reuse.");
@@ -689,6 +966,7 @@ internal sealed record AppCommandLineOptions(
             "devices" => AppCommand.Devices,
             "record" => AppCommand.Record,
             "bridge" => AppCommand.Bridge,
+            "daily" => AppCommand.Daily,
             "wizard-demo" => AppCommand.WizardDemo,
             _ => (AppCommand)(-1),
         };
@@ -770,5 +1048,6 @@ internal enum AppCommand
     Devices,
     Record,
     Bridge,
+    Daily,
     WizardDemo,
 }

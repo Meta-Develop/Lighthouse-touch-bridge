@@ -16,6 +16,7 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
     private readonly ValveVr.CVRSystem _system;
     private readonly ValveVr.TrackedDevicePose_t[] _poseBuffer =
         new ValveVr.TrackedDevicePose_t[ValveVr.OpenVR.k_unMaxTrackedDeviceCount];
+    private bool _quitObserved;
     private bool _disposed;
 
     private ValveOpenVrRuntime(ValveVr.CVRSystem system)
@@ -78,6 +79,24 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                 var devicePath = OpenVrDevicePath.Resolve(
                     registeredDeviceType,
                     serialNumber);
+                SteamVrDeviceMetadata? metadata = null;
+                if (OpenVrDevicePath.TryGetDriverId(devicePath, out var driverId))
+                {
+                    metadata = new SteamVrDeviceMetadata(
+                        driverId,
+                        ReadStringProperty(
+                            index,
+                            ValveVr.ETrackedDeviceProperty.Prop_TrackingSystemName_String),
+                        ReadStringProperty(
+                            index,
+                            ValveVr.ETrackedDeviceProperty.Prop_ManufacturerName_String),
+                        ReadStringProperty(
+                            index,
+                            ValveVr.ETrackedDeviceProperty.Prop_ModelNumber_String),
+                        ReadStringProperty(
+                            index,
+                            ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String));
+                }
 
                 devices.Add(new OpenVrRuntimeDevice(
                     index,
@@ -85,7 +104,8 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                     devicePath,
                     MapDeviceClass(nativeClass),
                     MapControllerRole(_system.GetControllerRoleForTrackedDeviceIndex(index)),
-                    _system.IsTrackedDeviceConnected(index)));
+                    _system.IsTrackedDeviceConnected(index),
+                    metadata));
             }
 
             return devices;
@@ -139,6 +159,44 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                 RuntimeTimeSeconds: null,
                 PredictionOffsetSeconds: predictionOffsetSeconds,
                 SampleAgeSeconds: null);
+        }
+    }
+
+    public OpenVrRuntimeHealthSnapshot GetRuntimeHealth()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            if (_quitObserved)
+            {
+                return new OpenVrRuntimeHealthSnapshot(
+                    OpenVrRuntimeHealthState.Stopped,
+                    "SteamVR previously reported a terminal runtime-quit event.");
+            }
+
+            var runtimeEvent = new ValveVr.VREvent_t();
+            var eventSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ValveVr.VREvent_t>();
+            while (_system.PollNextEvent(ref runtimeEvent, eventSize))
+            {
+                var disposition = OpenVrRuntimeEventSemantics.Classify(runtimeEvent.eventType);
+                if (disposition ==
+                    OpenVrRuntimeEventDisposition.RuntimeStoppedAndAcknowledgeQuit)
+                {
+                    _system.AcknowledgeQuit_Exiting();
+                    _quitObserved = true;
+                    break;
+                }
+                else if (disposition == OpenVrRuntimeEventDisposition.RuntimeStopped)
+                {
+                    _quitObserved = true;
+                }
+            }
+
+            return _quitObserved
+                ? new OpenVrRuntimeHealthSnapshot(
+                    OpenVrRuntimeHealthState.Stopped,
+                    "SteamVR reported a terminal runtime-quit event.")
+                : OpenVrRuntimeHealthSnapshot.Running;
         }
     }
 

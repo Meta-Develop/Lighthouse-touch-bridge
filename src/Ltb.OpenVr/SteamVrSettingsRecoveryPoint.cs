@@ -19,13 +19,15 @@ public sealed class SteamVrSettingsRecoveryPoint
         string? backupFilePath,
         SteamVrSettingsOperation operation,
         TrackingOverrideBinding? binding,
-        bool settingsChanged)
+        bool settingsChanged,
+        byte[]? expectedPostImage)
     {
         SettingsFilePath = settingsFilePath;
         BackupFilePath = backupFilePath;
         Operation = operation;
         Binding = binding;
         SettingsChanged = settingsChanged;
+        ExpectedPostImage = expectedPostImage?.ToArray();
     }
 
     public string SettingsFilePath { get; }
@@ -41,6 +43,12 @@ public sealed class SteamVrSettingsRecoveryPoint
     public TrackingOverrideBinding? Binding { get; }
 
     public bool SettingsChanged { get; }
+
+    /// <summary>
+    /// Exact bytes written by the operation. Explicit rollback may restore the
+    /// backup only while the current file still equals this owned post-image.
+    /// </summary>
+    internal byte[]? ExpectedPostImage { get; }
 }
 
 /// <summary>

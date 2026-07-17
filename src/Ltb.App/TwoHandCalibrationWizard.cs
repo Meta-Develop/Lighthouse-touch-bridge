@@ -272,16 +272,22 @@ internal sealed class TwoHandCalibrationWizard
     private readonly ICalibrationWizardRuntime _runtime;
     private readonly ICalibrationWizardBackend _backend;
     private readonly ICalibrationWizardOutput _output;
+    private readonly ILtbLogSink _logSink;
+    private readonly TimeProvider _timeProvider;
     private readonly List<CalibrationWizardState> _history = [];
 
     public TwoHandCalibrationWizard(
         ICalibrationWizardRuntime runtime,
         ICalibrationWizardBackend backend,
-        ICalibrationWizardOutput output)
+        ICalibrationWizardOutput output,
+        ILtbLogSink? logSink = null,
+        TimeProvider? timeProvider = null)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _output = output ?? throw new ArgumentNullException(nameof(output));
+        _logSink = logSink ?? NullLtbLogSink.Instance;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<CalibrationWizardResult> RunAsync(
@@ -479,6 +485,7 @@ internal sealed class TwoHandCalibrationWizard
                 : "rotation_only_fallback";
             _output.WriteLine(
                 $"selection: hand={Format(hand.Hand)} mode={outcome} reason={result.SelectionReason}");
+            LogTranslationSelection(hand);
         }
 
         Transition(CalibrationWizardState.Validation,
@@ -595,6 +602,14 @@ internal sealed class TwoHandCalibrationWizard
             Transition(failedState, "the current stage rejected the operation");
         }
 
+        if (failedState == CalibrationWizardState.RotationSolve)
+        {
+            Log(
+                LtbLogLevel.Error,
+                LtbDiagnosticCode.BadRotationCalibration,
+                diagnostic);
+        }
+
         _output.WriteLine(
             $"diagnostic: state={failedState} message={diagnostic}");
         Transition(CalibrationWizardState.Ready,
@@ -612,7 +627,83 @@ internal sealed class TwoHandCalibrationWizard
     {
         _history.Add(state);
         _output.OnStateChanged(state, diagnostic);
+        Log(
+            LtbLogLevel.Information,
+            LtbDiagnosticCode.StateTransition,
+            diagnostic,
+            new Dictionary<string, string>
+            {
+                ["wizardState"] = state.ToString(),
+            });
     }
+
+    private void LogTranslationSelection(CalibrationWizardHandAnalysis hand)
+    {
+        var result = hand.Calibration;
+        if (result.SelectedModel != CalibrationModel.RotationOnly)
+        {
+            return;
+        }
+
+        var code = result.Motion.TranslationDegeneracy == CalibrationDegeneracy.MissingPosition
+            ? LtbDiagnosticCode.NoPositionAvailable
+            : LtbDiagnosticCode.PoorTranslationObservability;
+        Log(
+            LtbLogLevel.Warning,
+            code,
+            result.SelectionReason,
+            new Dictionary<string, string>
+            {
+                ["hand"] = Format(hand.Hand),
+                ["translationDegeneracy"] = result.Motion.TranslationDegeneracy.ToString(),
+                ["selectedMode"] = "rotation_only",
+            });
+    }
+
+    private void Log(
+        LtbLogLevel level,
+        LtbDiagnosticCode code,
+        string message,
+        IReadOnlyDictionary<string, string>? properties = null)
+    {
+        try
+        {
+            _logSink.Write(new LtbLogEvent(
+                _timeProvider.GetUtcNow().ToUniversalTime(),
+                level,
+                code,
+                ToRuntimeState(_history.Count == 0
+                    ? CalibrationWizardState.Stopped
+                    : _history[^1]),
+                message,
+                properties));
+        }
+        catch
+        {
+            // Local log I/O must not alter calibration or SafeDisable behavior.
+        }
+    }
+
+    private static RuntimeApplicationState ToRuntimeState(CalibrationWizardState state) =>
+        state switch
+        {
+            CalibrationWizardState.Stopped => RuntimeApplicationState.Stopped,
+            CalibrationWizardState.DependencyCheck => RuntimeApplicationState.DependencyCheck,
+            CalibrationWizardState.WaitingForSteamVR => RuntimeApplicationState.WaitingForSteamVR,
+            CalibrationWizardState.WaitingForDevices => RuntimeApplicationState.WaitingForDevices,
+            CalibrationWizardState.Ready => RuntimeApplicationState.Ready,
+            CalibrationWizardState.OverrideRelease => RuntimeApplicationState.OverrideRelease,
+            CalibrationWizardState.Recording => RuntimeApplicationState.Recording,
+            CalibrationWizardState.Association => RuntimeApplicationState.Association,
+            CalibrationWizardState.TimeAlignment => RuntimeApplicationState.TimeAlignment,
+            CalibrationWizardState.RotationSolve => RuntimeApplicationState.RotationSolve,
+            CalibrationWizardState.TranslationAttempt => RuntimeApplicationState.TranslationAttempt,
+            CalibrationWizardState.Validation => RuntimeApplicationState.Validation,
+            CalibrationWizardState.ApplyProfile => RuntimeApplicationState.ApplyProfile,
+            CalibrationWizardState.Active => RuntimeApplicationState.Active,
+            CalibrationWizardState.SafeDisable => RuntimeApplicationState.SafeDisable,
+            _ => throw new ArgumentOutOfRangeException(nameof(state)),
+        };
 
     private static void EnsureCaptureHand(
         CalibrationWizardCapture capture,

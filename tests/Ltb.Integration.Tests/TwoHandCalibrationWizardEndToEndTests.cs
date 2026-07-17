@@ -8,7 +8,7 @@ namespace Ltb.Integration.Tests;
 public sealed class TwoHandCalibrationWizardEndToEndTests
 {
     [Fact]
-    public void ScriptedWizardCommandRequiresAnExplicitProfileStore()
+    public void ScriptedWizardCommandRequiresProfilesAndAcceptsAnOptionalLog()
     {
         Assert.True(AppCommandLineOptions.TryParse(
             ["wizard-demo", "--profiles", "profiles.json"],
@@ -16,6 +16,18 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
             out var error), error);
         Assert.Equal(AppCommand.WizardDemo, options.Command);
         Assert.Equal("profiles.json", options.WizardProfileStorePath);
+        Assert.Null(options.WizardLogPath);
+
+        Assert.True(AppCommandLineOptions.TryParse(
+            [
+                "wizard-demo",
+                "--profiles", "profiles.json",
+                "--log", "events.jsonl",
+            ],
+            out var loggedOptions,
+            out var loggedError), loggedError);
+        Assert.Equal("profiles.json", loggedOptions.WizardProfileStorePath);
+        Assert.Equal("events.jsonl", loggedOptions.WizardLogPath);
 
         Assert.False(AppCommandLineOptions.TryParse(
             ["wizard-demo"],

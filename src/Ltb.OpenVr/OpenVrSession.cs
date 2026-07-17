@@ -70,6 +70,16 @@ public sealed class OpenVrSession : SteamVrDeviceEnumerator, IDisposable
         return _deviceEnumerator.EnumerateDevices();
     }
 
+    /// <summary>
+    /// Polls the current OpenVR session for a terminal runtime-quit event.
+    /// Device disconnects remain represented by device descriptors and poses.
+    /// </summary>
+    public OpenVrRuntimeHealthSnapshot GetRuntimeHealth()
+    {
+        ThrowIfDisposed();
+        return _runtime.GetRuntimeHealth();
+    }
+
     public InputControllerPoseSource CreateInputControllerPoseSource(
         SteamVrDeviceDescriptor device,
         double predictionOffsetSeconds = 0d)

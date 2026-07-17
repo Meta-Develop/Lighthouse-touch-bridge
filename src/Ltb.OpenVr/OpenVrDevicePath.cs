@@ -56,4 +56,23 @@ internal static class OpenVrDevicePath
         canonicalPath = CanonicalPrefix + driverAndDevice;
         return true;
     }
+
+    public static bool TryGetDriverId(string canonicalPath, out string driverId)
+    {
+        driverId = string.Empty;
+        if (!canonicalPath.StartsWith(CanonicalPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var remainder = canonicalPath[CanonicalPrefix.Length..];
+        var separator = remainder.IndexOf('/');
+        if (separator <= 0)
+        {
+            return false;
+        }
+
+        driverId = remainder[..separator];
+        return true;
+    }
 }

@@ -57,7 +57,8 @@ internal sealed class OpenVrDeviceEnumeratorAdapter : SteamVrDeviceEnumerator
             device.TransientDeviceIndex,
             category,
             role,
-            device.IsConnected);
+            device.IsConnected,
+            device.Metadata);
     }
 }
 

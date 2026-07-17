@@ -18,6 +18,9 @@ internal sealed class OpenVrOneHandBridgeRuntime : IOneHandBridgeRuntime
 
     public TrackedPoseSource CreateTrackedPoseSource(SteamVrDeviceDescriptor device) =>
         _session.CreateTrackedPoseSource(device);
+
+    public OpenVrRuntimeHealthSnapshot GetRuntimeHealth() =>
+        _session.GetRuntimeHealth();
 }
 
 internal sealed class VmtClientOneHandBridgeController :
@@ -39,8 +42,16 @@ internal sealed class VmtClientOneHandBridgeController :
     {
         get
         {
+            return DriverHealth.IsAlive;
+        }
+    }
+
+    public VmtDriverHealthSnapshot DriverHealth
+    {
+        get
+        {
             ThrowIfPumpFaulted();
-            return _client.DriverHealth.IsAlive;
+            return _client.DriverHealth;
         }
     }
 
@@ -156,7 +167,8 @@ internal sealed class VmtClientOneHandBridgeController :
 }
 
 internal sealed class SteamVrOneHandBridgeOverrideController :
-    IOneHandBridgeOverrideController
+    IOneHandBridgeOverrideController,
+    ITransactionalTrackingOverrideController
 {
     private readonly SteamVrSettingsManager _settings;
 
@@ -167,16 +179,32 @@ internal sealed class SteamVrOneHandBridgeOverrideController :
 
     public void Prepare(TrackingOverrideBinding binding)
     {
-        ArgumentNullException.ThrowIfNull(binding);
-        _ = _settings.ReleaseOverride(binding);
-        RejectHandOwnershipConflict(binding);
+        _ = PrepareWithRecovery(binding);
     }
 
     public void Enable(TrackingOverrideBinding binding) =>
-        _ = _settings.EnableOverride(binding);
+        _ = EnableWithRecovery(binding);
 
     public void Release(TrackingOverrideBinding binding) =>
-        _ = _settings.ReleaseOverride(binding);
+        _ = ReleaseWithRecovery(binding);
+
+    public SteamVrSettingsRecoveryPoint PrepareWithRecovery(TrackingOverrideBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        var recoveryPoint = _settings.ReleaseOverride(binding);
+        RejectHandOwnershipConflict(binding);
+        return recoveryPoint;
+    }
+
+    public SteamVrSettingsRecoveryPoint EnableWithRecovery(TrackingOverrideBinding binding) =>
+        _settings.EnableOverride(binding);
+
+    public SteamVrSettingsRecoveryPoint ReleaseWithRecovery(TrackingOverrideBinding binding) =>
+        _settings.ReleaseOverride(binding);
+
+    public SteamVrSettingsRecoveryPoint Rollback(
+        SteamVrSettingsRecoveryPoint recoveryPoint) =>
+        _settings.Rollback(recoveryPoint);
 
     private void RejectHandOwnershipConflict(TrackingOverrideBinding binding)
     {

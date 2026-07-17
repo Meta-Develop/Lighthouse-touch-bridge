@@ -10,6 +10,8 @@ internal interface IOneHandBridgeRuntime
     IReadOnlyList<SteamVrDeviceDescriptor> EnumerateDevices();
 
     TrackedPoseSource CreateTrackedPoseSource(SteamVrDeviceDescriptor device);
+
+    OpenVrRuntimeHealthSnapshot GetRuntimeHealth() => OpenVrRuntimeHealthSnapshot.Running;
 }
 
 internal interface IOneHandBridgeVmtController
@@ -36,6 +38,21 @@ internal interface IOneHandBridgeOverrideController
     void Enable(TrackingOverrideBinding binding);
 
     void Release(TrackingOverrideBinding binding);
+}
+
+/// <summary>
+/// Optional transaction-capable extension used by multi-hand application.
+/// Recovery points must be consumed in reverse mutation order.
+/// </summary>
+internal interface ITransactionalTrackingOverrideController
+{
+    SteamVrSettingsRecoveryPoint PrepareWithRecovery(TrackingOverrideBinding binding);
+
+    SteamVrSettingsRecoveryPoint EnableWithRecovery(TrackingOverrideBinding binding);
+
+    SteamVrSettingsRecoveryPoint ReleaseWithRecovery(TrackingOverrideBinding binding);
+
+    SteamVrSettingsRecoveryPoint Rollback(SteamVrSettingsRecoveryPoint recoveryPoint);
 }
 
 internal interface IOneHandBridgeVerificationProbe
@@ -363,6 +380,8 @@ internal sealed class OneHandBridgeCoordinator
         RigidTransform mount,
         TimeSpan staleAfter)
     {
+        EnsureSteamVrRunning();
+
         PoseSourceSample trackerSample;
         try
         {
@@ -426,6 +445,7 @@ internal sealed class OneHandBridgeCoordinator
         TrackedPoseSource trackerSource,
         SteamVrDeviceDescriptor controller)
     {
+        EnsureSteamVrRunning();
         EnsurePoseSourceBinding(tracker, trackerSource.Device, "Tracker");
         IReadOnlyList<SteamVrDeviceDescriptor> devices;
         try
@@ -449,6 +469,7 @@ internal sealed class OneHandBridgeCoordinator
         SteamVrDeviceDescriptor vmtDevice,
         TrackedPoseSource vmtPoseSource)
     {
+        EnsureSteamVrRunning();
         EnsurePoseSourceBinding(tracker, trackerSource.Device, "Tracker");
         EnsurePoseSourceBinding(vmtDevice, vmtPoseSource.Device, "VMT pose source");
         IReadOnlyList<SteamVrDeviceDescriptor> devices;
@@ -465,6 +486,27 @@ internal sealed class OneHandBridgeCoordinator
         EnsureCurrentDescriptor(devices, tracker, "Tracker");
         EnsureCurrentDescriptor(devices, controller, "Touch input controller");
         EnsureCurrentDescriptor(devices, vmtDevice, "VMT pose source");
+    }
+
+    private void EnsureSteamVrRunning()
+    {
+        OpenVrRuntimeHealthSnapshot health;
+        try
+        {
+            health = _runtime.GetRuntimeHealth();
+        }
+        catch (Exception exception)
+        {
+            throw new OneHandBridgeHealthException(
+                $"SteamVR runtime health check failed: {exception.Message}",
+                exception);
+        }
+
+        if (!health.IsRunning)
+        {
+            throw new OneHandBridgeHealthException(
+                $"SteamVR stopped: {health.Diagnostic}");
+        }
     }
 
     private async ValueTask<SteamVrDeviceDescriptor> WaitForConnectedVmtDeviceAsync(

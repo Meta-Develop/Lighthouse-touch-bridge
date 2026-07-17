@@ -37,7 +37,8 @@ internal readonly record struct OpenVrRuntimeDevice(
     string DevicePath,
     OpenVrRuntimeDeviceClass DeviceClass,
     OpenVrRuntimeControllerRole ControllerRole,
-    bool IsConnected);
+    bool IsConnected,
+    SteamVrDeviceMetadata? Metadata = null);
 
 internal readonly record struct OpenVrRuntimePose(
     RigidTransform Pose,
@@ -53,6 +54,8 @@ internal interface IOpenVrRuntime : IDisposable
     IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices();
 
     OpenVrRuntimePose ReadPose(uint transientDeviceIndex, double predictionOffsetSeconds);
+
+    OpenVrRuntimeHealthSnapshot GetRuntimeHealth() => OpenVrRuntimeHealthSnapshot.Running;
 }
 
 internal interface IMonotonicClock

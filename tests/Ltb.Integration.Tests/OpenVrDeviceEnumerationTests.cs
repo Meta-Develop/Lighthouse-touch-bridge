@@ -23,7 +23,13 @@ public sealed class OpenVrDeviceEnumerationTests
                     "/devices/oculus/controller",
                     OpenVrRuntimeDeviceClass.Controller,
                     OpenVrRuntimeControllerRole.LeftHand,
-                    false),
+                    false,
+                    new SteamVrDeviceMetadata(
+                        "oculus",
+                        "Oculus",
+                        "Oculus",
+                        "Miramar (Left Controller)",
+                        "oculus_touch")),
             ]);
         var enumerator = new OpenVrDeviceEnumeratorAdapter(runtime);
 
@@ -39,6 +45,10 @@ public sealed class OpenVrDeviceEnumerationTests
                 Assert.Equal(SteamVrDeviceCategory.InputController, controller.Category);
                 Assert.Equal(SteamVrControllerRole.LeftHand, controller.ControllerRole);
                 Assert.False(controller.IsConnected);
+                Assert.Equal("oculus", controller.Metadata?.DriverId);
+                Assert.Equal("Oculus", controller.Metadata?.TrackingSystemName);
+                Assert.Equal("Miramar (Left Controller)", controller.Metadata?.ModelNumber);
+                Assert.Equal("oculus_touch", controller.Metadata?.ControllerType);
             },
             tracker =>
             {
