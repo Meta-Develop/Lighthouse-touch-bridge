@@ -47,10 +47,10 @@ public sealed class ProductionCalibrationWizardTests
             timeline,
             "dependency:hmd-ready",
             "devices",
-            "release:vmt:left",
             "release:override:left",
-            "release:vmt:right",
+            "release:vmt:left",
             "release:override:right",
+            "release:vmt:right",
             "verify:original-touch",
             "capture:left",
             "capture:right",
@@ -149,8 +149,8 @@ public sealed class ProductionCalibrationWizardTests
         AssertOrdered(
             timeline,
             "apply:left",
-            "rollback:deactivate:left",
             "rollback:override:left",
+            "rollback:deactivate:left",
             "state:SafeDisable");
         Assert.DoesNotContain("apply:right", timeline);
     }
@@ -199,6 +199,87 @@ public sealed class ProductionCalibrationWizardTests
         Assert.Contains("unexpected production-wizard operation", result.Diagnostic);
         Assert.Empty(live.ActiveVmtHands);
         Assert.Empty(live.ActiveOverrideHands);
+    }
+
+    [Fact]
+    public async Task PostSuccessOutputFailureBeforeWatchdogHandoffSafeDisablesActiveLease()
+    {
+        using var sandbox = new WizardSandbox();
+        var timeline = new List<string>();
+        var diagnostics = new List<string>();
+        var live = new FakeProductionWizardBackend(timeline, sandbox.ProfilePath);
+        var runtime = CreateRuntime(live);
+        var monitorCalled = false;
+
+        var exitCode = await Program.RunProductionWizardActiveLifecycleAsync(
+            new TwoHandCalibrationWizard(
+                runtime,
+                new FileCalibrationWizardBackend(sandbox.ProfilePath),
+                new TimelineWizardOutput(timeline)),
+            runtime,
+            (_, _) =>
+            {
+                monitorCalled = true;
+                throw new InvalidOperationException("watchdog must not receive ownership");
+            },
+            result =>
+            {
+                Assert.True(result.Success, result.Diagnostic);
+                throw new IOException("synthetic post-success output failure");
+            },
+            _ => throw new InvalidOperationException("watchdog result was not expected"),
+            diagnostics.Add);
+
+        Assert.Equal(2, exitCode);
+        Assert.False(monitorCalled);
+        Assert.Null(runtime.ActiveLease);
+        Assert.Empty(live.ActiveVmtHands);
+        Assert.Empty(live.ActiveOverrideHands);
+        Assert.Contains(
+            diagnostics,
+            message => message.Contains(
+                "fallback SafeDisable completed",
+                StringComparison.Ordinal));
+        AssertOrdered(
+            timeline,
+            "state:Active",
+            "safe-disable:override:right",
+            "safe-disable:override:left");
+    }
+
+    [Fact]
+    public async Task PostSuccessOutputFailureReturnsFourWhenFallbackCleanupReportsFailure()
+    {
+        using var sandbox = new WizardSandbox();
+        var timeline = new List<string>();
+        var live = new FakeProductionWizardBackend(timeline, sandbox.ProfilePath)
+        {
+            FailSafeDisableOverrideHand = CalibrationWizardHand.Left,
+        };
+        var runtime = CreateRuntime(live);
+
+        var exitCode = await Program.RunProductionWizardActiveLifecycleAsync(
+            new TwoHandCalibrationWizard(
+                runtime,
+                new FileCalibrationWizardBackend(sandbox.ProfilePath),
+                new TimelineWizardOutput(timeline)),
+            runtime,
+            (_, _) => throw new InvalidOperationException(
+                "watchdog must not receive ownership"),
+            result =>
+            {
+                Assert.True(result.Success, result.Diagnostic);
+                throw new IOException("synthetic post-success output failure");
+            },
+            _ => throw new InvalidOperationException("watchdog result was not expected"),
+            _ => { });
+
+        Assert.Equal(4, exitCode);
+        Assert.Null(runtime.ActiveLease);
+        Assert.Empty(live.ActiveVmtHands);
+        Assert.Empty(live.ActiveOverrideHands);
+        Assert.Contains("safe-disable:override:right", timeline);
+        Assert.Contains("safe-disable:override:left", timeline);
     }
 
     [Fact]
@@ -347,6 +428,8 @@ internal sealed class FakeProductionWizardBackend : IProductionCalibrationWizard
 
     public int? FailReleaseOverrideCall { get; init; }
 
+    public CalibrationWizardHand? FailSafeDisableOverrideHand { get; init; }
+
     public HashSet<CalibrationWizardHand> ActiveVmtHands { get; } = [];
 
     public HashSet<CalibrationWizardHand> ActiveOverrideHands { get; } = [];
@@ -487,6 +570,7 @@ internal sealed class FakeProductionWizardBackend : IProductionCalibrationWizard
         var hand = Hand(application);
         _timeline.Add($"rollback:deactivate:{Format(hand)}");
         ActiveVmtHands.Remove(hand);
+        _applications.Remove(application.OperationId);
         return Task.CompletedTask;
     }
 
@@ -497,7 +581,6 @@ internal sealed class FakeProductionWizardBackend : IProductionCalibrationWizard
         var hand = Hand(application);
         _timeline.Add($"rollback:override:{Format(hand)}");
         ActiveOverrideHands.Remove(hand);
-        _applications.Remove(application.OperationId);
         return Task.CompletedTask;
     }
 
@@ -508,7 +591,11 @@ internal sealed class FakeProductionWizardBackend : IProductionCalibrationWizard
         var hand = Hand(application);
         _timeline.Add($"safe-disable:override:{Format(hand)}");
         ActiveOverrideHands.Remove(hand);
-        _applications.Remove(application.OperationId);
+        if (hand == FailSafeDisableOverrideHand)
+        {
+            throw new IOException($"synthetic {hand} SafeDisable override failure");
+        }
+
         return Task.CompletedTask;
     }
 

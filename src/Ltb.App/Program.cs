@@ -229,92 +229,205 @@ internal static class Program
             Console.WriteLine($"structured_log: {(options.WizardLogPath is null ? "disabled" : Path.GetFullPath(options.WizardLogPath))}");
             Console.WriteLine("state: starting");
 
-            var result = await wizard.RunAsync(stop.Token).ConfigureAwait(false);
-            Console.WriteLine($"wizard_result: {(result.Success ? "success" : result.Cancelled ? "cancelled" : "failed")}");
-            Console.WriteLine($"profile_path: {(result.ReusedProfiles ? "later-run-reuse" : "first-run-capture")}");
-            Console.WriteLine($"final_state: {result.FinalState}");
-            Console.WriteLine($"cleanup_failures: {result.CleanupFailures.Count}");
-            Console.WriteLine($"diagnostic: {result.Diagnostic}");
-            foreach (var failure in result.CleanupFailures)
-            {
-                Console.Error.WriteLine($"Cleanup failure: {failure.Message}");
-            }
-
-            if (!result.Success)
-            {
-                return result.CleanupFailures.Count > 0
-                    ? 4
-                    : result.Cancelled
-                        ? 0
-                        : 2;
-            }
-
-            var activeLease = productionRuntime.ActiveLease ??
-                throw new InvalidOperationException(
-                    "The production wizard reached Active without retaining its application lease.");
-            ReliableDailyUseResult monitored;
-            try
-            {
-                var watchdog = new ReliableDailyUseCoordinator(
-                    liveRuntime,
-                    backend,
-                    logSink,
-                    new ReliableDailyUseOptions
+            return await RunProductionWizardActiveLifecycleAsync(
+                    wizard,
+                    productionRuntime,
+                    async (activeLease, cancellationToken) =>
                     {
-                        MonitorInterval = TimeSpan.FromSeconds(1d / options.MonitorRateHz),
-                        ReconnectRetryDelay = reconnectDelay,
-                    });
-                monitored = await watchdog.MonitorActiveLeaseAsync(activeLease, stop.Token)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                IReadOnlyList<Exception> fallbackFailures;
-                try
-                {
-                    fallbackFailures = await activeLease.SafeDisableAsync()
-                        .ConfigureAwait(false);
-                }
-                catch (Exception cleanupException)
-                {
-                    fallbackFailures = [cleanupException];
-                }
-
-                foreach (var failure in fallbackFailures)
-                {
-                    Console.Error.WriteLine($"Fallback SafeDisable failure: {failure.Message}");
-                }
-
-                if (fallbackFailures.Count > 0)
-                {
-                    Console.Error.WriteLine(
-                        $"The watchdog handoff failed ({exception.Message}) and fallback " +
-                        "SafeDisable is incomplete.");
-                    return 4;
-                }
-
-                throw;
-            }
-
-            Console.WriteLine($"state: {monitored.FinalState}");
-            Console.WriteLine($"stop_reason: {monitored.StopReason}");
-            Console.WriteLine($"safe_disable_failures: {monitored.SafeDisableFailures.Count}");
-            Console.WriteLine($"message: {monitored.Diagnostic}");
-            foreach (var failure in monitored.SafeDisableFailures)
-            {
-                Console.Error.WriteLine($"SafeDisable failure: {failure.Message}");
-            }
-
-            if (monitored.SafeDisableFailures.Count > 0)
-            {
-                return 4;
-            }
-
-            return monitored.StopReason == ReliableDailyUseStopReason.Cancellation ? 0 : 3;
+                        var watchdog = new ReliableDailyUseCoordinator(
+                            liveRuntime,
+                            backend,
+                            logSink,
+                            new ReliableDailyUseOptions
+                            {
+                                MonitorInterval = TimeSpan.FromSeconds(
+                                    1d / options.MonitorRateHz),
+                                ReconnectRetryDelay = reconnectDelay,
+                            });
+                        return await watchdog.MonitorActiveLeaseAsync(
+                                activeLease,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    },
+                    result =>
+                    {
+                        Console.WriteLine(
+                            $"wizard_result: {(result.Success ? "success" : result.Cancelled ? "cancelled" : "failed")}");
+                        Console.WriteLine(
+                            $"profile_path: {(result.ReusedProfiles ? "later-run-reuse" : "first-run-capture")}");
+                        Console.WriteLine($"final_state: {result.FinalState}");
+                        Console.WriteLine($"cleanup_failures: {result.CleanupFailures.Count}");
+                        Console.WriteLine($"diagnostic: {result.Diagnostic}");
+                        foreach (var failure in result.CleanupFailures)
+                        {
+                            Console.Error.WriteLine($"Cleanup failure: {failure.Message}");
+                        }
+                    },
+                    monitored =>
+                    {
+                        Console.WriteLine($"state: {monitored.FinalState}");
+                        Console.WriteLine($"stop_reason: {monitored.StopReason}");
+                        Console.WriteLine(
+                            $"safe_disable_failures: {monitored.SafeDisableFailures.Count}");
+                        Console.WriteLine($"message: {monitored.Diagnostic}");
+                        foreach (var failure in monitored.SafeDisableFailures)
+                        {
+                            Console.Error.WriteLine(
+                                $"SafeDisable failure: {failure.Message}");
+                        }
+                    },
+                    message => Console.Error.WriteLine(message),
+                    stop.Token)
+                .ConfigureAwait(false);
         }
         finally
         {
             Console.CancelKeyPress -= cancelHandler;
+        }
+    }
+
+    /// <summary>
+    /// Owns the production wizard's retained two-hand lease from successful
+    /// activation until the reliable-use watchdog has completed SafeDisable.
+    /// Reporting, defensive lease retrieval, and watchdog construction are all
+    /// inside this boundary because any of them can fail after persistent
+    /// overrides have become active.
+    /// </summary>
+    internal static async Task<int> RunProductionWizardActiveLifecycleAsync(
+        TwoHandCalibrationWizard wizard,
+        ProductionCalibrationWizardRuntime productionRuntime,
+        Func<TwoHandProfileApplicationLease, CancellationToken, Task<ReliableDailyUseResult>>
+            monitorActiveLeaseAsync,
+        Action<CalibrationWizardResult> reportWizardResult,
+        Action<ReliableDailyUseResult> reportWatchdogResult,
+        Action<string> reportError,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(wizard);
+        ArgumentNullException.ThrowIfNull(productionRuntime);
+        ArgumentNullException.ThrowIfNull(monitorActiveLeaseAsync);
+        ArgumentNullException.ThrowIfNull(reportWizardResult);
+        ArgumentNullException.ThrowIfNull(reportWatchdogResult);
+        ArgumentNullException.ThrowIfNull(reportError);
+
+        CalibrationWizardResult? wizardResult = null;
+        try
+        {
+            wizardResult = await wizard.RunAsync(cancellationToken).ConfigureAwait(false);
+            if (!wizardResult.Success)
+            {
+                if (productionRuntime.ActiveLease is not null)
+                {
+                    throw new InvalidOperationException(
+                        "The production wizard failed while retaining an active application lease.");
+                }
+
+                var exitCode = WizardResultExitCode(wizardResult);
+                try
+                {
+                    reportWizardResult(wizardResult);
+                }
+                catch (Exception exception)
+                {
+                    TryReportError(
+                        reportError,
+                        $"Production wizard result reporting failed: {exception.Message}");
+                    return exitCode == 4 ? 4 : 2;
+                }
+
+                return exitCode;
+            }
+
+            reportWizardResult(wizardResult);
+            var activeLease = productionRuntime.ActiveLease ??
+                throw new InvalidOperationException(
+                    "The production wizard reached Active without retaining its application lease.");
+            var monitored = await monitorActiveLeaseAsync(activeLease, cancellationToken)
+                    .ConfigureAwait(false) ??
+                throw new InvalidOperationException(
+                    "The production wizard watchdog returned no lifecycle result.");
+            var monitoredExitCode = WatchdogResultExitCode(monitored);
+            try
+            {
+                reportWatchdogResult(monitored);
+            }
+            catch (Exception exception)
+            {
+                TryReportError(
+                    reportError,
+                    $"Production wizard watchdog result reporting failed: {exception.Message}");
+                return monitoredExitCode == 4 ? 4 : 2;
+            }
+
+            return monitoredExitCode;
+        }
+        catch (Exception exception) when (
+            wizardResult?.Success == true || productionRuntime.ActiveLease is not null)
+        {
+            return await CompleteWatchdogHandoffFailureAsync(
+                    productionRuntime,
+                    exception,
+                    reportError)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static int WizardResultExitCode(CalibrationWizardResult result) =>
+        result.CleanupFailures.Count > 0
+            ? 4
+            : result.Cancelled
+                ? 0
+                : 2;
+
+    private static int WatchdogResultExitCode(ReliableDailyUseResult result) =>
+        result.SafeDisableFailures.Count > 0 ||
+        result.StopReason == ReliableDailyUseStopReason.SafeDisableFailed
+            ? 4
+            : result.StopReason == ReliableDailyUseStopReason.Cancellation
+                ? 0
+                : 3;
+
+    private static async Task<int> CompleteWatchdogHandoffFailureAsync(
+        ProductionCalibrationWizardRuntime productionRuntime,
+        Exception operationFailure,
+        Action<string> reportError)
+    {
+        IReadOnlyList<Exception> cleanupFailures;
+        try
+        {
+            cleanupFailures = await productionRuntime.SafeDisableAsync()
+                    .ConfigureAwait(false) ??
+                [new InvalidOperationException("Fallback SafeDisable returned no result.")];
+        }
+        catch (Exception cleanupFailure)
+        {
+            cleanupFailures = [cleanupFailure];
+        }
+
+        foreach (var failure in cleanupFailures)
+        {
+            TryReportError(reportError, $"Fallback SafeDisable failure: {failure.Message}");
+        }
+
+        TryReportError(
+            reportError,
+            cleanupFailures.Count == 0
+                ? $"The production wizard failed before watchdog handoff completed " +
+                  $"({operationFailure.Message}); fallback SafeDisable completed."
+                : $"The production wizard failed before watchdog handoff completed " +
+                  $"({operationFailure.Message}); fallback SafeDisable is incomplete.");
+        return cleanupFailures.Count > 0 ? 4 : 2;
+    }
+
+    private static void TryReportError(Action<string> reportError, string message)
+    {
+        try
+        {
+            reportError(message);
+        }
+        catch
+        {
+            // Output failure must not interrupt or hide the cleanup result.
         }
     }
 

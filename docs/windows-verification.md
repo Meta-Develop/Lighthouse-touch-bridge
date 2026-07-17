@@ -159,11 +159,13 @@ details below. For an offline inspector or replay session, record only the OS,
 
 - [ ] **Enforce the active-Lighthouse-HMD dependency gate.** Start separate
   `wizard` and `daily` runs with Quest/ALVR as the SteamVR display HMD. Confirm
-  both stop in `DependencyCheck` with `DependencyUnavailable`, explain that
-  OpenVR index `0` reports Quest/ALVR/Meta/Oculus evidence, and direct the
-  operator to configure ALVR in tracking-reference-only mode, make the intended
-  Lighthouse HMD active, restart SteamVR, and retry. Repeat with missing or
-  unknown driver/tracking-system metadata and confirm the gate fails closed.
+  `daily` remains in `DependencyCheck` with `DependencyUnavailable`, while
+  `wizard` returns to `Ready` with the same diagnostic. Confirm the diagnostic
+  explains that OpenVR index `0` reports Quest/ALVR/Meta/Oculus evidence and
+  directs the operator to configure ALVR in tracking-reference-only mode, make
+  the intended Lighthouse HMD active, restart SteamVR, and retry. Repeat with
+  missing or unknown driver/tracking-system metadata and confirm the gate fails
+  closed.
   After the intended Lighthouse HMD becomes the connected
   `HeadMountedDisplay` at index `0` with positive Lighthouse evidence, confirm
   both commands proceed. No capture, VMT apply, or hand override may occur in
@@ -658,10 +660,14 @@ transition-matrix tests or a successful cross-publish alone.
   -> ApplyProfile -> Active`. Confirm no override is active before
   `ApplyProfile` and `Active` appears only after the complete apply succeeds.
 
-- [ ] **Start before SteamVR.** Launch LTB with SteamVR stopped. Confirm it waits
-  in `WaitingForSteamVR` with no active mapping. Start SteamVR, allow device
-  enumeration to settle, and confirm the remaining transitions occur once,
-  without manual settings edits or duplicate VMT sources.
+- [ ] **Start before SteamVR.** Launch `daily` with SteamVR stopped. Because the
+  active-HMD gate cannot verify OpenVR index `0` yet, confirm it remains in
+  `DependencyCheck` with no active mapping rather than entering
+  `WaitingForSteamVR`. Launch `wizard` in the same condition and confirm it
+  returns to `Ready` with the actionable dependency diagnostic. Start SteamVR,
+  allow device enumeration to settle, and confirm a fresh run proceeds through
+  the remaining transitions once, without manual settings edits or duplicate
+  VMT sources.
 
 - [ ] **Start with incomplete devices.** Repeat with each required tracker,
   Touch controller, and VMT surface absent. Confirm `WaitingForDevices`, a
