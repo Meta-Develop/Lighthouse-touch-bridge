@@ -107,8 +107,8 @@ native library, both pinned to upstream OpenVR SDK 2.15.6 commit
 `c17e878b7b3b925d1f22ef5382561389c47db8b92019de840705ff5ff28c317a`)
 and the native asset comes from `bin/win64/openvr_api.dll` (SHA-256
 `bab8ac6ef64e68a9ca53315b0014d131088584b2efdfa6db511d67ec03cfcb4a`).
-Precise upstream URLs, Git blob IDs, and hashes are retained in the
-third-party [README](../src/Ltb.OpenVr/ThirdParty/OpenVR/README.md).
+Precise upstream URLs, Git blob IDs, and hashes are retained in the source-tree
+file `src/Ltb.OpenVr/ThirdParty/OpenVR/README.md`.
 
 The binding is compiled from source into the private `Ltb.OpenVr.Interop`
 assembly rather than restored from a community NuGet package. Its Valve types
@@ -250,7 +250,7 @@ final tracker/Touch/device/heartbeat identity and health gate
 enable exact discovered-path override
                  |
                  v
-verify with fake probe / defer live provenance -> monitor all health sources
+verify one-hand device/pose contract -> monitor all health sources
                  |
    cancel, fault, tracker/Touch/VMT loss
                  v
@@ -408,9 +408,8 @@ SteamVR session retains Touch inputs while accepting the VMT pose. That
 provenance and restart behavior remain explicit acceptance items in
 [windows-verification.md](windows-verification.md).
 
-Milestone 2 adds no GUI framework or Milestone 4 reconnect, installer, and
-daily-use expansion beyond the explicitly required safety and settings
-recovery. Those boundaries remain unchanged.
+Milestone 2 adds no GUI framework. Milestone 4 retains the same platform
+boundaries and composes them through the daily-use coordinator described below.
 
 ## Application boundary and open UI decision
 
@@ -485,19 +484,22 @@ the runtime port. `ScriptedCalibrationWizardRuntime` is the only Milestone 3
 runtime composition implemented here: it records deterministic fake capture
 and apply operations without opening SteamVR, OpenVR, VMT, or host settings.
 There is no production SteamVR two-hand wizard adapter yet, so live guided
-capture and two-hand application remain future Windows integration and
-verification work rather than currently runnable checks.
+capture remains future Windows integration and verification work rather than a
+currently runnable wizard check. Milestone 4 separately provides the
+production `daily` composition for transactional two-hand application of an
+already complete saved profile store.
 
-Any future live `ApplyProfilesAsync` implementation must treat the two hands as
-one all-or-cleanup operation: it may report `Active` only after both apply, and
-must remove newly applied state if either hand fails. Persistent rollback,
-watchdog recovery, and crash recovery remain Milestone 4 scope and are not
-implemented by the Milestone 3 scripted runtime.
+The wizard's `ApplyProfilesAsync` port remains transactional: it may report
+`Active` only after both hands apply, and must roll back effects created by the
+attempt if either hand fails. The Milestone 3 scripted runtime remains
+fake-only. The production `daily` command implements the corresponding
+later-run transaction through live OpenVR, VMT, and settings adapters without
+adding live guided calibration capture.
 
 The repository-root scripted command is:
 
 ```bash
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>
+dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 It uses deterministic fake controllers and fake tracker serials, intentionally
@@ -505,6 +507,227 @@ reverses tracker enumeration, selects full 6DoF for the left hand and normal
 rotation-only fallback for the position-unavailable right hand, writes two
 profiles, and reloads them on the next invocation without native runtime calls.
 This is the implemented Milestone 3 CLI; it is not a live hardware command.
+
+## Milestone 4 reliable daily-use boundary
+
+Milestone 4 adds a UI-neutral `ReliableDailyUseCoordinator` in `Ltb.App`. It
+owns sequencing and recovery policy, while health observations, states, and
+structured event contracts remain runtime-neutral. OpenVR, VMT, profile
+storage, and settings operations stay behind narrow interfaces so the complete
+transition matrix can run with deterministic fakes on Linux.
+
+The production composition is:
+
+```text
+daily CLI -> FileCalibrationWizardBackend + JsonLinesLtbLogSink
+          -> ReliableDailyUseCoordinator
+          -> ProductionReliableDailyUseRuntime
+          -> shared OpenVR session + one VMT client + SteamVrSettingsManager
+```
+
+One shared OpenVR session and one VMT response pump serve two distinct VMT
+slots. The CLI requires the complete profile store, left and right slots in
+`0..57`, and an explicit settings path:
+
+```text
+daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+```
+
+The monitor rate defaults to `20` Hz and reconnect delay to `0.25` seconds.
+The live adapter uses an internal `0.5`-second pose-staleness threshold and a
+five-second VMT heartbeat/discovery bound.
+
+The `daily` composition proves ALVR availability with two independent current
+observations before it can become `Ready`:
+
+1. `AlvrLocalDashboardProbe` requires a successful, nonempty response from the
+   loopback endpoint `http://127.0.0.1:8082/api/version`. Version 0.1 fixes this
+   address and port; it has no configurable dashboard-port CLI option. The HTTP
+   request has a 500 ms bound, and the last result is reused for one second so
+   dependency and watchdog loops cannot probe more often than 1 Hz.
+2. Current OpenVR properties must expose exactly one supported controller for
+   each hand. The accepted Quest2Touch emulation tuple is driver `oculus`,
+   tracking system `oculus`, manufacturer `Oculus`, left/right controller role,
+   the corresponding Miramar left/right model, and controller type
+   `oculus_touch` after case, whitespace, and punctuation normalization.
+
+The local version endpoint proves that the ALVR process is currently serving
+its dashboard API; the OpenVR tuple proves that the current controller devices
+match ALVR's supported Quest 2 Touch emulation. Neither proof is taken from a
+stored calibration profile. The runtime derives the current recalibration
+observations `ALVR` and `Quest 2 Touch` only after this live tuple passes, then
+compares them with stored profile values. A stored runtime/model claim cannot
+make an absent or mismatched current device acceptable.
+
+Both observations remain watchdog conditions after activation. Loss of the
+local ALVR proof or a change to the selected controller's current OpenVR
+identity or metadata becomes `TouchInputLost` and triggers SafeDisable; the
+runtime never substitutes a stored tuple for the missing live observation.
+
+Readiness diagnostics preserve the failed boundary. An unavailable ALVR
+endpoint reports `DependencyUnavailable`. During device readiness, a missing
+or unsupported Touch tuple or physical tracker reports `DevicesUnavailable`,
+while a missing or stale VMT Alive heartbeat reports `VmtUnavailable`. A VMT
+recovery dependency loop can first emit `DependencyUnavailable` with its
+VMT-specific diagnostic, but it is never presented as a controller or device-
+tuple failure.
+
+The normal later-run flow is:
+
+```text
+                    dependency available
+Stopped -> DependencyCheck -> WaitingForSteamVR
+                                  |
+                                  v
+                         WaitingForDevices
+                                  |
+                                  v
+Ready -> ApplyProfile --success--> Active
+  ^            |
+  |            +--failure/partial apply--> rollback --> Ready or Stopped
+  |
+  +-------- healthy stable-serial reacquisition --------+
+```
+
+`Ready` records that the required dependencies and stable device identities
+are healthy; it does not imply an active override. `ApplyProfile` is the only
+entry to `Active`. Transient OpenVR indexes are observations, not identity
+keys, so reconnect always re-enumerates and matches the stored stable serial,
+semantic hand, device class, and role.
+
+### Watchdog and reconnect transitions
+
+The active watchdog treats pose health, Touch input health, VMT health, and
+SteamVR availability as separate observations. The coordinator does not hold a
+last-known pose through a failure:
+
+```text
+Active + tracker lost  -> SafeDisable -> WaitingForDevices
+Active + Touch lost    -> SafeDisable -> WaitingForDevices
+Active + VMT lost      -> SafeDisable -> dependency/device wait
+Active + SteamVR stop  -> SafeDisable -> Stopped
+clean shutdown         -> SafeDisable -> Stopped
+```
+
+SafeDisable is complete only after all applicable virtual devices are disabled
+and the exact LTB-owned hand mappings are released. Cleanup is best-effort
+across independent surfaces: one failure does not suppress the other attempt,
+each operation has an independent two-second bound, and every failure remains
+observable. Reacquisition must then pass the normal `Ready -> ApplyProfile ->
+Active` path; it cannot reactivate a cached mapping or stale source.
+
+OpenVR quit events are health inputs rather than unhandled process events. A
+runtime quit is acknowledged through OpenVR and classified as stopped; a
+driver-requested quit is also classified as stopped. A process-quit event for
+another client is ignored. A terminal runtime event therefore drives the
+normal `SteamVrStopped` diagnostic and SafeDisable path.
+
+SteamVR startup retry is allowed only before this `daily` invocation has
+acquired its OpenVR session. If SteamVR stops after acquisition, including
+while recovering from VMT loss, the stop is terminal for that invocation. The
+coordinator performs bounded cleanup, emits `SteamVrStopped`, enters `Stopped`,
+and does not reopen OpenVR or reapply profiles. With successful cleanup the CLI
+returns exit code `3`; cleanup or rollback failure retains exit code `4`.
+
+This policy prevents a device-loss interval from leaving a permanently frozen
+virtual hand. The guarantee applies to managed execution. Forced process
+termination, console destruction, OS crash, or power loss can prevent the
+cleanup code from running. A later start therefore attempts cleanup before any
+new apply, and the operator retains the documented manual recovery path.
+
+### Transaction and rollback ownership
+
+Profile application is one logical transaction across both hands. The apply
+adapter returns enough rollback information to reverse only effects introduced
+by the current attempt. If the second hand fails after the first succeeds, the
+coordinator rolls back the first, reports the apply failure and any rollback
+failure separately, and never emits `Active` for the incomplete pair.
+
+This application transaction complements rather than replaces the existing
+settings-file transaction. `SteamVrSettingsManager` continues to own sibling
+locking, unique byte-exact backups, same-directory staging, atomic replacement,
+post-write validation, ownership-aware restoration, and reviewed recovery.
+Profile persistence likewise remains owned by `Ltb.Configuration`. The
+coordinator composes these results but does not duplicate their JSON, locking,
+or file-recovery rules.
+
+Rollback is not allowed to overwrite an external winner. If another writer
+changes settings after LTB's write, or a rollback operation itself fails, the
+coordinator enters a non-active state with a diagnostic and requires manual
+inspection. A process crash can still interrupt an in-memory multi-hand
+transaction, which is why startup cleanup and the manual recovery procedure
+remain part of the architecture.
+
+### Structured event model
+
+State changes, dependency observations, health failures, SafeDisable attempts,
+reconnect decisions, apply results, and rollback results are represented as
+structured log events. Each event has a stable code, severity, state, message,
+and UTC timestamp, with optional hand or dependency context. Tests assert codes
+and transitions instead of parsing console prose. Platform adapters report
+facts; `ReliableDailyUseCoordinator` selects the state transition and event.
+
+The stable code vocabulary is grouped by purpose:
+
+- lifecycle and availability: `StateTransition`, `DependencyUnavailable`,
+  `DevicesUnavailable`, `ProfileUnavailable`, `ReconnectWaiting`,
+  `Reconnected`, and `ShutdownRequested`;
+- calibration distinction: `NoPositionAvailable`,
+  `PoorTranslationObservability`, and `BadRotationCalibration`;
+- active health: `TrackerLost`, `TouchInputLost`, `VmtUnavailable`, and
+  `SteamVrStopped`;
+- unexpected adapter failure: `RuntimeFailure`; and
+- application and cleanup: `ProfileApplied`, `ProfileApplyFailed`,
+  `SafeDisableStarted`, `SafeDisableCompleted`, `SafeDisableFailed`,
+  `RollbackCompleted`, and `RollbackFailed`.
+
+`JsonLinesLtbLogSink` is the local append-only JSON Lines destination exposed
+by both `daily --log <events.jsonl>` and
+`wizard-demo --log <events.jsonl>`. It creates a missing parent directory,
+appends one JSON object per event, and flushes each event. Omitting the option
+disables the JSONL sink and creates no default event file. Log-write failures
+are swallowed at the coordinator boundary so they cannot alter calibration or
+prevent SafeDisable or rollback.
+
+Wizard logging uses the same event envelope and records state transitions plus
+the distinct calibration results `NoPositionAvailable`,
+`PoorTranslationObservability`, and `BadRotationCalibration`. These codes keep
+normal rotation-only selection separate from rejected rotation calibration.
+
+If an unexpected adapter exception escapes during active daily use, the
+coordinator first emits `RuntimeFailure` at error level with `exceptionType`
+and `exceptionMessage` properties. It intentionally does not serialize a stack
+trace. Only after that event does it run bounded SafeDisable across every active
+surface and transition to `Stopped`; a cleanup failure remains independently
+observable.
+
+The event model has no telemetry transport. Logs remain local and may contain
+device identities, configuration paths, and runtime observations. Export and
+redaction are explicit operator actions, and raw logs, recordings, settings,
+and backups are not repository or package inputs.
+
+### Deployment decision
+
+Version 0.1 is distributed as a self-contained, untrimmed, non-single-file
+`win-x64` portable ZIP. Keeping separate files preserves app-local
+`openvr_api.dll`, managed interop assemblies, and third-party licenses without
+native extraction or trimming assumptions. The publish profile writes ignored
+output under `artifacts/`; the packaging script stamps the version, verifies
+the pinned OpenVR DLL and license, adds a release manifest, and emits a ZIP plus
+SHA-256.
+
+`RuntimeFrameworkVersion` is pinned to `8.0.28`, and the packager records both
+that expected version and the actual runtime-pack version found in
+`Ltb.App.deps.json`. It also records the .NET SDK, Python, and build/runtime
+zlib versions used to make the archive. A .NET servicing update is intentional
+release work: review the update, change the pin, rerun build/test/publish, and
+repeat Windows runtime and hardware acceptance instead of allowing an
+unreviewed runtime pack to float.
+
+This is packaging, not an installer. It does not install or update SteamVR,
+ALVR, VMT, drivers, firmware, or .NET, and it does not create shortcuts or a
+background service. The bundle includes the .NET runtime. Signing, SmartScreen,
+native launch, and live integration remain Windows release checks.
 
 The complete product requirements remain in the [project
 specification](specification.md); the implemented calibration details are in

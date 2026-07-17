@@ -1,11 +1,13 @@
 # Windows Runtime Verification
 
-Milestone 1 has deterministic Linux tests for the portable recording, replay,
-device-enumeration adapter, and lag-estimation contracts. Those tests do not
-exercise a real SteamVR runtime, ALVR transport, OpenVR timing, USB reconnect
-behavior, or live device-index assignment. This file is the running checklist
-for deferred Windows and live-runtime acceptance, plus offline cross-platform
-parity checks. Each item states the environment and dependencies it needs.
+The automated suite has deterministic Linux tests for calibration, recording,
+replay, device enumeration, one-hand bridge safety, the fakeable
+reliable-daily-use coordinator, rollback, and structured-event contracts. Those
+tests do not exercise a real SteamVR runtime, ALVR transport, OpenVR timing,
+Windows ACLs, USB reconnect behavior, code signing, or live device-index
+assignment. This file is the consolidated checklist for deferred Windows and
+hardware acceptance, including specification section 23.4. Each item states
+the environment and dependencies it needs.
 
 Keep captured evidence free of credentials and owner-local absolute paths. Do
 not commit real device serials, SteamVR configuration backups, or hardware
@@ -26,8 +28,9 @@ ignored local directory.
 
 The automated suite covers deterministic fake-device enumeration and pose
 sources, recording schema round trips and version rejection, synthetic lag
-recovery, offline replay through the Milestone 0 solver, native deployment
-hashes, and the existing calibration regressions. The inspector remains a
+recovery, offline replay, native deployment hashes, startup and failure
+transitions, stable-serial reacquisition, SafeDisable, transactional apply
+rollback, structured events, and the existing calibration regressions. The inspector remains a
 separate synthetic CLI acceptance check; its textual summary does not currently
 have an automated regression assertion. Passing the automated checks is the
 Linux acceptance gate for portable behavior. Each unchecked item below needs
@@ -40,12 +43,27 @@ corresponding Windows/SteamVR/ALVR/hardware setup.
 
 Valve's official `bin/win64/openvr_api.dll` is vendored from OpenVR SDK 2.15.6
 commit `0924064316de3effbcd1acf1e309182a2deb1c05` under
-`src/Ltb.OpenVr/runtimes/win-x64/native/`. Produce the supported
-framework-dependent Windows x64 layout from the repository root with:
+`src/Ltb.OpenVr/runtimes/win-x64/native/`. Produce the supported self-contained
+Windows x64 layout from the repository root with:
 
-```powershell
-dotnet publish src/Ltb.App/Ltb.App.csproj -c Release -r win-x64 --self-contained false
+```bash
+dotnet publish src/Ltb.App/Ltb.App.csproj -p:PublishProfile=win-x64
 ```
+
+The publish profile is Release, `net8.0`, `win-x64`, self-contained, pins
+`RuntimeFrameworkVersion` to `8.0.28`, and is non-single-file, untrimmed, and
+not ReadyToRun. It writes generated output to
+`artifacts/publish/win-x64/`. Produce the portable release ZIP, version
+manifest, and checksum with:
+
+```bash
+bash build/package-win-x64.sh 0.1.0
+```
+
+The packaging script requires .NET 8, Git, Bash, and Python 3 on the build
+machine. End users need none of those tools or a separate .NET installation;
+they run `Ltb.App.exe` from the extracted self-contained package. The script
+refuses to overwrite an existing same-version archive.
 
 The `Ltb.OpenVr` project copies `openvr_api.dll` into the application publish
 root beside `Ltb.App.exe` and `Ltb.OpenVr.Interop.dll`. The generated binding
@@ -56,6 +74,12 @@ manual SDK copy or `PATH` change. The Valve BSD notice is copied to
 This deployment supplies the OpenVR client library; SteamVR must still be
 installed and running for live initialization.
 
+The portable ZIP must contain `release-manifest.txt`, `LICENSE.txt`, the full
+packaged documentation set including `specification.md`, and the publish layout. Its adjacent
+`.sha256` file covers the complete ZIP. The package is unsigned; signing,
+SmartScreen, native launch, and hardware behavior are Windows-only release
+checks rather than properties established by Linux publish.
+
 For a live-runtime or hardware verification session, record the applicable
 details below. For an offline inspector or replay session, record only the OS,
 .NET version, LTB commit, exact command, and redacted input-fixture identity.
@@ -64,13 +88,13 @@ details below. For an offline inspector or replay session, record only the OS,
 - SteamVR and ALVR versions, plus the OpenVR binding or backend version;
 - active HMD and controller emulation mode;
 - tracker models and firmware versions, with serials redacted;
-- LTB commit and exact command line; and
+- LTB version, commit, package SHA-256, and exact command line; and
 - whether any `TrackingOverrides` entry was active before setup.
 
 ## Native runtime lifecycle
 
 - [ ] **Load and initialize the pinned binding.** Publish with the supported
-  `win-x64` command above and confirm that the output-root `openvr_api.dll`
+  `win-x64` profile above and confirm that the output-root `openvr_api.dll`
   matches the documented hash before launch. On the supported 64-bit Windows
   process, confirm that this app-local library resolves, the application
   initializes without becoming the active HMD, and shutdown releases the
@@ -103,7 +127,28 @@ details below. For an offline inspector or replay session, record only the OS,
 
 - [ ] **Distinguish left and right input controllers.** Confirm that controller
   role and identity remain correct through ALVR reconnect and SteamVR restart.
-  Record the runtime properties used for the decision and any ambiguous state.
+  Record the current OpenVR properties used for the decision. The supported
+  tuple is driver and tracking system `oculus`, manufacturer `Oculus`, model
+  `Miramar (Left Controller)` for the left role and
+  `Miramar (Right Controller)` for the right role, and controller type
+  `oculus_touch`. Confirm that a wrong-hand Miramar model, missing property, or
+  different controller type is rejected rather than treated as ambiguous.
+
+- [ ] **Prove current ALVR availability independently of OpenVR emulation.**
+  With the ALVR dashboard web server on its default port, confirm
+  `http://127.0.0.1:8082/api/version` returns a successful, nonempty local
+  response. Stop ALVR, return an empty/error response if safely reproducible,
+  and change the dashboard port in separate startup runs; confirm `daily`
+  remains fail-closed with `DependencyUnavailable`. Restore port `8082`
+  afterward. Confirm the production probe issues no more than one request per
+  second. Version 0.1 has no configurable ALVR-port CLI option.
+
+- [ ] **Use current observations rather than stored runtime/model claims.** With
+  the endpoint healthy, remove or alter one current Miramar/`oculus_touch`
+  property while leaving stored `controller_runtime` and `controller_model`
+  unchanged. Confirm readiness fails with `DevicesUnavailable`. Restore the
+  live tuple and confirm the current recalibration observations are `ALVR` and
+  `Quest 2 Touch`; stored values are comparison inputs, not availability proof.
 
 ## Original Touch poses and override safety
 
@@ -236,7 +281,7 @@ profile persistence, and serial-and-hand reload. The scripted command uses
 only fake pose streams and fake serials:
 
 ```bash
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>
+dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 This evidence is not a live SteamVR result. In particular, scripted dependency
@@ -246,9 +291,20 @@ any item below complete from Linux tests alone. Milestone 3 does not yet include
 a production `ICalibrationWizardRuntime` implementation for SteamVR capture and
 two-hand VMT/override application. The items below are acceptance requirements
 for that future Windows composition, not checks currently runnable through
-`wizard-demo`.
+`wizard-demo`. This is a guided-wizard limitation; the implemented production
+`daily` ALVR and saved-profile gates are verified separately in the Milestone 4
+section below.
 
 ### Guided capture and association
+
+- [ ] **Verify scripted wizard JSONL behavior (fake-only).** Run
+  `wizard-demo` twice with the same `--log <events.jsonl>` path and confirm the
+  second event sequence is appended rather than replacing the first. Run once
+  without `--log` and confirm no default event file is created. With fake
+  wizard inputs, exercise missing controller position, poor translation
+  observability, and bad rotation; confirm the log uses respectively
+  `NoPositionAvailable`, `PoorTranslationObservability`, and
+  `BadRotationCalibration`. This check does not require SteamVR or hardware.
 
 - [ ] **Run the full two-hand guided gesture.** With both original Touch poses
   visible and overrides released, complete the left-only then right-only
@@ -309,10 +365,10 @@ for that future Windows composition, not checks currently runnable through
   schema, malformed/truncated store, denied save, one rejected profile, and a
   two-hand apply failure. Confirm bounded diagnostics, no partial store is
   accepted, the prior file remains recoverable, and neither hand is left with
-  a newly active stale override. The future live `ApplyProfilesAsync` must be
-  all-or-cleanup when either hand fails. Persistent rollback, process-crash
-  recovery, and watchdog recovery remain Milestone 4 rather than requirements
-  implemented by the scripted Milestone 3 runtime.
+  a newly active stale override. The scripted Milestone 3 runtime is still not
+  a live two-hand SteamVR wizard composition. Verify stored-profile two-hand
+  application separately through the production `daily` command below; live
+  guided capture remains deferred.
 
 ## Milestone 2 one-hand live bridge
 
@@ -507,3 +563,223 @@ check an item merely because the Linux fake for that transition passes.
   no stale prior mapping or duplicate source owns the hand. Record whether the
   normalized source path remains stable and investigate any change before
   accepting profile reuse.
+
+## Milestone 4 reliable daily use
+
+Milestone 4 includes a production `daily` composition, while its complete
+transition matrix is exercised with deterministic fakes on Linux. Run the
+production path from an extracted package with this exact command form:
+
+```text
+Ltb.App.exe daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+```
+
+Use two distinct VMT slots from `0` through `57`. `--monitor-rate` defaults to
+`20` Hz and `--reconnect-delay` to `0.25` seconds. The runtime's internal pose-
+staleness threshold is `0.5` seconds; its VMT heartbeat/discovery bound is five
+seconds, and every independent cleanup operation has a two-second bound. For
+evidence runs, supply `--log <events.jsonl>`; the sink appends JSON Lines, while
+omitting `--log` disables the event file. The checks below prove the Windows
+deployment, runtime, and hardware behavior. Do not mark them complete from
+transition-matrix tests or a successful cross-publish alone.
+
+### Portable package acceptance
+
+- [ ] **Inspect the self-contained package.** Build with
+  `bash build/package-win-x64.sh <version>`. Verify the ZIP checksum, extract it
+  on Windows x64, and compare `release-manifest.txt` with the requested version,
+  source commit, `source_tree_dirty=false`, `net8.0`, `win-x64`,
+  `runtime_framework_version=8.0.28`, the actual runtime pack, .NET SDK,
+  Python and zlib versions, `self_contained=true`,
+  `publish_single_file=false`, and `publish_trimmed=false`. Confirm
+  `openvr_api.dll` matches the pinned hash and
+  `licenses/Valve.OpenVR.LICENSE.txt` is byte-identical to the vendored source
+  license. Treat a runtime-pin update as a new release validation event: rerun
+  build/test/publish and every applicable Windows runtime and hardware check.
+
+- [ ] **Launch without a machine-wide .NET runtime or SDK.** On a representative
+  clean Windows x64 account, run `Ltb.App.exe --help` and `Ltb.App.exe devices`
+  from the complete extracted directory. Confirm no .NET installation prompt,
+  native-library search-path workaround, installer action, or administrator
+  elevation is required. Repeat from a directory containing spaces.
+
+- [ ] **Verify package boundaries.** Confirm the ZIP contains no build cache,
+  symbols, source tree, settings, backups, logs, recordings, device identities,
+  credentials, or owner-local paths. Record the unsigned status and resulting
+  SmartScreen behavior without describing the package as signed or installed.
+
+### Startup sequencing
+
+- [ ] **Observe the healthy later-run sequence.** With matching saved profiles
+  and all dependencies available, run the exact `daily` command above with two
+  distinct slots and `--log <events.jsonl>`. Record structured events for
+  `Stopped -> DependencyCheck -> WaitingForSteamVR -> WaitingForDevices -> Ready
+  -> ApplyProfile -> Active`. Confirm no override is active before
+  `ApplyProfile` and `Active` appears only after the complete apply succeeds.
+
+- [ ] **Start before SteamVR.** Launch LTB with SteamVR stopped. Confirm it waits
+  in `WaitingForSteamVR` with no active mapping. Start SteamVR, allow device
+  enumeration to settle, and confirm the remaining transitions occur once,
+  without manual settings edits or duplicate VMT sources.
+
+- [ ] **Start with incomplete devices.** Repeat with each required tracker,
+  Touch controller, and VMT surface absent. Confirm `WaitingForDevices`, a
+  distinct actionable event, and no partial apply. Confirm an unavailable ALVR
+  version endpoint reports `DependencyUnavailable`, missing or unsupported
+  Touch/tracker observations report `DevicesUnavailable`, and a missing or stale
+  VMT heartbeat reports `VmtUnavailable`. Restore the exact stable identities
+  and confirm the normal apply gates rather than a transient-index shortcut.
+
+- [ ] **Distinguish calibration outcomes.** Produce controller-position
+  absence, poor translation observability, bad rotation, and active tracker
+  loss in separate controlled runs. Confirm different structured codes and
+  results: the first two are successful rotation-only fallbacks, bad rotation
+  returns to `Ready`, and tracker loss enters `SafeDisable`.
+
+### Reconnect and watchdog acceptance
+
+- [ ] **Reacquire a lost tracker by stable serial.** While active, power off or
+  safely occlude one tracker. Confirm `SafeDisable` completes before
+  `WaitingForDevices`, the virtual hand is not left frozen, and reconnect with
+  a changed transient index succeeds only for the same stable serial. A
+  same-class substitute must not be accepted. Confirm the full
+  `Ready -> ApplyProfile -> Active` path on recovery.
+
+- [ ] **Reacquire Touch input without pose-only continuation.** Disconnect one
+  Touch controller while tracker and VMT remain healthy. Confirm SafeDisable
+  disables both daily VMT profiles and releases both LTB-owned mappings rather
+  than leaving either tracker pose active without the intended inputs.
+  Reconnect the same controller/role and verify input provenance again after
+  the complete two-hand reapply.
+
+- [ ] **Recover from VMT loss.** Stop the VMT heartbeat or driver, remove the
+  active VMT device, and change its identity in separate runs. Confirm each
+  case enters `SafeDisable`, attempts both cleanup surfaces, waits for the
+  dependency/device, and reapplies only after the expected source is healthy.
+
+- [ ] **Stop terminally if SteamVR ends during VMT recovery.** After VMT loss
+  completes SafeDisable and enters dependency/runtime recovery, stop SteamVR
+  before VMT becomes ready. Confirm `SteamVrStopped -> Stopped`, no OpenVR
+  session reopen, no second `ApplyProfile` or `Active`, and process exit code
+  `3` when cleanup and rollback have no failures. A cleanup or rollback failure
+  must remain exit code `4` rather than being hidden by the runtime stop.
+
+- [ ] **Handle SteamVR stop and restart.** Stop SteamVR during `Active`.
+  Confirm `SafeDisable -> Stopped`, no claim that persistent settings vanished
+  with the runtime, and no frozen virtual hand after the runtime returns. Start
+  a new SteamVR session, rerun `daily`, and confirm fresh enumeration and
+  stable-serial profile reuse rather than old transient-index reuse. The first
+  invocation must not resume after SteamVR returns.
+
+- [ ] **Exercise OpenVR quit-event handling.** Trigger a runtime quit event and
+  confirm LTB acknowledges it through OpenVR, records `SteamVrStopped`, enters
+  `SafeDisable`, and stops. Trigger a driver-requested quit and confirm the same
+  stopped classification. If a process-quit event for another OpenVR client can
+  be induced safely, confirm LTB ignores it rather than disabling a healthy
+  session.
+
+- [ ] **Measure watchdog timing.** For every available tracker, Touch, VMT pose,
+  VMT heartbeat, ALVR local-version proof, current OpenVR controller tuple, and
+  SteamVR failure, record observation time, event time, SafeDisable
+  start/completion, effective monitor rate, and configured freshness bound.
+  Confirm the ALVR HTTP probe remains capped at 1 Hz, cleanup begins within the
+  implemented bound, and no transition leaves an active override with a stale
+  source.
+
+- [ ] **Bound cleanup without skipping work.** Stall VMT deactivation and
+  settings release separately. Confirm each operation is bounded to two
+  seconds, a timeout is reported as a cleanup failure, and the other cleanup
+  surface is still attempted. Confirm exit code `4` and manually inspect both
+  slots and both LTB-owned mappings before reuse.
+
+### Apply rollback, shutdown, and logging
+
+- [ ] **Verify unexpected runtime-failure ordering with fakes.** Inject an
+  unexpected adapter exception during the active monitor loop. Confirm an error
+  `RuntimeFailure` event records only `exceptionType` and `exceptionMessage`,
+  with no stack trace, before `SafeDisableStarted` and before the final
+  `Stopped` transition. Confirm every active VMT deactivation and exact mapping
+  release is still attempted. The coordinator result is `RuntimeFailure` when
+  cleanup succeeds and `SafeDisableFailed` when cleanup fails. This ordering
+  check is portable and does not require Windows hardware.
+
+- [ ] **Force each two-hand apply failure position.** Reject the first hand,
+  reject the second after the first succeeds, and fail rollback after a partial
+  apply. Confirm `Active` is never emitted for an incomplete pair, effects from
+  the attempt are rolled back when possible, rollback failures are distinct,
+  exit code `4` reports any rollback failure, and both hands are inspected
+  before reuse. Run this through the production `daily` adapter; the fake
+  coordinator result alone is insufficient.
+
+- [ ] **Verify settings and profile rollback together.** Exercise malformed
+  settings, denied ACL, lock contention, external-writer race, post-write
+  validation failure, malformed profile store, denied profile save, and
+  application failure. Confirm no partial JSON, unrelated settings survive,
+  an external winner is never overwritten by automatic rollback, previous
+  profiles remain recoverable, and a reviewed recovery creates its own undo
+  backup. Confirm rollback restores only effects from the current two-hand
+  application attempt and never accepts a partial pair as `Active`.
+
+- [ ] **Verify clean shutdown.** From healthy `Active`, request normal shutdown
+  and confirm `SafeDisable -> Stopped`, VMT deactivation, exact mapping release,
+  zero cleanup failures, and restoration of the original Touch pose. Repeat
+  during dependency/device waiting and during apply; no path may report
+  `Stopped` while silently leaving a newly active override.
+
+- [ ] **Verify unmanaged-termination recovery.** In a non-worn controlled
+  setup, terminate only LTB so managed cleanup cannot run. Confirm the process
+  makes no SafeDisable claim. On the next start, verify cleanup occurs before a
+  new apply and activation is blocked if cleanup cannot be confirmed. Record
+  the documented manual recovery boundary for console destruction, OS crash,
+  and power loss without inducing destructive failures.
+
+- [ ] **Validate structured events and privacy.** For every state and failure
+  transition, confirm stable event code, severity, state, message, UTC
+  timestamp, and appropriate hand/dependency context. Verify repeated events
+  are bounded and ordering is sufficient to reconstruct apply, rollback,
+  SafeDisable, and reconnect. Run twice with the same `--log` path and confirm
+  the second JSONL sequence is appended rather than truncating the first; then
+  omit `--log` and confirm no default event file is created. Induce a log-write
+  failure and confirm cleanup and rollback still run. Export a redacted
+  diagnostic set and confirm it contains no telemetry upload, credentials, raw
+  settings/backups, recordings, real serials, or owner-local paths.
+
+### Consolidated specification 23.4 hardware acceptance
+
+- [ ] **Static alignment at varied orientations.** Compare the physical Touch
+  reference and virtual output at several static yaw, pitch, and roll poses for
+  both hands. Record position and rotation error without exposing serials.
+
+- [ ] **Rapid pitch, yaw, and roll.** Exercise fast but safe multi-axis motion.
+  Confirm stable output, live Touch inputs, no discontinuity from quaternion
+  sign handling, and no false reconnect or stale-source interval.
+
+- [ ] **In-place wrist rotation with an offset tracker.** Use a measured,
+  nonzero mount lever arm and rotate around the grip. Confirm full 6DoF applies
+  `T_L_tracker * T_T_C`; repeat with rotation-only and confirm zero translation
+  preserves the tracker origin as documented.
+
+- [ ] **Aiming and tool alignment in multiple applications.** Test at least two
+  representative SteamVR applications with varied poses and motion. Record
+  application versions and redacted observations; one runtime home view is not
+  sufficient acceptance.
+
+- [ ] **Controller input coverage.** Exercise buttons, trigger, grip, stick
+  axes, and capacitive inputs where exposed while VMT supplies pose. Confirm
+  every input still originates from the intended Touch controller.
+
+- [ ] **Repeated startup without recalibration.** Complete multiple managed
+  start/active/shutdown cycles in one SteamVR session. Confirm saved profiles
+  reuse by stable serial, no routine manual settings edit, no duplicate source,
+  and no accumulating stale mapping.
+
+- [ ] **Profile reuse after reboot.** Reboot Windows, start the complete runtime
+  stack, and reuse both profiles after device-index churn. Confirm the mount,
+  hand, and controller observations still satisfy recalibration policy and the
+  intended stable serials are selected.
+
+- [ ] **Tracker battery loss.** During active use, safely remove tracker power
+  or allow a controlled battery-loss condition. Confirm bounded watchdog
+  detection, SafeDisable, no permanently frozen virtual hand, stable-serial
+  reacquisition after power returns, and successful reapply only after all
+  health gates pass.

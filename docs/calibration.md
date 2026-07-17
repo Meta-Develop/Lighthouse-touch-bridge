@@ -219,12 +219,18 @@ to capture and replacement, while structurally malformed profile JSON stops
 safely. Profile schema validation, deterministic JSON, and atomic save are
 owned by `Ltb.Configuration`.
 
+For production `daily` reuse, the runtime/model observation comes from the
+current fail-closed ALVR gate, not from the stored profile: the local ALVR
+version endpoint must respond and the current OpenVR controllers must pass the
+Quest 2 Touch Miramar/`oculus_touch` tuple. Only then does the runtime report
+`ALVR` and `Quest 2 Touch` for comparison with the stored values.
+
 ## Scripted wizard command
 
 Run the Linux-safe deterministic two-hand flow from the repository root:
 
 ```bash
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>
+dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 The fake session uses `CTRL-TEST-L`, `CTRL-TEST-R`, `LHR-TEST0001`, and
@@ -236,14 +242,63 @@ hand reload and the no-capture apply path. Each hand emits deterministic
 progressive coverage snapshots from growing sample prefixes, all evaluated by
 the portable analyzer.
 
+`--log` uses the same append-only JSON Lines sink as `daily`. Reusing a path
+appends a new event sequence; omitting the option creates no event file. The
+wizard records its state transitions and preserves separate codes for missing
+controller position, poor translation observability, and bad rotation:
+`NoPositionAvailable`, `PoorTranslationObservability`, and
+`BadRotationCalibration`.
+
+## Calibration diagnostics and runtime safety
+
+Version 0.1 preserves four distinct observations because they require
+different user actions and state transitions:
+
+| Observation | Calibration meaning | State consequence |
+| --- | --- | --- |
+| Controller position unavailable | Rotation remains solvable, but translation has no input data | Successful Auto rotation-only profile with zero translation |
+| Poor translation observability | Position exists, but the motion does not constrain a reliable lever arm | Successful Auto rotation-only profile with zero translation |
+| Bad rotation calibration | The fixed mount rotation is unsupported or fails validation | Calibration failure; return to `Ready` with a retry diagnostic |
+| Tracker lost | An active runtime pose source is unsafe or absent | `SafeDisable`, then wait for stable-serial reacquisition |
+
+The first two results are normal model-selection outcomes. They retain the
+accepted rotation and record different machine-readable fallback reasons. The
+third result must not be converted into rotation-only success because every
+runtime composition depends on a valid mount rotation. The fourth is not a
+solver result at all: it is reported by runtime health monitoring and must not
+be described as weak calibration data.
+
+This distinction also applies to structured events. Calibration events record
+capture, observability, validation, and selected-mode results. Runtime events
+record source loss, SafeDisable, reacquisition, reapplication, and cleanup.
+Tests and support tools should compare stable event codes and result fields
+rather than infer the category from free-form prose.
+
+## Recalibration, reuse, and rollback
+
+A later run can reuse a profile only after exact stable-serial and semantic-hand
+matching and the recalibration checks described above. Reconnect does not alter
+the stored transform or bind it to a new transient OpenVR index. After the
+required device returns, the daily-use coordinator passes through
+`Ready -> ApplyProfile -> Active` again.
+
+Failed recalibration does not make a partial capture the new active profile.
+Both newly calibrated hands must validate before the profile store is replaced,
+and both runtime applications must succeed before the pair is reported active.
+If one application fails, the coordinator rolls back effects created by that
+attempt. Rollback or cleanup failure is a runtime diagnostic requiring manual
+inspection; it is not a reason to accept a lower-quality calibration.
+
 ## Current limitations
 
 The portable pipeline does not perform optional joint nonlinear refinement.
-The implemented `wizard-demo` command's deterministic fake path proves orchestration,
-association, selection, reporting, persistence, and reload on Linux. Real
-OpenVR acquisition, live coverage timing, ALVR visibility behavior, and two-
-hand VMT/SteamVR application require a production runtime adapter that is not
-implemented in Milestone 3. The Windows checklist documents future acceptance
-work, not live checks currently runnable through this CLI. A future live apply
-must be all-or-cleanup across both hands; persistent rollback and watchdog
-recovery remain Milestone 4. No GUI framework has been selected.
+The implemented `wizard-demo` command's deterministic fake path proves
+orchestration, association, selection, reporting, persistence, and reload on
+Linux. Real OpenVR capture and live coverage timing during a guided calibration
+still require a production wizard runtime adapter; therefore `wizard-demo` is
+not a live SteamVR command. The production `daily` command can
+load an already complete two-hand store and apply it transactionally through
+live OpenVR, VMT, and SteamVR-settings adapters, including watchdog,
+SafeDisable, reconnect, and rollback policy. Automated transition tests use
+fakes, so the Windows checklist remains required hardware acceptance for that
+live later-run composition. No GUI framework has been selected.
