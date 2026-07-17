@@ -1,13 +1,15 @@
 # Windows Runtime Verification
 
 The automated suite has deterministic Linux tests for calibration, recording,
-replay, device enumeration, one-hand bridge safety, the fakeable
-reliable-daily-use coordinator, rollback, and structured-event contracts. Those
-tests do not exercise a real SteamVR runtime, ALVR transport, OpenVR timing,
-Windows ACLs, USB reconnect behavior, code signing, or live device-index
-assignment. This file is the consolidated checklist for deferred Windows and
-hardware acceptance, including specification section 23.4. Each item states
-the environment and dependencies it needs.
+replay, capability-based device enumeration and matching, one-hand bridge
+safety, the fakeable reliable-daily-use coordinator, rollback, and structured-
+event contracts. Milestone 5 fake descriptors cover multiple Meta Touch,
+physical Lighthouse pose-source, and HMD families. Those tests do not exercise
+a real SteamVR runtime, ALVR transport, OpenVR timing, Windows ACLs, USB
+reconnect behavior, code signing, or live device-index assignment. This file
+is the consolidated checklist for deferred Windows and hardware acceptance,
+including specification section 23.4. Each item states the environment and
+dependencies it needs.
 
 Keep captured evidence free of credentials and owner-local absolute paths. Do
 not commit real device serials, SteamVR configuration backups, or hardware
@@ -27,17 +29,24 @@ ignored local directory.
 ## Automated Linux scope
 
 The automated suite covers deterministic fake-device enumeration and pose
-sources, recording schema round trips and version rejection, synthetic lag
-recovery, offline replay, native deployment hashes, startup and failure
-transitions, stable-serial reacquisition, SafeDisable, transactional apply
-rollback, structured events, and the existing calibration regressions. The inspector remains a
-separate synthetic CLI acceptance check; its textual summary does not currently
-have an automated regression assertion. Passing the automated checks is the
-Linux acceptance gate for portable behavior. Each unchecked item below needs
-only its stated environment. Offline inspector and replay checks can run
-without SteamVR, ALVR, or connected hardware; checks that explicitly exercise
-live acquisition, runtime integration, or devices remain deferred to the
-corresponding Windows/SteamVR/ALVR/hardware setup.
+sources; centralized Meta Touch family/input-profile classification; Touch and
+physical-pose-source association, synthetic calibration, and schema-1
+persistence/reuse across the named families; physical-source capability
+matching with VMT virtual-source exclusion; and HMD descriptor
+class/capability inference without a model allowlist. HMD tests stop at the
+descriptor boundary and do not participate in calibration or profile reuse.
+The suite also covers recording schema round trips and version rejection;
+synthetic lag recovery; offline replay; native deployment hashes; startup and
+failure transitions; stable-serial reacquisition; SafeDisable; transactional
+apply rollback; structured events; and the existing calibration regressions.
+The inspector remains a separate synthetic CLI acceptance check;
+its textual summary does not currently have an automated regression assertion.
+Passing the automated checks is the Linux acceptance gate for portable
+behavior. Each unchecked item below needs only its stated environment. Offline
+inspector and replay checks can run without SteamVR, ALVR, or connected
+hardware; checks that explicitly exercise live acquisition, runtime
+integration, or devices remain deferred to the corresponding
+Windows/SteamVR/ALVR/hardware setup.
 
 ## Supported native deployment
 
@@ -109,30 +118,31 @@ details below. For an offline inspector or replay session, record only the OS,
 ## Device discovery and identity
 
 - [ ] **Enumerate a complete mixed-VR device set.** Start SteamVR with the
-  Lighthouse HMD active, ALVR exposing both Touch controllers, and at least two
-  Lighthouse trackers connected. Confirm that LTB reports each relevant
-  device once and maps runtime class and role correctly. Retain a redacted
-  enumeration transcript and compare it with the SteamVR device view.
+  Lighthouse HMD active, ALVR exposing both Meta Touch controllers, and at
+  least two eligible physical Lighthouse pose sources connected. Confirm that
+  LTB reports each relevant device once and maps runtime class, role,
+  capabilities, controller family, and input profile correctly. Retain a
+  redacted enumeration transcript and compare it with the SteamVR device view.
 
 - [ ] **Reject or explain incomplete runtime state.** Repeat enumeration with
   SteamVR stopped, ALVR disconnected, one controller absent, and one tracker
   powered off. Confirm that each state produces a bounded diagnostic rather
   than a crash, stale device, or misclassified replacement.
 
-- [ ] **Preserve tracker identity across reconnect and index churn.** Record
-  the redacted tracker identities and assigned OpenVR indexes, power-cycle the
-  trackers in the opposite order, and restart SteamVR. Confirm that serials
-  remain stable, indexes may change without affecting identity, and reconnect
-  neither duplicates nor swaps the tracker streams.
+- [ ] **Preserve physical-source identity across reconnect and index churn.**
+  Record the redacted source identities and assigned OpenVR indexes,
+  power-cycle the devices in the opposite order, and restart SteamVR. Confirm
+  that serials remain stable, indexes may change without affecting identity,
+  and reconnect neither duplicates nor swaps the pose streams. Confirm that a
+  VMT virtual tracker never becomes a replacement physical source.
 
-- [ ] **Distinguish left and right input controllers.** Confirm that controller
-  role and identity remain correct through ALVR reconnect and SteamVR restart.
-  Record the current OpenVR properties used for the decision. The supported
-  tuple is driver and tracking system `oculus`, manufacturer `Oculus`, model
-  `Miramar (Left Controller)` for the left role and
-  `Miramar (Right Controller)` for the right role, and controller type
-  `oculus_touch`. Confirm that a wrong-hand Miramar model, missing property, or
-  different controller type is rejected rather than treated as ambiguous.
+- [ ] **Distinguish left and right Meta Touch input controllers.** Confirm that
+  controller role, family, input profile, and stable identity remain correct
+  through ALVR reconnect and SteamVR restart for each family in the Milestone 5
+  matrix. Record the current OpenVR properties used for the decision. Confirm
+  that a wrong-hand role, unknown family/profile combination, missing required
+  property, or non-Meta controller is rejected rather than treated as
+  ambiguous.
 
 - [ ] **Prove current ALVR availability independently of OpenVR emulation.**
   With the ALVR dashboard web server on its default port, confirm
@@ -143,12 +153,14 @@ details below. For an offline inspector or replay session, record only the OS,
   afterward. Confirm the production probe issues no more than one request per
   second. Version 0.1 has no configurable ALVR-port CLI option.
 
-- [ ] **Use current observations rather than stored runtime/model claims.** With
-  the endpoint healthy, remove or alter one current Miramar/`oculus_touch`
-  property while leaving stored `controller_runtime` and `controller_model`
-  unchanged. Confirm readiness fails with `DevicesUnavailable`. Restore the
-  live tuple and confirm the current recalibration observations are `ALVR` and
-  `Quest 2 Touch`; stored values are comparison inputs, not availability proof.
+- [ ] **Use current observations rather than stored runtime/model claims.**
+  With the endpoint healthy, remove or alter one required controller-profile
+  property, or set a reported input-profile path to an incompatible family,
+  while leaving stored `controller_runtime` and `controller_model` unchanged.
+  Confirm readiness fails with `DevicesUnavailable`; an absent optional input-
+  profile path alone is not a failure. Restore the recognized live descriptor
+  and confirm the runtime/model observations reflect that current Meta Touch
+  classification; stored values are comparison inputs, not availability proof.
 
 ## Original Touch poses and override safety
 
@@ -783,3 +795,138 @@ transition-matrix tests or a successful cross-publish alone.
   detection, SafeDisable, no permanently frozen virtual hand, stable-serial
   reacquisition after power returns, and successful reapply only after all
   health gates pass.
+
+## Milestone 5 generalized device families
+
+Milestone 5 removes model-name lock-in at the descriptor and configuration
+boundaries. Linux tests use fake descriptors for Quest 2, Quest 3 Touch Plus,
+and Quest Pro Touch families plus Vive Tracker, Tundra Tracker, and eligible
+generic tracked devices. Those controller/pose-source cases continue through
+synthetic association/calibration and schema-1 persistence or reuse. Separate
+descriptor tests cover excluded VMT virtual devices and position-capability
+inference for multiple HMD descriptors; they provide no HMD calibration or
+profile-pipeline evidence. None of this is live ALVR, SteamVR, driver,
+firmware, input-component, or tracking-quality evidence.
+
+The production guided-wizard adapter remains absent as documented in the
+Milestone 3 section. The family rows can verify live enumeration, recording and
+replay, and saved-profile daily use now, but cannot be checked complete for
+live guided calibration until that adapter exists. Synthetic wizard evidence
+does not substitute for the missing hardware step.
+
+Use the [setup support matrix](setup.md#milestone-5-device-combinations) to
+record the intended combination. For each item below, retain the common
+environment record defined at the top of this file plus the redacted OpenVR
+category, role, registered path, driver, controller family, input-profile path,
+inferred capabilities, and stable identity used by the decision.
+
+### Meta Touch controller families
+
+- [ ] **Quest 2 Touch hardware path.** With ALVR exposing both roles, confirm
+  the live descriptors classify as the Quest 2 Touch family and any reported
+  input-profile paths match the reported hands. Verify original-pose capture
+  before override, hardware recording/replay and later guided calibration
+  through the existing pipeline,
+  schema-1 persistence/reload, input provenance while VMT supplies pose, all
+  exposed buttons/axes/capacitive inputs, optional haptics where implemented,
+  reconnect, and SafeDisable. This is the baseline live row; fake descriptor
+  coverage alone does not complete it.
+
+- [ ] **Quest 3 Touch Plus hardware path.** Repeat the Quest 2 row with real
+  Quest 3 Touch Plus controllers. Confirm the current family and any reported
+  input profile are observed from the live descriptor rather than inferred
+  from a stored profile or display name. Record any ALVR component or pose-
+  validity difference instead of treating family classification as proof of
+  equivalent behavior.
+
+- [ ] **Quest Pro Touch hardware path.** Repeat the same capture, calibration,
+  persistence, input-provenance, reconnect, and SafeDisable checks with real
+  Quest Pro Touch controllers. Confirm both hand roles and any reported live
+  input profiles, including any input component that differs from the other
+  families.
+
+- [ ] **Reject an unsupported controller profile.** Present an unknown or
+  deliberately inconsistent family/input-profile descriptor while leaving a
+  schema-1 profile's `controller_runtime` and `controller_model` unchanged.
+  Confirm readiness fails closed and profile text cannot authorize the live
+  device. Switch between two recognized Meta Touch families and confirm the
+  changed current classification requests recalibration instead of silently
+  reusing the other family's mount profile.
+
+### Physical Lighthouse pose sources
+
+- [ ] **Vive Tracker pose source.** Confirm the real tracker is connected,
+  position-capable, eligible as a physical source, and selected by exact stable
+  serial without a Vive model-name condition. Complete association, full 6DoF
+  and rotation-only calibration where applicable, profile reuse after index
+  churn, composed-pose verification, loss detection, and SafeDisable.
+
+- [ ] **Tundra Tracker pose source.** Repeat the Vive Tracker row with a real
+  Tundra Tracker. Confirm the same generic physical-source capability path is
+  used and record any live OpenVR class, timing, validity, firmware, or
+  reconnect difference. A matching fake descriptor does not establish those
+  properties.
+
+- [ ] **Generic Lighthouse-tracked pose source.** Use a third physical device
+  model that SteamVR exposes as a connected positional eligible tracked device.
+  Confirm selection does not require a known manufacturer/model string, exact
+  serial persistence remains stable, association and calibration pass their
+  normal quality gates, and the device-loss path disables the affected
+  override. Record the model as a new hardware-evidence row rather than
+  generalizing one result to all generic devices.
+
+- [ ] **Exclude VMT from physical-source candidates.** With physical trackers
+  and active VMT slots enumerating together as `GenericTracker`, confirm every
+  `/devices/vmt/...` descriptor is marked virtual and cannot satisfy physical-
+  pose selection, even if it is connected and has position. Confirm no
+  virtual device can follow itself and an absent physical source remains
+  `DevicesUnavailable`.
+
+### Lighthouse HMD families
+
+- [ ] **Bigscreen Beyond 2/2e active HMD.** Confirm SteamVR keeps the Beyond
+  device active while ALVR provides controller inputs only. Complete
+  discovery, profile apply, input/pose provenance, managed shutdown, and one
+  SteamVR restart without an HMD model-name dependency in LTB.
+
+- [ ] **Valve Index active HMD.** Repeat the complete two-hand daily-use path
+  with a Valve Index active. Confirm its descriptor receives the same HMD
+  class/capability inference without a model allowlist, ALVR does not replace
+  it, and tracker/controller selection, application bindings, pose composition,
+  and cleanup remain correct. LTB does not choose the active display.
+
+- [ ] **HTC Vive or Vive Pro-family active HMD.** Repeat the Valve Index row
+  with each actual HTC HMD model claimed by a release. Record each model and
+  SteamVR version separately; one family member is not evidence for every
+  other member.
+
+- [ ] **Additional Lighthouse HMD.** For any other connected OpenVR HMD,
+  confirm its descriptor receives HMD class/capability inference without a
+  manufacturer or model allowlist and that LTB does not attempt to choose or
+  replace the display device. Complete the full daily-use and SafeDisable
+  acceptance before adding that model to release notes as hardware validated.
+
+### Cross-family profile and integration acceptance
+
+- [ ] **Exercise representative mixed combinations.** Run at least one
+  controller from each Meta Touch family, one source from each physical-pose
+  family, and each HMD family above across a recorded pairwise matrix. For each
+  run, verify association, recording/replay and later guided calibration, selected mode and
+  reason, `T_T_C` application, schema-1 persist/reload, Touch input provenance,
+  stable-serial reconnect, and SafeDisable. Record untested matrix cells
+  explicitly; capability compatibility is not a claim that every Cartesian
+  product has been live-validated.
+
+- [ ] **Preserve schema-1 compatibility.** Load a valid pre-generalization
+  schema-1 profile, confirm no migration is required, and verify its stored
+  controller runtime/model still participates in recalibration comparison.
+  Reject malformed or unsupported schemas as before. Confirm current
+  capability flags and input-profile observations are not fabricated from the
+  stored file.
+
+- [ ] **Evaluate the retained integration boundary.** Across the generalized
+  hardware rows, record any repeatable VMT slot/heartbeat/timing limitation,
+  `TrackingOverrides` input-provenance or settings-ownership failure, and the
+  smallest attempted correction. Compare the evidence with the triggers in
+  [driver-evaluation.md](driver-evaluation.md). Do not infer that a custom
+  driver is necessary merely because a combination is still unchecked.

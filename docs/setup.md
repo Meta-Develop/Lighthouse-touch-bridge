@@ -33,6 +33,41 @@ From an extracted package, use:
 Ltb.App.exe wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
+## Milestone 5 device combinations
+
+LTB now selects devices through centralized capability inference and a Meta
+Touch profile catalog rather than application branches for the initial model
+tuple. This broadens the descriptor and configuration contract, but it does
+not turn a passing Linux fake into hardware certification. The status terms in
+this matrix mean:
+
+- **descriptor-tested** — deterministic fake OpenVR descriptors exercise
+  classification and selection on Linux;
+- **pipeline-tested** — fake descriptors continue through synthetic
+  association/calibration and schema-1 persistence or reuse; and
+- **hardware pending** — the corresponding unchecked row in
+  [windows-verification.md](windows-verification.md) still requires a real
+  Windows, SteamVR, ALVR, and hardware session.
+
+| Role | Device family or combination | Automated status | Windows/hardware status |
+| --- | --- | --- | --- |
+| Meta input | Quest 2 Touch | Descriptor-tested and pipeline-tested through its recognized Meta Touch family/input profile | Hardware pending |
+| Meta input | Quest 3 Touch Plus | Descriptor-tested and pipeline-tested through its recognized Meta Touch family/input profile | Hardware pending |
+| Meta input | Quest Pro Touch | Descriptor-tested and pipeline-tested through its recognized Meta Touch family/input profile | Hardware pending |
+| Physical pose | Vive Tracker | Descriptor-tested and pipeline-tested through association, synthetic calibration, and schema-1 persist/reload; selected by capability and exact serial, not its model name | Hardware pending |
+| Physical pose | Tundra Tracker | Descriptor-tested and pipeline-tested under the same physical-pose capability contract | Hardware pending |
+| Physical pose | Generic Lighthouse-tracked device | Descriptor-tested and pipeline-tested when OpenVR reports a connected positional physical pose source; VMT paths are explicitly excluded | Hardware pending for each actual device model |
+| Active HMD | Bigscreen Beyond 2/2e | Descriptor-tested with a Beyond 2e fake; the shared HMD inference has no model allowlist, but there is no separate Beyond 2 fake | Hardware pending for both models |
+| Active HMD | Valve Index | Descriptor-tested under the same HMD descriptor-inference contract | Hardware pending |
+| Active HMD | HTC Vive Pro 2 | Descriptor-tested under the same HMD descriptor-inference contract | Hardware pending |
+| Active HMD | Other Lighthouse HMD | OpenVR HMD descriptors receive class/capability inference without a display-name or manufacturer allowlist; SteamVR, not LTB, owns active-display selection | Hardware pending; treat as unverified until its checklist row passes |
+
+Every intended combination still needs one Meta Touch input controller per
+hand, one distinct eligible physical pose source per hand, an active
+Lighthouse HMD, ALVR, VMT, and SteamVR. Capability matching does not waive
+calibration quality, exact-serial reuse, composed-pose verification,
+SafeDisable, or input-provenance checks.
+
 ## Windows prerequisites
 
 Install and prepare these components before running the command:
@@ -40,12 +75,13 @@ Install and prepare these components before running the command:
 - SteamVR, running with the intended Lighthouse HMD;
 - [Virtual Motion Tracker (VMT)](https://gpsnmeajp.github.io/VirtualMotionTrackerDocument/setup/),
   installed, enabled in SteamVR add-ons, and visible to the runtime;
-- ALVR configured for Quest2Touch controller emulation without taking over as
-  the active HMD; `daily` requires both Touch roles and inputs plus the local
-  dashboard web server on default port `8082`, while one-hand `bridge` requires
-  its selected role; and
-- the physical Lighthouse tracker named by the profile, powered on, fully
-  tracked, and identified by the exact live serial printed by `devices`.
+- ALVR configured for a recognized Meta Touch controller profile without
+  taking over as the active HMD; `daily` requires both left/right roles and
+  inputs plus the local dashboard web server on default port `8082`, while
+  one-hand `bridge` requires its selected role; and
+- each physical Lighthouse pose source named by a profile, powered on, fully
+  tracked, position-capable, eligible as a physical source, and identified by
+  the exact live serial printed by `devices`.
 
 The portable package includes the .NET runtime. The .NET 8 SDK is required only
 when building or running directly from a source checkout with `dotnet run`.
@@ -77,13 +113,20 @@ From a source checkout, the equivalent developer command is:
 dotnet run --project src/Ltb.App -- devices
 ```
 
-For a live Windows run, copy the physical tracker's `serial:` value exactly
-from this output into `tracker_serial`; matching is case-sensitive. If
+For a live Windows run, copy each physical pose source's `serial:` value
+exactly from this output into `tracker_serial`; matching is case-sensitive. If
 `controller_serial` is present, it must likewise exactly match the intended
 Touch controller. `LHR-TEST0001`, `CTRL-TEST0001`, and every other identifier
 in this document are examples only and must not be used as live hardware
-identities. Confirm the physical tracker is a connected generic tracker and
-the intended Touch controller has the correct hand role.
+identities. Confirm the physical pose source is a connected generic tracker
+and the intended Touch controller has the correct hand role.
+
+For a generalized combination, also confirm the physical source's path is not
+a VMT virtual-device path, the Meta Touch controller has a recognized family
+and any reported input-profile path is compatible, and SteamVR reports the
+intended connected HMD. HMD descriptors have no model-name allowlist, but LTB
+does not choose the display or enforce a separate HMD application-readiness
+gate; SteamVR remains responsible for the active HMD.
 
 A fresh VMT slot can be absent until LTB sends its first safe enabled Joint
 configuration. LTB always requests VMT mode `1` (`Tracker`), then discovers the
@@ -160,6 +203,25 @@ Additional schema-1 quality and provenance properties are allowed. Duplicate
 known properties, malformed JSON, unsupported schema versions, non-finite
 numbers, and materially non-unit quaternions are rejected before runtime
 activation.
+
+The production `daily` path loads the complete schema-1 store, including
+`controller_runtime` and `controller_model`. These are the controller
+classification observed when the profile was created and `daily` compares
+them with the current recognized Meta Touch classification before reuse. A
+different current family requests recalibration; changing stored text does not
+make an unsupported live descriptor acceptable. Capability flags and the
+OpenVR input-profile path remain current observations rather than persisted
+calibration data, so existing valid schema-1 profiles require no migration.
+
+The one-hand `bridge` command deliberately retains its Milestone 2 loader for
+the legacy subset shown above: schema version, profile name, hand, optional
+controller serial, tracker serial, selected mode, and transform. It ignores
+additional schema-1 provenance fields and does not classify or compare
+`controller_runtime` or `controller_model`. Its exact serial/role and runtime
+health checks are not evidence of controller-family compatibility and must not
+be treated as authorization for a generalized combination; use the production
+`daily` compatibility gate and the applicable Windows hardware rows for that
+claim.
 
 The `daily` command requires one valid store containing exactly one reusable
 left profile and one reusable right profile with distinct tracker serials. It
@@ -290,22 +352,24 @@ Before `daily` applies either profile, it enforces a two-part ALVR gate. First,
 the local `/api/version` endpoint above must return a successful, nonempty
 response. The 500 ms request is cached for one second, which caps the probe at
 1 Hz even when the dependency or watchdog loop runs faster. Second, the current
-OpenVR enumeration must contain exactly one supported controller per hand with
-the Oculus emulation properties: driver and tracking system `oculus`,
-manufacturer `Oculus`, the matching Miramar left/right model, and controller
-type `oculus_touch`.
+OpenVR enumeration must contain exactly one supported controller per hand. The
+central device classifier matches a recognized Meta Touch family from the
+current OpenVR metadata, validates the input-profile path when OpenVR reports
+one, and also requires the corresponding left/right role. Application code
+does not maintain separate Quest-model string checks.
 
 These are current runtime observations. LTB does not use the stored
 `controller_runtime` or `controller_model` fields as evidence that ALVR is
 available or that the connected controllers match. It derives the current
-runtime/model observation as `ALVR` and `Quest 2 Touch` only after the live gate
-passes, then evaluates it against the saved profile. A stored controller serial,
-when present, remains an additional exact current-device constraint.
+runtime/model observation from the recognized live classification only after
+the gate passes, then evaluates it against the saved profile. A stored
+controller serial, when present, remains an additional exact current-device
+constraint.
 
 The watchdog continues both checks after activation. Loss of the local version
-proof or a change to the selected controller's current OpenVR tuple is treated
-as Touch input loss and enters SafeDisable; a stored tuple cannot keep either
-virtual hand active.
+proof or a change to the selected controller's current classification or input
+profile is treated as Touch input loss and enters SafeDisable; stored profile
+text cannot keep either virtual hand active.
 
 `--log` is optional. When supplied, LTB creates the parent directory when
 needed and appends one JSON object per event to the selected file. Without it,

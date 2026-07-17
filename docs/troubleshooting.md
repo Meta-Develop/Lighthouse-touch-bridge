@@ -66,30 +66,58 @@ runtime is not proof that a persistent `TrackingOverrides` entry was removed.
 
 ### Waiting at `WaitingForDevices`
 
-Run the `devices` command and compare redacted stable identities, categories,
-and controller roles with the saved profiles. Common causes are:
+Run the `devices` command locally. Its output contains raw stable serials and
+registered device paths, so inspect and compare them on the machine; redact
+both fields before sharing any transcript. Use the readiness diagnostic and,
+when needed, a locally inspected SteamVR property report to review inferred
+capabilities and any input-profile path. Redact that report before sharing.
+Compare the observed controller runtime/model and exact serial constraints
+with the saved profiles. Common causes are:
 
-- the physical tracker is powered off, disconnected, or not fully tracked;
-- ALVR is not exposing the intended Touch controller and role;
+- the physical pose source is powered off, disconnected, lacks position, is
+  not eligible as a physical source, or is not fully tracked;
+- ALVR is not exposing the intended Meta Touch family and role, or a reported
+  input-profile path is incompatible with that family;
+- the only apparent tracker candidate is a VMT virtual device, which is
+  intentionally excluded from physical-source selection;
 - the VMT Alive heartbeat is unavailable;
 - a saved serial or semantic hand no longer matches the physical mount; or
 - a device reconnected with a new transient OpenVR index and enumeration has
   not yet stabilized.
 
 The production `daily` gate also reads the current OpenVR properties. It needs
-exactly one controller per hand with driver/tracking system `oculus`,
-manufacturer `Oculus`, the role-matched Miramar left/right model, and controller
-type `oculus_touch`. Stored `controller_runtime` or `controller_model` values do
-not substitute for these current observations. During device readiness, a
-missing controller, unsupported tuple, or missing physical tracker reports
-`DevicesUnavailable`, while a missing or stale VMT Alive heartbeat reports
-`VmtUnavailable`. During the earlier dependency loop, a VMT recovery can emit
+exactly one recognized Meta Touch controller per hand. A central classifier
+uses current category, role, driver metadata, controller family, and input
+profile; the application does not keep a separate allowlist of model strings.
+Stored `controller_runtime` or `controller_model` values do not substitute for
+these current observations. During device readiness, a missing or unsupported
+controller or ineligible physical source reports `DevicesUnavailable`, while
+a missing or stale VMT Alive heartbeat reports `VmtUnavailable`. During the
+earlier dependency loop, a VMT recovery can emit
 `DependencyUnavailable` with an explicitly VMT-specific message. Diagnose the
 code and message before changing VMT or controller configuration.
 
 Reconnect is keyed by stable serial, never by transient index. LTB must pass
 the normal `Ready -> ApplyProfile -> Active` gates after reacquisition; it does
 not keep a stale virtual hand active while waiting.
+
+### A supported-looking device is rejected
+
+Do not make the display name resemble a supported product or edit the stored
+`controller_model`. LTB matches current capabilities, not presentation text.
+For a Meta Touch controller, inspect the left/right role, controller family,
+runtime classification, and any reported input-profile path. For a Lighthouse
+pose source, inspect connectivity, position capability, physical-source
+eligibility, exact serial, and registered path. `/devices/vmt/...` is virtual
+and cannot be used as the physical source even when SteamVR classifies it as
+`GenericTracker`.
+
+A connected HMD descriptor is not filtered by a manufacturer/model allowlist,
+but LTB does not choose the active display or enforce a separate HMD readiness
+gate. If a newly named HMD, controller, or tracker has no completed hardware
+row in [windows-verification.md](windows-verification.md), treat the
+combination as unverified rather than diagnosing descriptor acceptance as live
+compatibility.
 
 ### VMT slot appears with the wrong device class
 
@@ -128,10 +156,10 @@ silently replaced by a failed capture.
 
 ### Full 6DoF falls back to rotation-only
 
-Keep Quest cameras able to observe Touch position and add moderate translation
-to multi-axis rotation. If position is unavailable or translation remains
-unobservable, rotation-only is the correct safe result. It stores exactly zero
-translation and a machine-readable reason.
+Keep the Meta headset cameras able to observe the selected Touch controller and
+add moderate translation to multi-axis rotation. If position is unavailable or
+translation remains unobservable, rotation-only is the correct safe result. It
+stores exactly zero translation and a machine-readable reason.
 
 ### A stored profile is rejected
 

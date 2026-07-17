@@ -546,18 +546,19 @@ observations before it can become `Ready`:
    request has a 500 ms bound, and the last result is reused for one second so
    dependency and watchdog loops cannot probe more often than 1 Hz.
 2. Current OpenVR properties must expose exactly one supported controller for
-   each hand. The accepted Quest2Touch emulation tuple is driver `oculus`,
-   tracking system `oculus`, manufacturer `Oculus`, left/right controller role,
-   the corresponding Miramar left/right model, and controller type
-   `oculus_touch` after case, whitespace, and punctuation normalization.
+   each hand. A central profile catalog recognizes the Quest 2 Touch, Quest 3
+   Touch Plus, and Quest Pro Touch families from current driver, tracking
+   system, manufacturer, role, model, controller type, and optional input-
+   profile properties after normalization.
 
 The local version endpoint proves that the ALVR process is currently serving
-its dashboard API; the OpenVR tuple proves that the current controller devices
-match ALVR's supported Quest 2 Touch emulation. Neither proof is taken from a
-stored calibration profile. The runtime derives the current recalibration
-observations `ALVR` and `Quest 2 Touch` only after this live tuple passes, then
-compares them with stored profile values. A stored runtime/model claim cannot
-make an absent or mismatched current device acceptable.
+its dashboard API; the OpenVR classification proves that the current controller
+devices match one supported Meta Touch family. Neither proof is taken from a
+stored calibration profile. The runtime derives current recalibration
+observations such as `ALVR` plus `Quest 3 Touch Plus` only after both live hand
+descriptors classify to the same runtime/model, then compares them with stored
+profile values. A stored runtime/model claim cannot make an absent or
+mismatched current device acceptable.
 
 Both observations remain watchdog conditions after activation. Loss of the
 local ALVR proof or a change to the selected controller's current OpenVR
@@ -566,11 +567,12 @@ runtime never substitutes a stored tuple for the missing live observation.
 
 Readiness diagnostics preserve the failed boundary. An unavailable ALVR
 endpoint reports `DependencyUnavailable`. During device readiness, a missing
-or unsupported Touch tuple or physical tracker reports `DevicesUnavailable`,
-while a missing or stale VMT Alive heartbeat reports `VmtUnavailable`. A VMT
+or unsupported Meta Touch descriptor or physical pose source reports
+`DevicesUnavailable`, while a missing or stale VMT Alive heartbeat reports
+`VmtUnavailable`. A VMT
 recovery dependency loop can first emit `DependencyUnavailable` with its
 VMT-specific diagnostic, but it is never presented as a controller or device-
-tuple failure.
+classification failure.
 
 The normal later-run flow is:
 
@@ -732,3 +734,76 @@ native launch, and live integration remain Windows release checks.
 The complete product requirements remain in the [project
 specification](specification.md); the implemented calibration details are in
 [calibration.md](calibration.md).
+
+## Milestone 5 capability-based device generalization
+
+Milestones 1-4 could identify the initial Quest 2 Touch and Vive Tracker path,
+but daily-use readiness still depended on one controller model tuple and
+physical-pose selection depended primarily on the OpenVR tracker class.
+Milestone 5 replaces that hardware lock-in with one centralized capability
+inference and matching boundary. Model strings remain observations and profile
+provenance; scattered model-name conditions are not application policy.
+
+```text
+OpenVR class, role, path, driver properties, optional input profile
+                              |
+                              v
+             Ltb.OpenVr normalization and inference
+                              |
+                              v
+      SteamVrDeviceDescriptor + SteamVrDeviceCapabilities
+                /                  |                   \
+               v                   v                    v
+ Meta Touch input match   physical pose match   HMD observation
+               \                   |                    /
+                +---------- application policy --------+
+                              |
+                              v
+          stable-identity/profile/calibration pipeline
+```
+
+`SteamVrDeviceCapabilities` reports the facts application policy needs:
+`HasPosition`, `IsPhysicalPoseSourceEligible`, `IsVirtualPoseSource`,
+`ControllerFamily`, `ControllerRuntime`, `ControllerModel`, and `InputProfile`.
+The optional OpenVR input-profile path is retained in
+`SteamVrDeviceMetadata` and normalized at the adapter boundary.
+`CanUseAsPhysicalPoseSource` combines current connectivity, positional
+capability, physical-source eligibility, and virtual-source exclusion so every
+consumer applies the same minimum gate.
+
+The central inference uses the OpenVR device category, driver and registered
+device path, controller role, and a centralized Meta Touch input-profile table.
+This gives each role one explicit acceptance rule:
+
+| Role | Capability decision | Identity and safety constraints |
+| --- | --- | --- |
+| Meta Touch input controller | A connected input controller has a left/right role and matches a known Meta Touch family. When OpenVR supplies an input-profile path, it must also match that family. Orientation-only calibration may proceed when controller position is unavailable; full 6DoF still requires valid position samples. | Current controller runtime, family/model, optional input profile, role, and optional exact serial are runtime observations. A stored profile cannot make an unknown live descriptor supported. |
+| Physical Lighthouse pose source | `CanUseAsPhysicalPoseSource` is true. A connected positional `GenericTracker` can satisfy this without a Vive-specific or Tundra-specific model check. | Exact stable serial remains the profile and reconnect key. VMT registered paths are marked virtual and excluded even though VMT also enumerates as `GenericTracker`, preventing a virtual output from following itself. |
+| Lighthouse HMD | An OpenVR `HeadMountedDisplay` descriptor receives positional capability without a manufacturer or model allowlist. LTB does not use an HMD as a physical controller-pose source. | LTB currently enumerates the descriptor but does not choose, replace, or apply a separate application readiness gate to the HMD. SteamVR remains responsible for the active display device, and Windows verification must prove each real HMD/runtime combination. |
+
+Stable identity and capability answer different questions. The exact serial
+answers whether a re-enumerated device is the same physical mount; capability
+answers whether the current descriptor can safely fill the requested role.
+Neither transient OpenVR indexes nor display names are persistence keys.
+
+The application consumes inferred capabilities and observed controller
+classification; it does not repeat OpenVR property normalization or model
+tables. `Ltb.Configuration` continues to own profile validation and reuse.
+Schema version 1 remains sufficient because `controller_runtime` and
+`controller_model` already persist the observed controller classification used
+by recalibration policy, while capability flags and the input-profile path are
+current runtime observations rather than calibration data. Existing schema-1
+profiles therefore require no migration. A future change that persists new
+matching semantics must use normal schema versioning and compatibility tests
+rather than silently changing schema-1 meaning.
+
+Fake pipeline tests cover Quest 2, Quest 3 Touch Plus, and Quest Pro Touch
+profiles plus Vive Tracker, Tundra Tracker, and generic eligible physical pose
+sources through association, synthetic calibration, and schema-1 persistence
+or reuse. Separate descriptor tests prove VMT virtual exclusion and infer
+position capability for multiple HMD descriptors without model allowlists;
+HMDs do not participate in the calibration/profile pipeline. None of these
+tests claims that ALVR exposes every input component or that any named
+controller, pose source, or HMD combination works in a real SteamVR session.
+That evidence remains in
+[windows-verification.md](windows-verification.md).
