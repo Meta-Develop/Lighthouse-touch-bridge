@@ -72,13 +72,12 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                     continue;
                 }
 
-                var devicePath = ReadStringProperty(
+                var registeredDeviceType = ReadStringProperty(
                     index,
                     ValveVr.ETrackedDeviceProperty.Prop_RegisteredDeviceType_String);
-                if (string.IsNullOrWhiteSpace(devicePath))
-                {
-                    devicePath = $"openvr://device/{Uri.EscapeDataString(serialNumber)}";
-                }
+                var devicePath = OpenVrDevicePath.Resolve(
+                    registeredDeviceType,
+                    serialNumber);
 
                 devices.Add(new OpenVrRuntimeDevice(
                     index,

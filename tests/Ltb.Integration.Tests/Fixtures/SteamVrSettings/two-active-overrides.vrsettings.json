@@ -1,0 +1,13 @@
+{
+  "steamvr": {
+    "activateMultipleDrivers": true,
+    "allowAsyncReprojection": false
+  },
+  "TrackingOverrides": {
+    "/devices/vmt/VMT_1": "/user/hand/left",
+    "/devices/vmt/VMT_2": "/user/hand/right"
+  },
+  "dashboard": {
+    "enableDashboard": true
+  }
+}

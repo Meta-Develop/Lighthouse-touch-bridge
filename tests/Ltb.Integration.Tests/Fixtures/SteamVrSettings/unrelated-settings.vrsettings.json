@@ -1,0 +1,22 @@
+{
+  "steamvr": {
+    "allowAsyncReprojection": false,
+    "supersampleScale": 1.25,
+    "customString": "preserve-me"
+  },
+  "TrackingOverrides": {
+    "/devices/vmt/VMT_2": "/user/hand/right"
+  },
+  "dashboard": {
+    "enableDashboard": true,
+    "recentApps": [
+      "alpha",
+      null,
+      42,
+      false
+    ]
+  },
+  "driver_lighthouse": {
+    "fakeSerialForFixtureOnly": "LHR-TEST0001"
+  }
+}

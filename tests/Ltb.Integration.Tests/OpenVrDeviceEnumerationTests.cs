@@ -13,14 +13,14 @@ public sealed class OpenVrDeviceEnumerationTests
                 new OpenVrRuntimeDevice(
                     9,
                     "tracker-z",
-                    "lighthouse/vive_tracker",
+                    "/devices/lighthouse/vive_tracker",
                     OpenVrRuntimeDeviceClass.GenericTracker,
                     OpenVrRuntimeControllerRole.None,
                     true),
                 new OpenVrRuntimeDevice(
                     3,
                     "controller-a",
-                    "oculus/controller",
+                    "/devices/oculus/controller",
                     OpenVrRuntimeDeviceClass.Controller,
                     OpenVrRuntimeControllerRole.LeftHand,
                     false),
@@ -34,7 +34,7 @@ public sealed class OpenVrDeviceEnumerationTests
             controller =>
             {
                 Assert.Equal("controller-a", controller.StableDeviceId);
-                Assert.Equal("oculus/controller", controller.Identity.DevicePath);
+                Assert.Equal("/devices/oculus/controller", controller.Identity.DevicePath);
                 Assert.Equal(3u, controller.TransientDeviceIndex);
                 Assert.Equal(SteamVrDeviceCategory.InputController, controller.Category);
                 Assert.Equal(SteamVrControllerRole.LeftHand, controller.ControllerRole);
@@ -43,7 +43,9 @@ public sealed class OpenVrDeviceEnumerationTests
             tracker =>
             {
                 Assert.Equal("tracker-z", tracker.StableDeviceId);
-                Assert.Equal("lighthouse/vive_tracker", tracker.Identity.DevicePath);
+                Assert.Equal(
+                    "/devices/lighthouse/vive_tracker",
+                    tracker.Identity.DevicePath);
                 Assert.Equal(9u, tracker.TransientDeviceIndex);
                 Assert.Equal(SteamVrDeviceCategory.GenericTracker, tracker.Category);
                 Assert.Equal(SteamVrControllerRole.None, tracker.ControllerRole);
@@ -98,7 +100,7 @@ public sealed class OpenVrDeviceEnumerationTests
 
     private static SteamVrDeviceDescriptor Descriptor(string serial, uint index) =>
         new(
-            new SteamVrDeviceIdentity(serial, $"lighthouse/{serial}"),
+            new SteamVrDeviceIdentity(serial, $"/devices/lighthouse/{serial}"),
             index,
             SteamVrDeviceCategory.GenericTracker,
             SteamVrControllerRole.None,
@@ -108,7 +110,7 @@ public sealed class OpenVrDeviceEnumerationTests
         new(
             index,
             serial,
-            $"lighthouse/{serial}",
+            $"/devices/lighthouse/{serial}",
             OpenVrRuntimeDeviceClass.GenericTracker,
             OpenVrRuntimeControllerRole.None,
             true);
