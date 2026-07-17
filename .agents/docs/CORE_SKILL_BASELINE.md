@@ -81,7 +81,7 @@ when the project has not yet defined a dedicated skill for the same work.
 - Owner-local path redaction: public-facing docs, code comments, issue/PR text,
   release notes, and other publishable tracked content must not expose
   owner-local absolute paths or machine-specific roots such as `/mnt/d/...`,
-  `/home/konn/...`, `/home/<owner>/...`, `C:\Users\...`, drive roots such as
+  `/home/<owner>/...`, `C:\Users\...`, drive roots such as
   `D:\...`, or WSL mount paths. Use repo-relative paths or redacted
   placeholders such as `<repo-root>`, `<local-project-root>`, `<owner-home>`,
   or `<host-setup-repo>` when a local location matters. Private agent-only

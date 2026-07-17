@@ -123,7 +123,7 @@ another repository.
 Do not expose owner-local absolute paths or machine-specific roots in
 public-facing docs, code comments, issue/PR text, release notes, packages, or
 other publishable tracked content. Examples include `/mnt/d/...`,
-`/home/konn/...`, `/home/<owner>/...`, `C:\Users\...`, drive roots such as
+`/home/<owner>/...`, `C:\Users\...`, drive roots such as
 `D:\...`, and WSL mount paths. Use repo-relative paths or redacted placeholders
 such as `<repo-root>`, `<local-project-root>`, `<owner-home>`, or
 `<host-setup-repo>` when a local location matters.
