@@ -12,6 +12,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Product>Lighthouse Touch Bridge</Product>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
