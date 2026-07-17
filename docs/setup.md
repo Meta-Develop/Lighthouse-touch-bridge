@@ -345,9 +345,12 @@ DependencyCheck -> WaitingForSteamVR -> WaitingForDevices -> Ready
  -> persist both profiles -> ApplyProfile -> Active
 ```
 
-`OverrideRelease` removes existing mappings for both semantic hands before the
-recorder opens the original Touch pose sources. Capture uses those original
-Touch streams together with both candidate tracker streams. The existing
+`OverrideRelease` first removes and verifies every mapping that references a
+selected LTB source or targets either semantic hand. Only after all releases
+succeed does it deactivate both selected VMT sources and open the original
+Touch pose sources. If any release fails, it attempts the other mapping release
+but leaves both sources running and does not start capture. Capture uses the
+original Touch streams together with both candidate tracker streams. The existing
 association, lag, staged solver, Auto model-selection, quality, and schema-1
 persistence components then produce the two profiles. Application uses the
 same two-hand VMT and settings transaction as later daily use: both transforms
@@ -355,13 +358,17 @@ and mappings must succeed before `Active` is reported.
 
 After activation, the same runtime watchdog used by `daily` monitors Touch,
 tracker, VMT, and SteamVR health. Ctrl+C or a health failure enters
-`SafeDisable`; cleanup disables the selected VMT slots and releases the exact
-LTB-owned hand mappings. If capture, persistence, application, cancellation,
-or monitoring fails, the command must not leave an active hand override.
-Unrelated SteamVR settings remain preserved. A failed first-run capture does
-not restore a previously active hand mapping because it could point at a stale
-source; inspect the settings explicitly before another attempt if cleanup is
-reported incomplete.
+`SafeDisable`. For each applied hand, cleanup releases and verifies mappings
+that reference the configured or discovered application source or target the
+intended semantic hand. It disables that VMT slot only after the settings
+operation succeeds. If release fails or times out, the source remains running
+so a surviving mapping does not become stale; cleanup continues independently
+for the other hand and reports exit code `4`. If capture, persistence,
+application, cancellation, or monitoring fails, the command must not claim safe
+cleanup while an override is unverified. Unrelated SteamVR settings remain
+preserved. A failed first-run capture does not restore a previously active hand
+mapping because it could point at a stale source; inspect the settings
+explicitly before another attempt if cleanup is reported incomplete.
 
 When the store already contains a complete compatible serial-and-hand pair,
 the wizard may take the profile-reuse path and skip capture. Use `daily` for
@@ -453,10 +460,13 @@ coordinator rolls back the effects created by that attempt and does not report
 
 Runtime loss never reuses a cached pose while an override remains enabled:
 
-- tracker or Touch loss enters `SafeDisable`, disables both daily-use VMT
-  profiles, releases both LTB-owned hand mappings, and returns to
-  `WaitingForDevices`; reacquisition matches the saved stable serial rather
-  than a transient OpenVR index;
+- tracker or Touch loss enters `SafeDisable`, releases and verifies the
+  source-centric and semantic-hand mappings for each application, then disables
+  the corresponding daily-use VMT profile only after confirmed release, and
+  returns to `WaitingForDevices`; a failed mapping release leaves that source
+  running and makes cleanup incomplete;
+  reacquisition matches the saved stable serial rather than a transient
+  OpenVR index;
 - VMT loss enters `SafeDisable`, then waits for the VMT dependency and devices
   to become healthy before another apply attempt;
 - SteamVR stopping enters `SafeDisable` and then `Stopped`; once this invocation
@@ -527,14 +537,17 @@ Before reusing a hand after an abrupt termination:
 
 1. keep the headset and controllers non-worn and the tracked area clear;
 2. confirm the old LTB process has ended, then inspect the selected VMT slot in
-   SteamVR or VMT Manager and inspect the exact source-to-hand entry under
-   `TrackingOverrides` in the explicitly selected `steamvr.vrsettings`;
+   SteamVR or VMT Manager; under `TrackingOverrides` in the explicitly selected
+   `steamvr.vrsettings`, inspect every entry that references a selected
+   application source or targets its semantic hand;
 3. retain redacted evidence of any residual device or mapping before changing
    it; do not assume that one surface proves the other is clear;
-4. for an intended reuse, run the same `bridge`, `wizard`, or `daily` command and confirm
-   its pre-activation cleanup deactivates the selected slot or slots and
-   releases each stale exact mapping before activation; if any cleanup reports
-   a failure, stop and do not allow the command to activate; and
+4. for an intended reuse, run the same command and confirm its pre-activation
+   cleanup completes before activation; `bridge` deactivates its slot and then
+   releases its exact mapping, while `wizard` and `daily` verify removal of
+   application-source and semantic-hand mappings before deactivating the
+   associated source; if two-hand mapping release fails, confirm the affected
+   source remains running and activation stays blocked; and
 5. if automatic cleanup cannot be confirmed, stop LTB and SteamVR, preserve the
    current settings file, review an adjacent recognized backup or remove only
    the exact stale mapping, then restart SteamVR and inspect both surfaces

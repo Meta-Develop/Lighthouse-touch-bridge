@@ -184,11 +184,13 @@ details below. For an offline inspector or replay session, record only the OS,
 
 - [ ] **Release overrides before production-wizard recording.** Begin with
   mappings active for both semantic hands, then run the production `wizard`.
-  Confirm `OverrideRelease` removes both mappings before `Recording` opens the
-  original Touch pose sources. The recorder itself must not write
-  `TrackingOverrides`. Confirm the original poses are visible before capture
-  begins, unrelated settings remain unchanged, and a redacted before/after
-  settings snapshot is retained outside the repository.
+  Confirm `OverrideRelease` first removes and verifies every mapping that
+  references either selected application source or targets either semantic
+  hand. Only after every mapping release succeeds may it deactivate the two VMT
+  sources and open the original Touch pose sources. The recorder itself must
+  not write `TrackingOverrides`. Confirm the original poses are visible before
+  capture begins, unrelated settings remain unchanged, and a redacted
+  before/after settings snapshot is retained outside the repository.
 
 - [ ] **Read the original, non-overridden Touch pose.** With the override
   released, move the Touch controller and its mounted tracker differently
@@ -197,10 +199,12 @@ details below. For an offline inspector or replay session, record only the OS,
   overridden pose.
 
 - [ ] **Handle an override-release failure safely.** Deny or interrupt one
-  release while leaving an existing source disconnected. Confirm that the
-  operator receives a bounded diagnostic, capture does not start, neither hand
-  remains newly active, and unrelated settings remain unchanged. Any cleanup
-  failure must require explicit inspection rather than claiming a safe state.
+  release while its existing VMT source is running. Confirm that the operator
+  receives a bounded diagnostic, capture does not start, and neither selected
+  source is deactivated while a mapping may survive. Confirm the other hand's
+  mapping release is still attempted and unrelated settings remain unchanged.
+  Any cleanup failure must require exit code `4` and explicit inspection rather
+  than claiming a safe state.
 
 ## Pose semantics and timing
 
@@ -407,10 +411,12 @@ from Linux tests alone.
   two-hand apply failure. Confirm bounded diagnostics, no partial store is
   accepted, the prior file remains recoverable, and neither hand is left with
   a newly active stale override. Repeat with Ctrl+C during left capture, right
-  capture, persistence, and apply. Confirm no active hand mapping remains,
-  unrelated SteamVR settings survive, and any cleanup or rollback failure is
-  reported for manual inspection. These production paths are implemented but
-  remain live Windows checks.
+  capture, persistence, and apply. When cleanup succeeds, confirm no active
+  hand mapping remains. If mapping cleanup fails, confirm the corresponding
+  source remains running, unrelated SteamVR settings survive, independent
+  mapping cleanup for the other hand continues, and exit code `4` requires
+  manual inspection.
+  These production paths are implemented but remain live Windows checks.
 
 ## Milestone 2 one-hand live bridge
 
@@ -696,15 +702,20 @@ transition-matrix tests or a successful cross-publish alone.
 
 - [ ] **Reacquire Touch input without pose-only continuation.** Disconnect one
   Touch controller while tracker and VMT remain healthy. Confirm SafeDisable
-  disables both daily VMT profiles and releases both LTB-owned mappings rather
-  than leaving either tracker pose active without the intended inputs.
-  Reconnect the same controller/role and verify input provenance again after
-  the complete two-hand reapply.
+  releases and verifies source-centric and semantic-hand mappings before
+  disabling the corresponding daily VMT profile rather than leaving either
+  tracker pose active without the intended inputs. If one mapping release
+  fails, confirm its source remains running and cleanup continues for the other
+  hand. Reconnect the same controller/role and verify input provenance again
+  after the complete two-hand reapply.
 
 - [ ] **Recover from VMT loss.** Stop the VMT heartbeat or driver, remove the
   active VMT device, and change its identity in separate runs. Confirm each
-  case enters `SafeDisable`, attempts both cleanup surfaces, waits for the
-  dependency/device, and reapplies only after the expected source is healthy.
+  case enters `SafeDisable`, releases and verifies mappings that reference each
+  application source or target its semantic hand before deactivating that
+  source, waits for the dependency/device, and reapplies only after the expected
+  source is healthy. If mapping release cannot be confirmed, require exit code
+  `4` and manual inspection rather than claiming a safe disabled source.
 
 - [ ] **Stop terminally if SteamVR ends during VMT recovery.** After VMT loss
   completes SafeDisable and enters dependency/runtime recovery, stop SteamVR
@@ -735,11 +746,15 @@ transition-matrix tests or a successful cross-publish alone.
   implemented bound, and no transition leaves an active override with a stale
   source.
 
-- [ ] **Bound cleanup without skipping work.** Stall VMT deactivation and
-  settings release separately. Confirm each operation is bounded to two
-  seconds, a timeout is reported as a cleanup failure, and the other cleanup
-  surface is still attempted. Confirm exit code `4` and manually inspect both
-  slots and both LTB-owned mappings before reuse.
+- [ ] **Bound source-preserving cleanup without skipping independent work.**
+  Stall or reject one source/semantic-hand mapping release. Confirm the
+  operation is bounded to two seconds, the corresponding VMT source is
+  deliberately left running, and cleanup continues with independent work for
+  the other hand. For the pre-capture wizard path, confirm no selected source
+  is deactivated when either release fails. Then allow mapping release and
+  separately stall the corresponding VMT deactivation; confirm that later
+  failure is also bounded and reported. Both cases must return exit code `4`;
+  manually inspect both slots and all relevant mappings before reuse.
 
 ### Apply rollback, shutdown, and logging
 
@@ -747,18 +762,24 @@ transition-matrix tests or a successful cross-publish alone.
   unexpected adapter exception during the active monitor loop. Confirm an error
   `RuntimeFailure` event records only `exceptionType` and `exceptionMessage`,
   with no stack trace, before `SafeDisableStarted` and before the final
-  `Stopped` transition. Confirm every active VMT deactivation and exact mapping
-  release is still attempted. The coordinator result is `RuntimeFailure` when
-  cleanup succeeds and `SafeDisableFailed` when cleanup fails. This ordering
-  check is portable and does not require Windows hardware.
+  `Stopped` transition. For each active source, confirm source-centric and
+  semantic-hand mapping release precedes VMT deactivation. If release fails,
+  confirm that source is not deactivated while cleanup continues for the other
+  hand. The coordinator
+  result is `RuntimeFailure` when cleanup succeeds and `SafeDisableFailed` when
+  cleanup fails. This ordering check is portable and does not require Windows
+  hardware.
 
 - [ ] **Force each two-hand apply failure position.** Reject the first hand,
   reject the second after the first succeeds, and fail rollback after a partial
   apply. Confirm `Active` is never emitted for an incomplete pair, effects from
-  the attempt are rolled back when possible, rollback failures are distinct,
-  exit code `4` reports any rollback failure, and both hands are inspected
-  before reuse. Run this through the production `daily` adapter; the fake
-  coordinator result alone is insufficient.
+  the attempt are rolled back when possible, and source/semantic-hand mapping
+  rollback succeeds before the corresponding source is deactivated. Make one
+  mapping rollback fail and confirm that source stays running while independent
+  rollback work continues. Rollback failures must remain distinct, exit code
+  `4` must report any failure, and both hands must be inspected before reuse.
+  Run this through the production `daily` adapter; the fake coordinator result
+  alone is insufficient.
 
 - [ ] **Verify settings and profile rollback together.** Exercise malformed
   settings, denied ACL, lock contention, external-writer race, post-write
@@ -767,13 +788,16 @@ transition-matrix tests or a successful cross-publish alone.
   an external winner is never overwritten by automatic rollback, previous
   profiles remain recoverable, and a reviewed recovery creates its own undo
   backup. Confirm rollback restores only effects from the current two-hand
-  application attempt and never accepts a partial pair as `Active`.
+  application attempt, does not deactivate a source whose application-safety
+  mapping rollback was not confirmed, and never accepts a partial pair as
+  `Active`.
 
 - [ ] **Verify clean shutdown.** From healthy `Active`, request normal shutdown
-  and confirm `SafeDisable -> Stopped`, VMT deactivation, exact mapping release,
-  zero cleanup failures, and restoration of the original Touch pose. Repeat
-  during dependency/device waiting and during apply; no path may report
-  `Stopped` while silently leaving a newly active override.
+  and confirm `SafeDisable -> Stopped`, exact mapping release followed by the
+  corresponding VMT deactivation, zero cleanup failures, and restoration of
+  the original Touch pose. Repeat during dependency/device waiting and during
+  apply; no path may report `Stopped` while silently leaving a newly active
+  override.
 
 - [ ] **Verify unmanaged-termination recovery.** In a non-worn controlled
   setup, terminate only LTB so managed cleanup cannot run. Confirm the process

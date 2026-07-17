@@ -361,10 +361,12 @@ half the VMT heartbeat timeout. The effective rate is printed on activation.
 This prevents a low requested rate from making the health loop itself slower
 than the freshness limits it enforces.
 
-On managed exits, SafeDisable is fail-closed and best-effort in two independent
-steps. It first sends the disabled Joint configuration, then attempts exact
-settings release even if VMT deactivation failed. Cleanup failures are returned
-and produce a distinct command exit code rather than being hidden. Touch
+The legacy one-hand `bridge` keeps its original VMT-first managed-exit order:
+it sends the disabled Joint configuration, then attempts exact settings release
+even if VMT deactivation failed. Cleanup failures are returned and produce a
+distinct command exit code rather than being hidden. This order is specific to
+the one-hand coordinator; the production two-hand `wizard` and `daily` paths
+use the source-preserving order described below. Touch
 disconnect, VMT device loss or identity change, stale VMT heartbeat, invalid or
 stale VMT output pose, invalid tracker pose, reported tracker staleness,
 cancellation, and handled activation failures all enter this cleanup path once
@@ -504,14 +506,21 @@ wizard CLI -> TwoHandCalibrationWizard -> live OpenVR recorder
                      Active -> watchdog -> SafeDisable
 ```
 
-Before original Touch capture, the runtime releases both semantic-hand
-overrides and retains recovery ownership for settings effects. The recorder
-therefore cannot silently sample an already overridden Touch pose. Both
-calibrated profiles persist before the apply transaction starts. `Active` is
-allowed only after both VMT transforms and exact source-to-hand mappings apply;
-if either side fails, the transaction rolls back effects from that attempt.
-Cancellation or failure before or during capture also runs cleanup. The safe
-terminal state has no active hand override and preserves unrelated SteamVR
+Before original Touch capture, the runtime performs a two-phase safety pass.
+It first releases and verifies, for both hands, every mapping that references an
+LTB application source or targets the intended semantic hand. Only after every
+release succeeds does it deactivate the selected VMT sources. If any release
+fails or times out, no selected source is deactivated and recording does not
+start; other mapping-release attempts still run, unrelated settings remain
+unchanged, and cleanup is reported incomplete. The recorder therefore cannot
+silently sample an already overridden Touch pose or create a stale surviving
+override during preparation.
+
+Both calibrated profiles persist before the apply transaction starts. `Active`
+is allowed only after both VMT transforms and source-to-hand mappings apply; if
+either side fails, the transaction rolls back effects from that attempt.
+Cancellation or failure before or during capture also runs cleanup. Successful
+cleanup leaves no active hand override and preserves unrelated SteamVR
 settings; it does not reactivate a prior hand mapping that could name a stale
 source.
 
@@ -647,12 +656,20 @@ Active + SteamVR stop  -> SafeDisable -> Stopped
 clean shutdown         -> SafeDisable -> Stopped
 ```
 
-SafeDisable is complete only after all applicable virtual devices are disabled
-and the exact LTB-owned hand mappings are released. Cleanup is best-effort
-across independent surfaces: one failure does not suppress the other attempt,
-each operation has an independent two-second bound, and every failure remains
-observable. Reacquisition must then pass the normal `Ready -> ApplyProfile ->
-Active` path; it cannot reactivate a cached mapping or stale source.
+Two-hand SafeDisable is complete only after every relevant source/semantic-hand
+mapping is released and each corresponding virtual source is disabled. Cleanup
+is source-preserving and ordered per application: atomically release or roll
+back every mapping that references the configured or discovered application
+source or targets its intended semantic hand, verify that bounded settings
+operation, and only then deactivate that VMT source. Unrelated mappings and
+settings are preserved. If mapping cleanup fails or times out, the source
+remains running so any surviving override still has a live pose source. The
+coordinator records the failure, skips deactivation for that source, and
+continues independent cleanup for the other hand. A later VMT-deactivation
+failure is also reported. Any failure makes cleanup incomplete and requires
+exit code `4` plus manual inspection.
+Reacquisition must then pass the normal `Ready -> ApplyProfile -> Active` path;
+it cannot reactivate a cached mapping or stale source.
 
 OpenVR quit events are health inputs rather than unhandled process events. A
 runtime quit is acknowledged through OpenVR and classified as stopped; a

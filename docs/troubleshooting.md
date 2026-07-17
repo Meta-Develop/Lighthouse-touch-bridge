@@ -193,9 +193,10 @@ changed mount routes to recalibration rather than applying an unknown transform.
 ### Tracker or Touch disconnects
 
 The expected sequence is `Active -> SafeDisable -> WaitingForDevices`. LTB
-first disables every active two-hand VMT profile and releases every LTB-owned
-hand mapping, then waits for the required stable serial and role. The one-hand
-`bridge` command applies the same rule to its single active profile.
+first releases and verifies mappings that reference each application source or
+target its semantic hand, then disables the corresponding two-hand VMT profile.
+A mapping-release failure leaves that source running and makes cleanup
+incomplete. The one-hand `bridge` instead retains its legacy VMT-first order.
 Reconnecting a different same-class device or reusing a transient index must
 not satisfy the gate.
 
@@ -227,24 +228,46 @@ restart.
 ### A virtual hand appears frozen
 
 Stop interaction immediately and keep the setup non-worn. Request a managed
-shutdown and confirm both VMT deactivation and exact mapping release. If LTB
-cannot report successful cleanup, inspect every selected VMT slot and each
-exact LTB-owned `TrackingOverrides` entry before reusing either hand. Do not
-remove unrelated mappings or infer safety from a SteamVR restart alone.
+shutdown. For `wizard` or `daily`, confirm exact mapping release precedes the
+corresponding VMT deactivation; for `bridge`, confirm its legacy VMT-first
+sequence completes. If LTB cannot report successful cleanup, inspect every
+selected VMT slot and every `TrackingOverrides` entry that references an
+application source or targets its semantic hand before reusing either hand. Do
+not remove unrelated mappings or infer safety from a SteamVR restart alone.
 
 ## SafeDisable and rollback
 
 ### Exit code `4` or a cleanup-failure event
 
-LTB attempts both cleanup surfaces even if one fails: VMT deactivation first,
-then exact settings release. Exit code `4` means at least one operation could
-not be confirmed or an application rollback failed. Each independent cleanup
-operation has a two-second bound; timing out one operation does not skip the
-other. Exit code `4` does not claim that the final state is safe.
+For active production two-hand `wizard` and `daily` cleanup, LTB first releases
+or rolls back and verifies all mappings that reference the configured or
+discovered application source or target its semantic hand. It deactivates that
+VMT source only after the bounded settings operation succeeds. If mapping
+release fails or times out, LTB intentionally leaves the affected source
+running so a surviving override does not immediately point at a stale source.
+It records the failure, skips deactivation for that source, and continues
+independent cleanup for the other hand.
 
-Stop LTB and SteamVR, preserve redacted evidence, inspect both surfaces, and
-use the reviewed manual recovery in [setup.md](setup.md). Do not start another
-active session until no unreviewed mapping remains.
+The production wizard's pre-capture `OverrideRelease` is stricter: it attempts
+the source/semantic-hand release for both hands before any selected VMT source
+is deactivated. If either release fails, it leaves both sources running and
+does not start recording. Exit code `4` means at least one operation could not
+be confirmed or an application rollback failed; it does not claim that the
+final state is safe.
+
+Keep the setup non-worn and preserve redacted evidence. Do not manually disable
+an affected VMT source while SteamVR may still retain its mapping. Inspect both
+surfaces, release or recover only the reviewed relevant mappings, then verify
+the source can be disabled safely. Include both mappings that reference the
+application source and mappings that target its semantic hand in that review.
+Stop SteamVR if needed to establish a safe runtime boundary, and use the
+reviewed manual recovery in
+[setup.md](setup.md). Do not start another active session until no unreviewed
+mapping remains.
+
+The legacy one-hand `bridge` retains its VMT-first cleanup order and still
+attempts exact settings release after a deactivation failure. Interpret cleanup
+messages in the context of the command that produced them.
 
 ### Two-hand application fails partway through
 
