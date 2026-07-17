@@ -944,29 +944,8 @@ public static class HandEyeCalibrationSolver
 
     private static double ComputeAxisCoverage(IReadOnlyList<RelativeMotion> motions)
     {
-        if (motions.Count == 0)
-        {
-            return 0d;
-        }
-
-        var tensor = new double[3, 3];
-        foreach (var motion in motions)
-        {
-            var axis = RotationAxis(motion.TrackerMotion.Rotation);
-            var values = new[] { (double)axis.X, axis.Y, axis.Z };
-            for (var row = 0; row < 3; row++)
-            {
-                for (var column = 0; column < 3; column++)
-                {
-                    tensor[row, column] += values[row] * values[column];
-                }
-            }
-        }
-
-        var eigenvalues = EigenDecomposeSymmetric(tensor).Values.OrderBy(value => value).ToArray();
-        return eigenvalues[^1] > 1e-12d
-            ? Math.Max(0d, eigenvalues[^2] / eigenvalues[^1])
-            : 0d;
+        return MotionAxisCoverage.Compute(
+            motions.Select(motion => RotationAxis(motion.TrackerMotion.Rotation)));
     }
 
     private static double RotationResidualDegrees(RelativeMotion motion, Quaternion mountRotation)
