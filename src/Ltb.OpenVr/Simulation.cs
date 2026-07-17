@@ -81,13 +81,11 @@ public sealed class SimulatedTrackedPoseSource : TrackedPoseSource
     private static SteamVrDeviceDescriptor RequireTrackedDevice(SteamVrDeviceDescriptor device)
     {
         ArgumentNullException.ThrowIfNull(device);
-        if (device.Category is not (
-            SteamVrDeviceCategory.GenericTracker or
-            SteamVrDeviceCategory.HeadMountedDisplay or
-            SteamVrDeviceCategory.TrackingReference))
+        if (!device.Capabilities.HasPosition ||
+            device.Category == SteamVrDeviceCategory.InputController)
         {
             throw new ArgumentException(
-                "Tracked-pose source requires a tracker, HMD, or tracking-reference device.",
+                "Tracked-pose source requires a non-controller device with position capability.",
                 nameof(device));
         }
 

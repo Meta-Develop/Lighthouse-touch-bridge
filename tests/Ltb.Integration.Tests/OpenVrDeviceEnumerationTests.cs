@@ -29,7 +29,8 @@ public sealed class OpenVrDeviceEnumerationTests
                         "Oculus",
                         "Oculus",
                         "Miramar (Left Controller)",
-                        "oculus_touch")),
+                        "oculus_touch",
+                        "/drivers/oculus/resources/input/oculus_touch_profile.json")),
             ]);
         var enumerator = new OpenVrDeviceEnumeratorAdapter(runtime);
 
@@ -49,6 +50,15 @@ public sealed class OpenVrDeviceEnumerationTests
                 Assert.Equal("Oculus", controller.Metadata?.TrackingSystemName);
                 Assert.Equal("Miramar (Left Controller)", controller.Metadata?.ModelNumber);
                 Assert.Equal("oculus_touch", controller.Metadata?.ControllerType);
+                Assert.Equal(
+                    "/drivers/oculus/resources/input/oculus_touch_profile.json",
+                    controller.Metadata?.InputProfilePath);
+                Assert.True(controller.Capabilities.HasPosition);
+                Assert.Equal(
+                    SteamVrControllerFamily.MetaTouch,
+                    controller.Capabilities.ControllerFamily);
+                Assert.Equal("ALVR", controller.Capabilities.ControllerRuntime);
+                Assert.Equal("Quest 2 Touch", controller.Capabilities.ControllerModel);
             },
             tracker =>
             {
@@ -60,6 +70,7 @@ public sealed class OpenVrDeviceEnumerationTests
                 Assert.Equal(SteamVrDeviceCategory.GenericTracker, tracker.Category);
                 Assert.Equal(SteamVrControllerRole.None, tracker.ControllerRole);
                 Assert.True(tracker.IsConnected);
+                Assert.True(tracker.CanUseAsPhysicalPoseSource);
             });
     }
 
@@ -73,6 +84,92 @@ public sealed class OpenVrDeviceEnumerationTests
         Assert.Equal(first.Identity, reconnected.Identity);
         Assert.Equal(first.StableDeviceId, reconnected.StableDeviceId);
         Assert.True(first.IsSamePhysicalDeviceAs(reconnected));
+    }
+
+    [Fact]
+    public void LegacyAndExtendedPublicConstructorAritiesRemainAvailable()
+    {
+        Assert.NotNull(typeof(SteamVrDeviceMetadata).GetConstructor(
+        [
+            typeof(string),
+            typeof(string),
+            typeof(string),
+            typeof(string),
+            typeof(string),
+        ]));
+        Assert.NotNull(typeof(SteamVrDeviceMetadata).GetConstructor(
+        [
+            typeof(string),
+            typeof(string),
+            typeof(string),
+            typeof(string),
+            typeof(string),
+            typeof(string),
+        ]));
+        Assert.NotNull(typeof(SteamVrDeviceDescriptor).GetConstructor(
+        [
+            typeof(SteamVrDeviceIdentity),
+            typeof(uint),
+            typeof(SteamVrDeviceCategory),
+            typeof(SteamVrControllerRole),
+            typeof(bool),
+            typeof(SteamVrDeviceMetadata),
+        ]));
+        Assert.NotNull(typeof(SteamVrDeviceDescriptor).GetConstructor(
+        [
+            typeof(SteamVrDeviceIdentity),
+            typeof(uint),
+            typeof(SteamVrDeviceCategory),
+            typeof(SteamVrControllerRole),
+            typeof(bool),
+            typeof(SteamVrDeviceMetadata),
+            typeof(SteamVrDeviceCapabilities),
+        ]));
+
+        var legacyMetadata = new SteamVrDeviceMetadata(
+            "lighthouse",
+            "lighthouse",
+            "Tracker Vendor",
+            "Generic Tracker",
+            controllerType: null);
+        var extendedMetadata = new SteamVrDeviceMetadata(
+            "lighthouse",
+            "lighthouse",
+            "Tracker Vendor",
+            "Generic Tracker",
+            controllerType: null,
+            inputProfilePath: null);
+        var identity = new SteamVrDeviceIdentity(
+            "TRACKER-COMPAT",
+            "/devices/lighthouse/TRACKER-COMPAT");
+        var defaultMetadataDescriptor = new SteamVrDeviceDescriptor(
+            identity,
+            7,
+            SteamVrDeviceCategory.GenericTracker,
+            SteamVrControllerRole.None,
+            isConnected: true);
+        var legacyDescriptor = new SteamVrDeviceDescriptor(
+            identity,
+            7,
+            SteamVrDeviceCategory.GenericTracker,
+            SteamVrControllerRole.None,
+            isConnected: true,
+            legacyMetadata);
+        var extendedDescriptor = new SteamVrDeviceDescriptor(
+            identity,
+            7,
+            SteamVrDeviceCategory.GenericTracker,
+            SteamVrControllerRole.None,
+            isConnected: true,
+            extendedMetadata,
+            capabilities: null);
+
+        Assert.Null(defaultMetadataDescriptor.Metadata);
+        Assert.Equal(legacyMetadata, extendedMetadata);
+        Assert.Equal(legacyDescriptor.Metadata, extendedDescriptor.Metadata);
+        Assert.Equal(legacyDescriptor.Capabilities, extendedDescriptor.Capabilities);
+        Assert.True(legacyDescriptor.CanUseAsPhysicalPoseSource);
+        Assert.True(extendedDescriptor.CanUseAsPhysicalPoseSource);
     }
 
     [Fact]

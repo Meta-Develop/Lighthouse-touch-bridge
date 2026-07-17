@@ -33,6 +33,23 @@ public sealed record SteamVrDeviceMetadata
         string? manufacturerName,
         string? modelNumber,
         string? controllerType)
+        : this(
+            driverId,
+            trackingSystemName,
+            manufacturerName,
+            modelNumber,
+            controllerType,
+            inputProfilePath: null)
+    {
+    }
+
+    public SteamVrDeviceMetadata(
+        string driverId,
+        string? trackingSystemName,
+        string? manufacturerName,
+        string? modelNumber,
+        string? controllerType,
+        string? inputProfilePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(driverId);
         DriverId = driverId;
@@ -40,6 +57,7 @@ public sealed record SteamVrDeviceMetadata
         ManufacturerName = NormalizeOptional(manufacturerName);
         ModelNumber = NormalizeOptional(modelNumber);
         ControllerType = NormalizeOptional(controllerType);
+        InputProfilePath = NormalizeOptional(inputProfilePath);
     }
 
     public string DriverId { get; }
@@ -51,6 +69,12 @@ public sealed record SteamVrDeviceMetadata
     public string? ModelNumber { get; }
 
     public string? ControllerType { get; }
+
+    /// <summary>
+    /// OpenVR input-profile path reported by the active driver. This is runtime
+    /// evidence and is not inferred from a stored calibration profile.
+    /// </summary>
+    public string? InputProfilePath { get; }
 
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -87,6 +111,25 @@ public sealed record SteamVrDeviceDescriptor
         SteamVrControllerRole controllerRole,
         bool isConnected,
         SteamVrDeviceMetadata? metadata = null)
+        : this(
+            identity,
+            transientDeviceIndex,
+            category,
+            controllerRole,
+            isConnected,
+            metadata,
+            capabilities: null)
+    {
+    }
+
+    public SteamVrDeviceDescriptor(
+        SteamVrDeviceIdentity identity,
+        uint transientDeviceIndex,
+        SteamVrDeviceCategory category,
+        SteamVrControllerRole controllerRole,
+        bool isConnected,
+        SteamVrDeviceMetadata? metadata,
+        SteamVrDeviceCapabilities? capabilities)
     {
         Identity = identity ?? throw new ArgumentNullException(nameof(identity));
         if (!Enum.IsDefined(category))
@@ -112,6 +155,11 @@ public sealed record SteamVrDeviceDescriptor
         ControllerRole = controllerRole;
         IsConnected = isConnected;
         Metadata = metadata;
+        Capabilities = capabilities ?? SteamVrDeviceCapabilityClassifier.Infer(
+            identity.DevicePath,
+            category,
+            controllerRole,
+            metadata);
     }
 
     public SteamVrDeviceIdentity Identity { get; }
@@ -129,6 +177,23 @@ public sealed record SteamVrDeviceDescriptor
     public bool IsConnected { get; }
 
     public SteamVrDeviceMetadata? Metadata { get; }
+
+    /// <summary>
+    /// Data-driven runtime capabilities used for hardware-family-independent
+    /// selection. These capabilities do not replace current connection or pose
+    /// validity checks.
+    /// </summary>
+    public SteamVrDeviceCapabilities Capabilities { get; }
+
+    /// <summary>
+    /// True only for a connected, position-capable physical tracked device
+    /// that may authoritatively source the bridged runtime pose.
+    /// </summary>
+    public bool CanUseAsPhysicalPoseSource =>
+        IsConnected &&
+        Capabilities.HasPosition &&
+        Capabilities.IsPhysicalPoseSourceEligible &&
+        !Capabilities.IsVirtualPoseSource;
 
     /// <summary>Canonical persistent key used for tracker association.</summary>
     public string StableDeviceId => Identity.SerialNumber;

@@ -95,7 +95,10 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                             ValveVr.ETrackedDeviceProperty.Prop_ModelNumber_String),
                         ReadStringProperty(
                             index,
-                            ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String));
+                            ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String),
+                        ReadStringProperty(
+                            index,
+                            ValveVr.ETrackedDeviceProperty.Prop_InputProfilePath_String));
                 }
 
                 devices.Add(new OpenVrRuntimeDevice(

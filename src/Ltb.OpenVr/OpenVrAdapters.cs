@@ -157,13 +157,11 @@ internal sealed class OpenVrTrackedPoseSourceAdapter :
     private static SteamVrDeviceDescriptor RequireTrackedDevice(SteamVrDeviceDescriptor device)
     {
         ArgumentNullException.ThrowIfNull(device);
-        if (device.Category is not (
-            SteamVrDeviceCategory.GenericTracker or
-            SteamVrDeviceCategory.HeadMountedDisplay or
-            SteamVrDeviceCategory.TrackingReference))
+        if (!device.Capabilities.HasPosition ||
+            device.Category == SteamVrDeviceCategory.InputController)
         {
             throw new ArgumentException(
-                "Device must be a tracker, HMD, or tracking reference.",
+                "Device must be a non-controller tracked device with position capability.",
                 nameof(device));
         }
 
