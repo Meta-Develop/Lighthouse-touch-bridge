@@ -172,6 +172,7 @@ internal sealed class ReliableDailyUseCoordinator
     private readonly ICalibrationWizardBackend _backend;
     private readonly ILtbLogSink _logSink;
     private readonly ReliableDailyUseOptions _options;
+    private readonly TwoHandProfileApplicationTransaction _profileApplicationTransaction;
     private readonly TimeProvider _timeProvider;
     private readonly List<RuntimeApplicationState> _history = [];
 
@@ -187,6 +188,9 @@ internal sealed class ReliableDailyUseCoordinator
         _logSink = logSink ?? NullLtbLogSink.Instance;
         _options = options ?? new ReliableDailyUseOptions();
         _options.Validate();
+        _profileApplicationTransaction = new TwoHandProfileApplicationTransaction(
+            _runtime,
+            _options.CleanupTimeout);
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -203,8 +207,7 @@ internal sealed class ReliableDailyUseCoordinator
         RecordCurrentState("daily-use coordinator is stopped before startup");
 
         IReadOnlyList<CalibrationWizardProfileView>? profiles = null;
-        IReadOnlyList<DailyUseProfileApplication> activeApplications =
-            Array.Empty<DailyUseProfileApplication>();
+        TwoHandProfileApplicationLease? activeLease = null;
         var accumulatedRollbackFailures = new List<Exception>();
 
         try
@@ -253,11 +256,24 @@ internal sealed class ReliableDailyUseCoordinator
                 Transition(
                     RuntimeApplicationState.ApplyProfile,
                     "applying the two serial-matched profiles as one transaction");
-                var apply = await ApplyProfilesTransactionAsync(profiles, cancellationToken)
+                var apply = await _profileApplicationTransaction.ApplyAsync(
+                        profiles,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 accumulatedRollbackFailures.AddRange(apply.RollbackFailures);
                 if (!apply.Success)
                 {
+                    Log(
+                        apply.RollbackFailures.Count == 0
+                            ? LtbLogLevel.Warning
+                            : LtbLogLevel.Error,
+                        apply.RollbackFailures.Count == 0
+                            ? LtbDiagnosticCode.RollbackCompleted
+                            : LtbDiagnosticCode.RollbackFailed,
+                        apply.RollbackFailures.Count == 0
+                            ? "Partial profile application was rolled back in reverse order."
+                            : $"Profile rollback reported " +
+                              $"{apply.RollbackFailures.Count} failure(s).");
                     Log(
                         LtbLogLevel.Error,
                         LtbDiagnosticCode.ProfileApplyFailed,
@@ -292,9 +308,9 @@ internal sealed class ReliableDailyUseCoordinator
                         rollbackFailures: accumulatedRollbackFailures);
                 }
 
-                activeApplications = apply.Applications;
+                activeLease = apply.Lease!;
                 var health = await _runtime.CheckHealthAsync(
-                        activeApplications,
+                        activeLease.Applications,
                         cancellationToken)
                     .ConfigureAwait(false);
                 if (health.IsHealthy)
@@ -305,7 +321,7 @@ internal sealed class ReliableDailyUseCoordinator
                         "Both hand profiles passed the post-apply health gate and were committed.",
                         new Dictionary<string, string>
                         {
-                            ["profileCount"] = activeApplications.Count.ToString(
+                            ["profileCount"] = activeLease.Applications.Count.ToString(
                                 System.Globalization.CultureInfo.InvariantCulture),
                         });
                     Transition(
@@ -313,16 +329,16 @@ internal sealed class ReliableDailyUseCoordinator
                         "both serial-matched hand profiles are active");
 
                     health = await MonitorUntilFailureAsync(
-                            activeApplications,
+                            activeLease.Applications,
                             cancellationToken)
                         .ConfigureAwait(false);
                 }
 
                 LogHealthFailure(health);
 
-                var safeDisableFailures = await SafeDisableAsync(activeApplications)
+                var safeDisableFailures = await SafeDisableAsync(activeLease)
                     .ConfigureAwait(false);
-                activeApplications = Array.Empty<DailyUseProfileApplication>();
+                activeLease = null;
                 if (safeDisableFailures.Count > 0)
                 {
                     Transition(
@@ -378,10 +394,10 @@ internal sealed class ReliableDailyUseCoordinator
                 LtbLogLevel.Error,
                 LtbDiagnosticCode.SteamVrStopped,
                 exception.Message);
-            var safeDisableFailures = activeApplications.Count == 0
+            var safeDisableFailures = activeLease is null
                 ? Array.Empty<Exception>()
-                : await SafeDisableAsync(activeApplications).ConfigureAwait(false);
-            activeApplications = Array.Empty<DailyUseProfileApplication>();
+                : await SafeDisableAsync(activeLease).ConfigureAwait(false);
+            activeLease = null;
             Transition(
                 RuntimeApplicationState.Stopped,
                 safeDisableFailures.Count == 0
@@ -401,9 +417,9 @@ internal sealed class ReliableDailyUseCoordinator
                 LtbLogLevel.Information,
                 LtbDiagnosticCode.ShutdownRequested,
                 "Clean shutdown was requested.");
-            var safeDisableFailures = activeApplications.Count == 0
+            var safeDisableFailures = activeLease is null
                 ? Array.Empty<Exception>()
-                : await SafeDisableAsync(activeApplications).ConfigureAwait(false);
+                : await SafeDisableAsync(activeLease).ConfigureAwait(false);
             Transition(
                 RuntimeApplicationState.Stopped,
                 safeDisableFailures.Count == 0
@@ -430,9 +446,9 @@ internal sealed class ReliableDailyUseCoordinator
                     ["exceptionType"] = exception.GetType().Name,
                     ["exceptionMessage"] = exception.Message,
                 });
-            var safeDisableFailures = activeApplications.Count == 0
+            var safeDisableFailures = activeLease is null
                 ? Array.Empty<Exception>()
-                : await SafeDisableAsync(activeApplications).ConfigureAwait(false);
+                : await SafeDisableAsync(activeLease).ConfigureAwait(false);
             Transition(
                 RuntimeApplicationState.Stopped,
                 "an unexpected runtime failure stopped the daily-use coordinator");
@@ -560,78 +576,8 @@ internal sealed class ReliableDailyUseCoordinator
         }
     }
 
-    private async Task<ProfileApplyAttempt> ApplyProfilesTransactionAsync(
-        IReadOnlyList<CalibrationWizardProfileView> profiles,
-        CancellationToken cancellationToken)
-    {
-        var touched = new List<DailyUseProfileApplication>(profiles.Count);
-        try
-        {
-            foreach (var profile in profiles.OrderBy(profile => profile.Hand))
-            {
-                var application = _runtime.CreateProfileApplication(profile)
-                    ?? throw new InvalidOperationException(
-                        "The daily-use runtime returned a null profile-application handle.");
-                if (!ReferenceEquals(application.Profile, profile) &&
-                    application.Profile != profile)
-                {
-                    throw new InvalidOperationException(
-                        "The daily-use runtime created a handle for a different profile.");
-                }
-
-                // Add before apply: a throw after the first external side effect
-                // must still deactivate this touched VMT slot and settings entry.
-                touched.Add(application);
-                await _runtime.ApplyProfileAsync(application, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            return ProfileApplyAttempt.Succeeded(touched.AsReadOnly());
-        }
-        catch (Exception failure)
-        {
-            var rollbackFailures = new List<Exception>();
-            foreach (var application in touched.AsEnumerable().Reverse())
-            {
-                var deactivateFailure = await RunBoundedCleanupAsync(
-                        token => _runtime.DeactivateProfileAsync(application, token),
-                        $"rollback VMT deactivation for {application.Profile.Hand}")
-                    .ConfigureAwait(false);
-                if (deactivateFailure is not null)
-                {
-                    rollbackFailures.Add(new InvalidOperationException(
-                        $"Rollback VMT deactivation failed for {application.Profile.Hand} profile " +
-                        $"'{application.Profile.ProfileName}': {deactivateFailure.Message}",
-                        deactivateFailure));
-                }
-
-                var overrideFailure = await RunBoundedCleanupAsync(
-                        token => _runtime.RollbackProfileOverrideAsync(application, token),
-                        $"TrackingOverride rollback for {application.Profile.Hand}")
-                    .ConfigureAwait(false);
-                if (overrideFailure is not null)
-                {
-                    rollbackFailures.Add(new InvalidOperationException(
-                        $"TrackingOverride rollback failed for {application.Profile.Hand} profile " +
-                        $"'{application.Profile.ProfileName}': {overrideFailure.Message}",
-                        overrideFailure));
-                }
-            }
-
-            Log(
-                rollbackFailures.Count == 0 ? LtbLogLevel.Warning : LtbLogLevel.Error,
-                rollbackFailures.Count == 0
-                    ? LtbDiagnosticCode.RollbackCompleted
-                    : LtbDiagnosticCode.RollbackFailed,
-                rollbackFailures.Count == 0
-                    ? "Partial profile application was rolled back in reverse order."
-                    : $"Profile rollback reported {rollbackFailures.Count} failure(s).");
-            return ProfileApplyAttempt.Failed(failure, rollbackFailures.AsReadOnly());
-        }
-    }
-
     private async Task<IReadOnlyList<Exception>> SafeDisableAsync(
-        IReadOnlyList<DailyUseProfileApplication> applications)
+        TwoHandProfileApplicationLease lease)
     {
         Transition(
             RuntimeApplicationState.SafeDisable,
@@ -641,34 +587,7 @@ internal sealed class ReliableDailyUseCoordinator
             LtbDiagnosticCode.SafeDisableStarted,
             "SafeDisable started for all active hand profiles.");
 
-        var failures = new List<Exception>();
-        foreach (var application in applications.AsEnumerable().Reverse())
-        {
-            var deactivateFailure = await RunBoundedCleanupAsync(
-                    token => _runtime.DeactivateProfileAsync(application, token),
-                    $"SafeDisable VMT deactivation for {application.Profile.Hand}")
-                .ConfigureAwait(false);
-            if (deactivateFailure is not null)
-            {
-                failures.Add(new InvalidOperationException(
-                    $"SafeDisable VMT deactivation failed for {application.Profile.Hand} profile " +
-                    $"'{application.Profile.ProfileName}': {deactivateFailure.Message}",
-                    deactivateFailure));
-            }
-
-            var releaseFailure = await RunBoundedCleanupAsync(
-                    token => _runtime.ReleaseProfileOverrideAsync(application, token),
-                    $"SafeDisable TrackingOverride release for {application.Profile.Hand}")
-                .ConfigureAwait(false);
-            if (releaseFailure is not null)
-            {
-                failures.Add(new InvalidOperationException(
-                    $"SafeDisable TrackingOverride release failed for " +
-                    $"{application.Profile.Hand} profile '{application.Profile.ProfileName}': " +
-                    releaseFailure.Message,
-                    releaseFailure));
-            }
-        }
+        var failures = await lease.SafeDisableAsync().ConfigureAwait(false);
 
         Log(
             failures.Count == 0 ? LtbLogLevel.Information : LtbLogLevel.Error,
@@ -678,60 +597,7 @@ internal sealed class ReliableDailyUseCoordinator
             failures.Count == 0
                 ? "SafeDisable completed for every active hand profile."
                 : $"SafeDisable attempted every hand and reported {failures.Count} failure(s).");
-        return failures.AsReadOnly();
-    }
-
-    private async Task<Exception?> RunBoundedCleanupAsync(
-        Func<CancellationToken, Task> operation,
-        string operationName)
-    {
-        using var timeoutStop = new CancellationTokenSource(_options.CleanupTimeout);
-        Task operationTask;
-        try
-        {
-            operationTask = operation(timeoutStop.Token)
-                ?? throw new InvalidOperationException(
-                    $"{operationName} returned a null task.");
-        }
-        catch (Exception exception)
-        {
-            return exception;
-        }
-
-        try
-        {
-            await operationTask.WaitAsync(_options.CleanupTimeout).ConfigureAwait(false);
-            return null;
-        }
-        catch (OperationCanceledException exception) when (timeoutStop.IsCancellationRequested)
-        {
-            ObserveLateFailure(operationTask);
-            return new TimeoutException(
-                $"{operationName} exceeded the {_options.CleanupTimeout.TotalSeconds:R}-second cleanup timeout.",
-                exception);
-        }
-        catch (TimeoutException exception)
-        {
-            await timeoutStop.CancelAsync().ConfigureAwait(false);
-            ObserveLateFailure(operationTask);
-            return new TimeoutException(
-                $"{operationName} exceeded the {_options.CleanupTimeout.TotalSeconds:R}-second cleanup timeout.",
-                exception);
-        }
-        catch (Exception exception)
-        {
-            return exception;
-        }
-    }
-
-    private static void ObserveLateFailure(Task operationTask)
-    {
-        _ = operationTask.ContinueWith(
-            completed => _ = completed.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously |
-            TaskContinuationOptions.OnlyOnFaulted,
-            TaskScheduler.Default);
+        return failures;
     }
 
     private static IReadOnlyList<CalibrationWizardProfileView> NormalizeProfiles(
@@ -870,23 +736,4 @@ internal sealed class ReliableDailyUseCoordinator
         }
     }
 
-    private sealed record ProfileApplyAttempt(
-        bool Success,
-        IReadOnlyList<DailyUseProfileApplication> Applications,
-        Exception? Failure,
-        IReadOnlyList<Exception> RollbackFailures)
-    {
-        public static ProfileApplyAttempt Succeeded(
-            IReadOnlyList<DailyUseProfileApplication> applications) =>
-            new(true, applications, null, Array.Empty<Exception>());
-
-        public static ProfileApplyAttempt Failed(
-            Exception failure,
-            IReadOnlyList<Exception> rollbackFailures) =>
-            new(
-                false,
-                Array.Empty<DailyUseProfileApplication>(),
-                failure,
-                rollbackFailures);
-    }
 }

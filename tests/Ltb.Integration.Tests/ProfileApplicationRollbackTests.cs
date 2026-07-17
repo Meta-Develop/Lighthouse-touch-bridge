@@ -129,6 +129,70 @@ public sealed class ProfileApplicationRollbackTests
             entry => entry.Code == LtbDiagnosticCode.RollbackFailed);
     }
 
+    [Fact]
+    public async Task CancellationDuringSecondApplyUnwindsTouchedReceiptsWithoutUsingCancelledToken()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var runtime = new ReliableDailyUseFakeRuntime(new ReliableManualTimeProvider());
+        var cancellingRuntime = new CancellingApplyRuntime(runtime, cancellation, cancelOnCall: 2);
+        var transaction = new TwoHandProfileApplicationTransaction(
+            cancellingRuntime,
+            TimeSpan.FromSeconds(2));
+
+        var attempt = await transaction.ApplyAsync(
+            ReliableProfileBackend.CreateProfiles().Reverse().ToArray(),
+            cancellation.Token);
+
+        Assert.False(attempt.Success);
+        Assert.IsType<OperationCanceledException>(attempt.Failure);
+        Assert.Null(attempt.Lease);
+        Assert.Empty(attempt.RollbackFailures);
+        Assert.Equal(
+            [
+                "deactivate:right:0",
+                "rollback-override:right:0",
+                "deactivate:left:0",
+                "rollback-override:left:0",
+            ],
+            RollbackJournal(runtime));
+        Assert.Empty(runtime.ActiveOverrideHands);
+        Assert.Empty(runtime.ActiveVmtHands);
+    }
+
+    [Fact]
+    public async Task SuccessfulLeaseCanRollbackBothHandsOnceInReverseOrder()
+    {
+        var runtime = new ReliableDailyUseFakeRuntime(new ReliableManualTimeProvider());
+        var transaction = new TwoHandProfileApplicationTransaction(
+            runtime,
+            TimeSpan.FromSeconds(2));
+
+        var attempt = await transaction.ApplyAsync(
+            ReliableProfileBackend.CreateProfiles().Reverse().ToArray());
+
+        Assert.True(attempt.Success);
+        Assert.Null(attempt.Failure);
+        Assert.Empty(attempt.RollbackFailures);
+        var lease = Assert.IsType<TwoHandProfileApplicationLease>(attempt.Lease);
+        Assert.Equal(
+            [CalibrationWizardHand.Left, CalibrationWizardHand.Right],
+            lease.Applications.Select(application => application.Profile.Hand));
+
+        Assert.Empty(await lease.RollbackAsync());
+        Assert.Empty(await lease.RollbackAsync());
+
+        Assert.Equal(
+            [
+                "deactivate:right:0",
+                "rollback-override:right:0",
+                "deactivate:left:0",
+                "rollback-override:left:0",
+            ],
+            RollbackJournal(runtime));
+        Assert.Empty(runtime.ActiveOverrideHands);
+        Assert.Empty(runtime.ActiveVmtHands);
+    }
+
     private static RollbackContext CreateContext(TimeSpan? cleanupTimeout = null)
     {
         var time = new ReliableManualTimeProvider();
@@ -165,4 +229,73 @@ public sealed class ProfileApplicationRollbackTests
         ReliableDailyUseCoordinator Coordinator,
         ReliableDailyUseFakeRuntime Runtime,
         InMemoryLtbLogSink Log);
+
+    private sealed class CancellingApplyRuntime : IReliableDailyUseRuntime
+    {
+        private readonly ReliableDailyUseFakeRuntime _inner;
+        private readonly CancellationTokenSource _cancellation;
+        private readonly int _cancelOnCall;
+        private int _applyCalls;
+
+        public CancellingApplyRuntime(
+            ReliableDailyUseFakeRuntime inner,
+            CancellationTokenSource cancellation,
+            int cancelOnCall)
+        {
+            _inner = inner;
+            _cancellation = cancellation;
+            _cancelOnCall = cancelOnCall;
+        }
+
+        public DailyUseProfileApplication CreateProfileApplication(
+            CalibrationWizardProfileView profile) =>
+            _inner.CreateProfileApplication(profile);
+
+        public async Task ApplyProfileAsync(
+            DailyUseProfileApplication application,
+            CancellationToken cancellationToken)
+        {
+            await _inner.ApplyProfileAsync(application, cancellationToken);
+            _applyCalls++;
+            if (_applyCalls == _cancelOnCall)
+            {
+                _cancellation.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+
+        public Task DeactivateProfileAsync(
+            DailyUseProfileApplication application,
+            CancellationToken cancellationToken) =>
+            _inner.DeactivateProfileAsync(application, cancellationToken);
+
+        public Task RollbackProfileOverrideAsync(
+            DailyUseProfileApplication application,
+            CancellationToken cancellationToken) =>
+            _inner.RollbackProfileOverrideAsync(application, cancellationToken);
+
+        public Task ReleaseProfileOverrideAsync(
+            DailyUseProfileApplication application,
+            CancellationToken cancellationToken) =>
+            _inner.ReleaseProfileOverrideAsync(application, cancellationToken);
+
+        public Task<CalibrationWizardDependencyStatus> CheckDependenciesAsync(
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task WaitForSteamVrAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<DailyUseDeviceReadiness> ProbeDeviceReadinessAsync(
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<RuntimeHealthSnapshot> CheckHealthAsync(
+            IReadOnlyList<DailyUseProfileApplication> activeApplications,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
 }
