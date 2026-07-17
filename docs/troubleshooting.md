@@ -33,11 +33,10 @@ channel before proceeding. Signing acceptance remains a Windows release task.
 
 ## Startup states
 
-For the production two-hand later-run path, use the exact `daily` command from
-[setup.md](setup.md). Its required arguments are the profile store, two
-distinct VMT slots from `0` through `57`, and the explicit
-`steamvr.vrsettings` path. The optional `--monitor-rate` and
-`--reconnect-delay` values default to `20` Hz and `0.25` seconds.
+For live first-run capture, use the exact production `wizard` command from
+[setup.md](setup.md#run-the-production-two-hand-wizard). For the two-hand
+later-run path, use `daily`. Both require the profile store, two distinct VMT
+slots from `0` through `57`, and the explicit `steamvr.vrsettings` path.
 
 ### Stuck at `DependencyCheck`
 
@@ -46,13 +45,22 @@ SteamVR, ALVR, or VMT. Install, enable, and configure missing third-party
 components separately, then restart the affected runtime. Do not expect LTB to
 change driver or firmware installation state.
 
-For `daily`, verify that `http://127.0.0.1:8082/api/version` returns a successful,
-nonempty response on the same Windows account. If ALVR uses a customized
-dashboard web-server port, restore the default port `8082` and restart ALVR.
+For `wizard` or `daily`, verify that `http://127.0.0.1:8082/api/version` returns
+a successful, nonempty response on the same Windows account. If ALVR uses a
+customized dashboard web-server port, restore the default port `8082` and
+restart ALVR.
 Version 0.1 has no CLI option for another ALVR dashboard port. The probe is
 loopback-only, has a 500 ms request bound, and is capped at 1 Hz; repeated
 `DependencyUnavailable` events should be fixed at ALVR rather than by raising
-the `daily` monitor rate.
+the monitor rate.
+
+If the diagnostic mentions the active display HMD, inspect the connected
+`HeadMountedDisplay` at transient OpenVR index `0`. LTB rejects
+Quest/ALVR/Meta/Oculus evidence and fails closed when driver or tracking-system
+metadata does not positively establish Lighthouse. Configure ALVR in tracking-
+reference-only mode, make the intended Lighthouse HMD the active SteamVR
+display, restart SteamVR, and retry. Changing a saved profile or an HMD display
+name cannot satisfy this dependency gate.
 
 ### Waiting at `WaitingForSteamVR`
 
@@ -113,11 +121,12 @@ and cannot be used as the physical source even when SteamVR classifies it as
 `GenericTracker`.
 
 A connected HMD descriptor is not filtered by a manufacturer/model allowlist,
-but LTB does not choose the active display or enforce a separate HMD readiness
-gate. If a newly named HMD, controller, or tracker has no completed hardware
-row in [windows-verification.md](windows-verification.md), treat the
-combination as unverified rather than diagnosing descriptor acceptance as live
-compatibility.
+and LTB does not choose the active display. The `wizard` and `daily` dependency
+gate instead requires the connected device at OpenVR index `0` to be an HMD
+with positive Lighthouse driver or tracking-system evidence. If a newly named
+HMD, controller, or tracker has no completed hardware row in
+[windows-verification.md](windows-verification.md), treat the combination as
+unverified rather than diagnosing descriptor acceptance as live compatibility.
 
 ### VMT slot appears with the wrong device class
 
@@ -152,7 +161,18 @@ calibration-quality result.
 Use broader pitch, yaw, and roll with valid tracking. Static motion,
 single-axis motion, corrupted orientation, or ambiguous tracker association
 cannot establish the mount rotation. The previous usable profile is not
-silently replaced by a failed capture.
+silently replaced by a failed capture. In the production wizard, existing hand
+overrides were released before capture and remain released after this failure;
+the stored profile surviving on disk does not imply that its mapping is active.
+
+### Original Touch motion is missing during capture
+
+Stop the attempt and inspect the structured state sequence. `OverrideRelease`
+must complete before `Recording`; otherwise the wizard must not treat the
+observed pose as original Touch evidence. Confirm ALVR is exposing both Touch
+roles, the original hand mappings are absent from the selected settings file,
+and Quest cameras can observe the controllers when position is needed. Do not
+manually activate another mapping during capture.
 
 ### Full 6DoF falls back to rotation-only
 
@@ -173,7 +193,7 @@ changed mount routes to recalibration rather than applying an unknown transform.
 ### Tracker or Touch disconnects
 
 The expected sequence is `Active -> SafeDisable -> WaitingForDevices`. LTB
-first disables every active daily-use VMT profile and releases every LTB-owned
+first disables every active two-hand VMT profile and releases every LTB-owned
 hand mapping, then waits for the required stable serial and role. The one-hand
 `bridge` command applies the same rule to its single active profile.
 Reconnecting a different same-class device or reusing a transient index must
@@ -196,11 +216,13 @@ another apply attempt.
 ### SteamVR stops
 
 The expected sequence is `Active -> SafeDisable -> Stopped`. A SteamVR stop is
-also terminal if it occurs while `daily` is recovering from VMT or device loss.
+also terminal if it occurs while `wizard` or `daily` is recovering from VMT or
+device loss.
 After an OpenVR session has been acquired, the current invocation never reopens
 it or reapplies profiles; successful bounded cleanup returns exit code `3`.
-Start a new SteamVR session, allow device identities to settle, and run `daily`
-again. Never assume a prior transient device index is valid after restart.
+Start a new SteamVR session, allow device identities to settle, and rerun the
+same command. Never assume a prior transient device index is valid after
+restart.
 
 ### A virtual hand appears frozen
 
@@ -226,11 +248,11 @@ active session until no unreviewed mapping remains.
 
 ### Two-hand application fails partway through
 
-The daily-use coordinator treats a two-hand apply as one transaction. If either
-hand fails, it rolls back effects created by that attempt and does not report
-`Active`. A rollback failure is surfaced as a structured error and requires
-manual inspection of both hands. Never assume the first hand was removed only
-because the second hand failed.
+The production wizard and daily-use coordinator treat a two-hand apply as one
+transaction. If either hand fails, they roll back effects created by that
+attempt and do not report `Active`. A rollback failure is surfaced as a
+structured error and requires manual inspection of both hands. Never assume
+the first hand was removed only because the second hand failed.
 
 ### Settings write or validation fails
 
@@ -251,17 +273,18 @@ Console destruction, OS crash, and power loss require the same manual review.
 
 ## Structured logs and evidence
 
-Each `daily` or `wizard-demo` event has a stable event code, severity, state,
-message, and UTC timestamp, with optional affected-hand, dependency, or wizard
-context.
+Each `wizard`, `daily`, or `wizard-demo` event has a stable event code,
+severity, state, message, and UTC timestamp, with optional affected-hand,
+dependency, or wizard context.
 Enable the local event file with:
 
 ```text
+Ltb.App.exe wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> --log <events.jsonl>
 Ltb.App.exe daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> --log <events.jsonl>
 Ltb.App.exe wizard-demo --profiles <profile-store.json> --log <events.jsonl>
 ```
 
-Both commands use the same sink. `--log` appends one JSON object per event and
+All three commands use the same sink. `--log` appends one JSON object per event and
 creates the parent directory when needed. Omitting it disables the JSONL sink;
 it does not create a default log. Wizard events distinguish
 `NoPositionAvailable`, `PoorTranslationObservability`, and
@@ -271,7 +294,7 @@ and exit code.
 
 ### A `RuntimeFailure` event appears
 
-`RuntimeFailure` means an unexpected daily-use adapter exception escaped its
+`RuntimeFailure` means an unexpected live-adapter exception escaped its
 normal typed health result. During active use, LTB records the exception type
 and message before it starts bounded cleanup; it does not write a stack trace to
 the structured event. Confirm that `RuntimeFailure` precedes

@@ -8,30 +8,25 @@ install SteamVR, ALVR, VMT, drivers, firmware, or any other third-party
 software. There is no GUI, installer, background service, cloud account, or
 telemetry.
 
-The production `bridge` command runs one saved calibration profile and VMT slot
-for one hand. The production `daily` command loads a complete two-hand profile
-store, owns two distinct VMT slots, applies both profiles as one transaction,
-monitors both hands, and can append structured events to a local JSON Lines
-file. Both commands use the live OpenVR, VMT, and SteamVR settings adapters.
+The production `wizard` command performs live two-hand capture, calibration,
+profile persistence, transactional VMT and `TrackingOverrides` application,
+and active-use monitoring. The production `bridge` command runs one saved
+calibration profile and VMT slot for one hand. The production `daily` command
+loads a complete two-hand profile store and applies and monitors both hands.
+All three use the live OpenVR, VMT, and SteamVR settings adapters; `wizard` and
+`daily` also enforce the active-Lighthouse-HMD dependency gate.
 
-The current `wizard-demo` command remains a deterministic fake capture/apply
-path for creating and reloading an example two-hand store. It is not a live
-SteamVR calibration wizard. Real `bridge` and `daily` behavior requires Windows
-x64 and the checks in [windows-verification.md](windows-verification.md).
-Automated Linux tests prove the portable state, rollback, settings, and logging
-contracts but are not hardware evidence.
+The `wizard-demo` command remains a deterministic fake capture/apply path for
+creating and reloading an example two-hand store. It never opens SteamVR, VMT,
+or host settings and is not a live calibration command. Automated Linux tests
+exercise the same wizard sequencing through injected fakes, including
+override release, original-pose capture, persistence, transactional apply,
+abort cleanup, and active-HMD rejection. Real OpenVR/VMT/ALVR/SteamVR timing,
+device provenance, and hardware behavior still require the unchecked Windows
+checks in [windows-verification.md](windows-verification.md).
 
-Run the scripted wizard from a source checkout with:
-
-```text
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
-```
-
-From an extracted package, use:
-
-```text
-Ltb.App.exe wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
-```
+The exact live and scripted commands are in
+[Run the production two-hand wizard](#run-the-production-two-hand-wizard).
 
 ## Milestone 5 device combinations
 
@@ -57,10 +52,10 @@ this matrix mean:
 | Physical pose | Vive Tracker | Descriptor-tested and pipeline-tested through association, synthetic calibration, and schema-1 persist/reload; selected by capability and exact serial, not its model name | Hardware pending |
 | Physical pose | Tundra Tracker | Descriptor-tested and pipeline-tested under the same physical-pose capability contract | Hardware pending |
 | Physical pose | Generic Lighthouse-tracked device | Descriptor-tested and pipeline-tested when OpenVR reports a connected positional physical pose source; VMT paths are explicitly excluded | Hardware pending for each actual device model |
-| Active HMD | Bigscreen Beyond 2/2e | Descriptor-tested with a Beyond 2e fake; the shared HMD inference has no model allowlist, but there is no separate Beyond 2 fake | Hardware pending for both models |
-| Active HMD | Valve Index | Descriptor-tested under the same HMD descriptor-inference contract | Hardware pending |
-| Active HMD | HTC Vive Pro 2 | Descriptor-tested under the same HMD descriptor-inference contract | Hardware pending |
-| Active HMD | Other Lighthouse HMD | OpenVR HMD descriptors receive class/capability inference without a display-name or manufacturer allowlist; SteamVR, not LTB, owns active-display selection | Hardware pending; treat as unverified until its checklist row passes |
+| Active HMD | Bigscreen Beyond 2/2e | Descriptor-tested with a Beyond 2e fake; the active-display gate accepts positive Lighthouse driver/tracking-system evidence without a model allowlist, but there is no separate Beyond 2 fake | Hardware pending for both models |
+| Active HMD | Valve Index | Descriptor-tested through the same active-display Lighthouse-evidence gate | Hardware pending |
+| Active HMD | HTC Vive Pro 2 | Descriptor-tested through the same active-display Lighthouse-evidence gate | Hardware pending |
+| Active HMD | Other Lighthouse HMD | The gate does not use a display-name/manufacturer allowlist, but it fails closed unless OpenVR index 0 reports positive Lighthouse driver or tracking-system evidence | Hardware pending; treat as unverified until its checklist row passes |
 
 Every intended combination still needs one Meta Touch input controller per
 hand, one distinct eligible physical pose source per hand, an active
@@ -75,8 +70,8 @@ Install and prepare these components before running the command:
 - SteamVR, running with the intended Lighthouse HMD;
 - [Virtual Motion Tracker (VMT)](https://gpsnmeajp.github.io/VirtualMotionTrackerDocument/setup/),
   installed, enabled in SteamVR add-ons, and visible to the runtime;
-- ALVR configured for a recognized Meta Touch controller profile without
-  taking over as the active HMD; `daily` requires both left/right roles and
+- ALVR configured in tracking-reference-only mode for a recognized Meta Touch
+  controller profile; `wizard` and `daily` require both left/right roles and
   inputs plus the local dashboard web server on default port `8082`, while
   one-hand `bridge` requires its selected role; and
 - each physical Lighthouse pose source named by a profile, powered on, fully
@@ -92,8 +87,9 @@ the same response port. If LTB cannot bind `39571`, it exits with a diagnostic
 instead of starting the override. The port assignments and command fields are
 defined by the [official VMT API](https://gpsnmeajp.github.io/VirtualMotionTrackerDocument/api/).
 
-The production `daily` command also requires a successful, nonempty response
-from `http://127.0.0.1:8082/api/version`. If the ALVR dashboard web-server port
+The production `wizard` and `daily` commands also require a successful,
+nonempty response from `http://127.0.0.1:8082/api/version`. If the ALVR
+dashboard web-server port
 was customized, restore it to the default `8082`, restart ALVR, and confirm that
 this URL responds locally before starting LTB. Version 0.1 has no CLI option for
 a different ALVR dashboard address or port; configurable-port support is not
@@ -122,11 +118,15 @@ identities. Confirm the physical pose source is a connected generic tracker
 and the intended Touch controller has the correct hand role.
 
 For a generalized combination, also confirm the physical source's path is not
-a VMT virtual-device path, the Meta Touch controller has a recognized family
-and any reported input-profile path is compatible, and SteamVR reports the
-intended connected HMD. HMD descriptors have no model-name allowlist, but LTB
-does not choose the display or enforce a separate HMD application-readiness
-gate; SteamVR remains responsible for the active HMD.
+a VMT virtual-device path and the Meta Touch controller has a recognized family
+and compatible reported input-profile path. SteamVR remains responsible for
+choosing the active display. Before `wizard` or `daily` can leave
+`DependencyCheck`, LTB inspects OpenVR transient index `0`, requires one
+connected `HeadMountedDisplay`, rejects Quest/ALVR/Meta/Oculus evidence, and
+requires positive Lighthouse evidence in the driver or tracking-system
+metadata. Missing, duplicate, conflicting, or unknown evidence fails closed.
+Configure ALVR in tracking-reference-only mode, make the intended Lighthouse
+HMD the active SteamVR display, restart SteamVR, and retry.
 
 A fresh VMT slot can be absent until LTB sends its first safe enabled Joint
 configuration. LTB always requests VMT mode `1` (`Tracker`), then discovers the
@@ -226,7 +226,7 @@ claim.
 The `daily` command requires one valid store containing exactly one reusable
 left profile and one reusable right profile with distinct tracker serials. It
 does not calibrate or repair an incomplete store. Use a reviewed store produced
-by the calibration workflow; `wizard-demo` can create only a deterministic fake
+by the production `wizard`; `wizard-demo` creates only a deterministic fake
 example for offline testing.
 
 ## Run the one-hand bridge
@@ -320,6 +320,62 @@ If Ctrl+C cleanup is incomplete, the command does not print that the bridge was
 safely disabled. It reports that manual override inspection is required and
 returns exit code `4`.
 
+## Run the production two-hand wizard
+
+Use this source-checkout command for first-run capture and calibration:
+
+```text
+dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+```
+
+From an extracted package, use:
+
+```text
+Ltb.App.exe wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+```
+
+The two VMT slots must be distinct. Keep the controllers observable to the
+Quest cameras if full 6DoF is desired, then follow the left-only and right-only
+multi-axis motion prompts. The first-run production sequence is:
+
+```text
+DependencyCheck -> WaitingForSteamVR -> WaitingForDevices -> Ready
+ -> OverrideRelease -> Recording(left, right) -> Association
+ -> TimeAlignment -> RotationSolve -> TranslationAttempt -> Validation
+ -> persist both profiles -> ApplyProfile -> Active
+```
+
+`OverrideRelease` removes existing mappings for both semantic hands before the
+recorder opens the original Touch pose sources. Capture uses those original
+Touch streams together with both candidate tracker streams. The existing
+association, lag, staged solver, Auto model-selection, quality, and schema-1
+persistence components then produce the two profiles. Application uses the
+same two-hand VMT and settings transaction as later daily use: both transforms
+and mappings must succeed before `Active` is reported.
+
+After activation, the same runtime watchdog used by `daily` monitors Touch,
+tracker, VMT, and SteamVR health. Ctrl+C or a health failure enters
+`SafeDisable`; cleanup disables the selected VMT slots and releases the exact
+LTB-owned hand mappings. If capture, persistence, application, cancellation,
+or monitoring fails, the command must not leave an active hand override.
+Unrelated SteamVR settings remain preserved. A failed first-run capture does
+not restore a previously active hand mapping because it could point at a stale
+source; inspect the settings explicitly before another attempt if cleanup is
+reported incomplete.
+
+When the store already contains a complete compatible serial-and-hand pair,
+the wizard may take the profile-reuse path and skip capture. Use `daily` for
+normal later starts once the stored pair has been reviewed.
+
+`wizard-demo` remains useful for an offline walkthrough:
+
+```text
+dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
+```
+
+It uses deterministic fake devices, never opens the live adapters, and cannot
+establish Windows or hardware readiness.
+
 ## Run reliable daily use
 
 Use this source-checkout command after a complete two-hand profile store exists:
@@ -348,15 +404,16 @@ uses an internal `0.5`-second pose-staleness threshold, a five-second VMT
 heartbeat/discovery bound, and a two-second bound for each independent cleanup
 operation.
 
-Before `daily` applies either profile, it enforces a two-part ALVR gate. First,
-the local `/api/version` endpoint above must return a successful, nonempty
-response. The 500 ms request is cached for one second, which caps the probe at
-1 Hz even when the dependency or watchdog loop runs faster. Second, the current
-OpenVR enumeration must contain exactly one supported controller per hand. The
-central device classifier matches a recognized Meta Touch family from the
-current OpenVR metadata, validates the input-profile path when OpenVR reports
-one, and also requires the corresponding left/right role. Application code
-does not maintain separate Quest-model string checks.
+Before `wizard` captures or `daily` applies either profile, each command
+enforces the same production dependency evidence. The local `/api/version`
+endpoint above must return a successful, nonempty response. The 500 ms request
+is cached for one second, which caps the probe at 1 Hz even when the dependency
+or watchdog loop runs faster. OpenVR index `0` must pass the active-Lighthouse-
+HMD gate, and the current enumeration must contain exactly one supported
+controller per hand. The central device classifier matches a recognized Meta
+Touch family from current OpenVR metadata, validates the input-profile path
+when OpenVR reports one, and also requires the corresponding left/right role.
+Application code does not maintain separate Quest-model string checks.
 
 These are current runtime observations. LTB does not use the stored
 `controller_runtime` or `controller_model` fields as evidence that ALVR is
@@ -432,7 +489,7 @@ identifiers and paths before sharing an excerpt, and never place
 the repository or portable package. Version 0.1 sends no telemetry and has no
 cloud log destination.
 
-The `daily --log <events.jsonl>` and
+The `wizard --log <events.jsonl>`, `daily --log <events.jsonl>`, and
 `wizard-demo --log <events.jsonl>` options expose `JsonLinesLtbLogSink` as a
 local append-only JSON Lines destination. Reusing a path appends another event
 sequence; omitting `--log` creates no default event file. Wizard events include
@@ -441,7 +498,8 @@ state transitions and the distinct `NoPositionAvailable`,
 failure is not allowed to alter calibration or block SafeDisable or rollback.
 The option does not upload, rotate, redact, or delete the selected file.
 
-During active `daily` use, an unexpected adapter exception produces a
+During active `wizard` or `daily` use, an unexpected adapter exception
+produces a
 `RuntimeFailure` event before bounded cleanup starts. The event contains the
 exception type and message but no stack trace. The coordinator then attempts
 all active cleanup surfaces and enters `Stopped`; the cleanup result remains a
@@ -457,10 +515,10 @@ disablement.
 
 | Code | Meaning |
 | ---: | --- |
-| `0` | Help, device listing, recording, successful `wizard-demo`, or clean `bridge`/`daily` cancellation completed. |
+| `0` | Help, device listing, recording, successful `wizard-demo`, or clean `bridge`/`wizard`/`daily` cancellation completed. |
 | `1` | Command-line usage or option validation failed. |
-| `2` | Startup, profile loading, profile application, `wizard-demo`, or another bounded operational action failed without a cleanup/rollback failure. |
-| `3` | A live runtime health termination, including SteamVR stopping during active use or recovery, completed bounded cleanup without a reported failure; rerun `daily` to start a new session. |
+| `2` | Startup, capture, calibration, profile loading, profile application, `wizard`, `wizard-demo`, or another bounded operational action failed without a cleanup/rollback failure. |
+| `3` | A live runtime health termination, including SteamVR stopping during active use or recovery, completed bounded cleanup without a reported failure; rerun `wizard` or `daily` to start a new session. |
 | `4` | SafeDisable or transactional rollback reported at least one failure or timeout. Manual inspection is required. |
 
 ## Recovery after abrupt termination
@@ -473,7 +531,7 @@ Before reusing a hand after an abrupt termination:
    `TrackingOverrides` in the explicitly selected `steamvr.vrsettings`;
 3. retain redacted evidence of any residual device or mapping before changing
    it; do not assume that one surface proves the other is clear;
-4. for an intended reuse, run the same `bridge` or `daily` command and confirm
+4. for an intended reuse, run the same `bridge`, `wizard`, or `daily` command and confirm
    its pre-activation cleanup deactivates the selected slot or slots and
    releases each stale exact mapping before activation; if any cleanup reports
    a failure, stop and do not allow the command to activate; and

@@ -2,14 +2,15 @@
 
 The automated suite has deterministic Linux tests for calibration, recording,
 replay, capability-based device enumeration and matching, one-hand bridge
-safety, the fakeable reliable-daily-use coordinator, rollback, and structured-
-event contracts. Milestone 5 fake descriptors cover multiple Meta Touch,
-physical Lighthouse pose-source, and HMD families. Those tests do not exercise
-a real SteamVR runtime, ALVR transport, OpenVR timing, Windows ACLs, USB
-reconnect behavior, code signing, or live device-index assignment. This file
-is the consolidated checklist for deferred Windows and hardware acceptance,
-including specification section 23.4. Each item states the environment and
-dependencies it needs.
+safety, the production-wizard composition through injected fakes, the
+fakeable reliable-daily-use coordinator, rollback, the active-HMD readiness
+gate, and structured-event contracts. Milestone 5 fake descriptors cover
+multiple Meta Touch, physical Lighthouse pose-source, and HMD families. Those
+tests do not exercise a real SteamVR runtime, ALVR transport, OpenVR timing,
+Windows ACLs, USB reconnect behavior, code signing, or live device-index
+assignment. This file is the consolidated checklist for deferred Windows and
+hardware acceptance, including specification section 23.4. Each item states
+the environment and dependencies it needs.
 
 Keep captured evidence free of credentials and owner-local absolute paths. Do
 not commit real device serials, SteamVR configuration backups, or hardware
@@ -33,12 +34,15 @@ sources; centralized Meta Touch family/input-profile classification; Touch and
 physical-pose-source association, synthetic calibration, and schema-1
 persistence/reuse across the named families; physical-source capability
 matching with VMT virtual-source exclusion; and HMD descriptor
-class/capability inference without a model allowlist. HMD tests stop at the
-descriptor boundary and do not participate in calibration or profile reuse.
-The suite also covers recording schema round trips and version rejection;
-synthetic lag recovery; offline replay; native deployment hashes; startup and
-failure transitions; stable-serial reacquisition; SafeDisable; transactional
-apply rollback; structured events; and the existing calibration regressions.
+class/capability inference without a model allowlist. Active-HMD tests require
+one connected HMD at OpenVR index `0`, reject Quest/ALVR evidence, require
+positive Lighthouse driver or tracking-system evidence, and fail closed when
+that evidence is unknown. HMDs do not participate in calibration or profile
+reuse. The suite also covers recording schema round trips and version
+rejection; synthetic lag recovery; offline replay; native deployment hashes;
+production-wizard release, capture, association, solve, persist, apply, Active,
+abort cleanup, and rollback through fakes; stable-serial reacquisition;
+SafeDisable; structured events; and the existing calibration regressions.
 The inspector remains a separate synthetic CLI acceptance check;
 its textual summary does not currently have an automated regression assertion.
 Passing the automated checks is the Linux acceptance gate for portable
@@ -148,10 +152,22 @@ details below. For an offline inspector or replay session, record only the OS,
   With the ALVR dashboard web server on its default port, confirm
   `http://127.0.0.1:8082/api/version` returns a successful, nonempty local
   response. Stop ALVR, return an empty/error response if safely reproducible,
-  and change the dashboard port in separate startup runs; confirm `daily`
-  remains fail-closed with `DependencyUnavailable`. Restore port `8082`
+  and change the dashboard port in separate startup runs; confirm `wizard` and
+  `daily` remain fail-closed with `DependencyUnavailable`. Restore port `8082`
   afterward. Confirm the production probe issues no more than one request per
   second. Version 0.1 has no configurable ALVR-port CLI option.
+
+- [ ] **Enforce the active-Lighthouse-HMD dependency gate.** Start separate
+  `wizard` and `daily` runs with Quest/ALVR as the SteamVR display HMD. Confirm
+  both stop in `DependencyCheck` with `DependencyUnavailable`, explain that
+  OpenVR index `0` reports Quest/ALVR/Meta/Oculus evidence, and direct the
+  operator to configure ALVR in tracking-reference-only mode, make the intended
+  Lighthouse HMD active, restart SteamVR, and retry. Repeat with missing or
+  unknown driver/tracking-system metadata and confirm the gate fails closed.
+  After the intended Lighthouse HMD becomes the connected
+  `HeadMountedDisplay` at index `0` with positive Lighthouse evidence, confirm
+  both commands proceed. No capture, VMT apply, or hand override may occur in
+  a rejected run.
 
 - [ ] **Use current observations rather than stored runtime/model claims.**
   With the endpoint healthy, remove or alter one required controller-profile
@@ -164,13 +180,13 @@ details below. For an offline inspector or replay session, record only the OS,
 
 ## Original Touch poses and override safety
 
-- [ ] **Require override release before recording.** Begin with a hand
-  `TrackingOverrides` mapping active. Confirm that LTB refuses to treat the
-  overridden pose as the original Touch stream and reports that release is a
-  prerequisite. For Milestone 1, release the mapping through the existing
-  external setup; the recorder must not write `TrackingOverrides`. Confirm the
-  original pose is visible before capture begins, and preserve a redacted
-  before/after settings snapshot outside the repository.
+- [ ] **Release overrides before production-wizard recording.** Begin with
+  mappings active for both semantic hands, then run the production `wizard`.
+  Confirm `OverrideRelease` removes both mappings before `Recording` opens the
+  original Touch pose sources. The recorder itself must not write
+  `TrackingOverrides`. Confirm the original poses are visible before capture
+  begins, unrelated settings remain unchanged, and a redacted before/after
+  settings snapshot is retained outside the repository.
 
 - [ ] **Read the original, non-overridden Touch pose.** With the override
   released, move the Touch controller and its mounted tracker differently
@@ -178,10 +194,11 @@ details below. For an offline inspector or replay session, record only the OS,
   the ALVR-provided original pose rather than the tracker, VMT, or previously
   overridden pose.
 
-- [ ] **Handle an unmet override-release prerequisite safely.** Leave the
-  override active or disconnect its source. Confirm that the operator is told
-  not to proceed, no capture is treated as original-pose evidence, and the
-  Milestone 1 recorder leaves SteamVR settings unchanged.
+- [ ] **Handle an override-release failure safely.** Deny or interrupt one
+  release while leaving an existing source disconnected. Confirm that the
+  operator receives a bounded diagnostic, capture does not start, neither hand
+  remains newly active, and unrelated settings remain unchanged. Any cleanup
+  failure must require explicit inspection rather than claiming a safe state.
 
 ## Pose semantics and timing
 
@@ -289,34 +306,43 @@ timestamp semantics, reopen the affected checks.
 Milestone 3 adds deterministic Linux coverage for the UI-neutral wizard state
 machine, reversed-order serial association, guided coverage metrics, the real
 lag/alignment/Auto solver pipeline, mixed per-hand model selection, schema-1
-profile persistence, and serial-and-hand reload. The scripted command uses
-only fake pose streams and fake serials:
+profile persistence, and serial-and-hand reload. The production `wizard`
+composition is now implemented. Run its live Windows path from an extracted
+package with:
+
+```text
+Ltb.App.exe wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+```
+
+The deterministic `wizard-demo` command remains available with fake pose
+streams and fake serials:
 
 ```bash
 dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
-This evidence is not a live SteamVR result. In particular, scripted dependency
-and apply messages do not show that ALVR exposes original Touch poses, that VMT
-accepts both transforms, or that SteamVR activates both overrides. Do not mark
-any item below complete from Linux tests alone. Milestone 3 does not yet include
-a production `ICalibrationWizardRuntime` implementation for SteamVR capture and
-two-hand VMT/override application. The items below are acceptance requirements
-for that future Windows composition, not checks currently runnable through
-`wizard-demo`. This is a guided-wizard limitation; the implemented production
-`daily` ALVR and saved-profile gates are verified separately in the Milestone 4
-section below.
+Linux fake-backed evidence proves that the production composition orders
+override release before original-pose capture, runs association and the existing
+solver pipeline, persists both profiles, applies both hands transactionally,
+enters `Active`, and cleans up on abort. It is not a live SteamVR result. It
+does not show that ALVR exposes original Touch poses, that VMT accepts both
+transforms with real timing, that SteamVR activates both overrides, or that
+device provenance is correct. The production path is therefore implemented
+but still needs every applicable live check below. Do not mark an item complete
+from Linux tests alone.
 
 ### Guided capture and association
 
-- [ ] **Verify scripted wizard JSONL behavior (fake-only).** Run
-  `wizard-demo` twice with the same `--log <events.jsonl>` path and confirm the
+- [ ] **Verify wizard JSONL behavior.** Run the production `wizard` twice with
+  the same `--log <events.jsonl>` path and confirm the
   second event sequence is appended rather than replacing the first. Run once
   without `--log` and confirm no default event file is created. With fake
   wizard inputs, exercise missing controller position, poor translation
   observability, and bad rotation; confirm the log uses respectively
   `NoPositionAvailable`, `PoorTranslationObservability`, and
-  `BadRotationCalibration`. This check does not require SteamVR or hardware.
+  `BadRotationCalibration`; use `wizard-demo` only for that deterministic
+  negative-path portion. The production logging check requires Windows and the
+  live runtime.
 
 - [ ] **Run the full two-hand guided gesture.** With both original Touch poses
   visible and overrides released, complete the left-only then right-only
@@ -354,8 +380,9 @@ section below.
 
 - [ ] **Reject bad rotation separately.** Use static, single-axis, and
   deliberately corrupted orientation captures. Confirm each fails before
-  translation/apply, returns to `Ready`, preserves the prior active profiles,
-  and gives a direct retry diagnostic.
+  translation/apply, returns to `Ready`, preserves the prior persisted profile
+  store, leaves both hand overrides released, and gives a direct retry
+  diagnostic.
 
 ### Persistence, apply, and reuse
 
@@ -377,10 +404,11 @@ section below.
   schema, malformed/truncated store, denied save, one rejected profile, and a
   two-hand apply failure. Confirm bounded diagnostics, no partial store is
   accepted, the prior file remains recoverable, and neither hand is left with
-  a newly active stale override. The scripted Milestone 3 runtime is still not
-  a live two-hand SteamVR wizard composition. Verify stored-profile two-hand
-  application separately through the production `daily` command below; live
-  guided capture remains deferred.
+  a newly active stale override. Repeat with Ctrl+C during left capture, right
+  capture, persistence, and apply. Confirm no active hand mapping remains,
+  unrelated SteamVR settings survive, and any cleanup or rollback failure is
+  reported for manual inspection. These production paths are implemented but
+  remain live Windows checks.
 
 ## Milestone 2 one-hand live bridge
 
@@ -579,8 +607,9 @@ check an item merely because the Linux fake for that transition passes.
 ## Milestone 4 reliable daily use
 
 Milestone 4 includes a production `daily` composition, while its complete
-transition matrix is exercised with deterministic fakes on Linux. Run the
-production path from an extracted package with this exact command form:
+transition matrix and active-HMD dependency gate are exercised with
+deterministic fakes on Linux. Run the production path from an extracted package
+with this exact command form:
 
 ```text
 Ltb.App.exe daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
@@ -637,10 +666,12 @@ transition-matrix tests or a successful cross-publish alone.
 - [ ] **Start with incomplete devices.** Repeat with each required tracker,
   Touch controller, and VMT surface absent. Confirm `WaitingForDevices`, a
   distinct actionable event, and no partial apply. Confirm an unavailable ALVR
-  version endpoint reports `DependencyUnavailable`, missing or unsupported
-  Touch/tracker observations report `DevicesUnavailable`, and a missing or stale
-  VMT heartbeat reports `VmtUnavailable`. Restore the exact stable identities
-  and confirm the normal apply gates rather than a transient-index shortcut.
+  version endpoint or rejected active HMD reports `DependencyUnavailable`,
+  missing or unsupported Touch/tracker observations report
+  `DevicesUnavailable`, and a missing or stale VMT heartbeat reports
+  `VmtUnavailable`. Restore the intended Lighthouse HMD and exact stable
+  identities, then confirm the normal apply gates rather than a transient-index
+  shortcut.
 
 - [ ] **Distinguish calibration outcomes.** Produce controller-position
   absence, poor translation observability, bad rotation, and active tracker
@@ -804,15 +835,16 @@ and Quest Pro Touch families plus Vive Tracker, Tundra Tracker, and eligible
 generic tracked devices. Those controller/pose-source cases continue through
 synthetic association/calibration and schema-1 persistence or reuse. Separate
 descriptor tests cover excluded VMT virtual devices and position-capability
-inference for multiple HMD descriptors; they provide no HMD calibration or
-profile-pipeline evidence. None of this is live ALVR, SteamVR, driver,
-firmware, input-component, or tracking-quality evidence.
+inference for multiple HMD descriptors, including the active-display readiness
+gate; HMDs provide no calibration or profile-pipeline evidence. None of this is
+live ALVR, SteamVR, driver, firmware, input-component, or tracking-quality
+evidence.
 
-The production guided-wizard adapter remains absent as documented in the
-Milestone 3 section. The family rows can verify live enumeration, recording and
-replay, and saved-profile daily use now, but cannot be checked complete for
-live guided calibration until that adapter exists. Synthetic wizard evidence
-does not substitute for the missing hardware step.
+The production guided-wizard adapter is implemented and the family rows can
+now exercise live guided capture through the production command. They remain
+unchecked until that path is run with the named Windows/runtime/hardware
+combination. Synthetic wizard evidence proves composition, not live timing,
+input or pose provenance, or hardware compatibility.
 
 Use the [setup support matrix](setup.md#milestone-5-device-combinations) to
 record the intended combination. For each item below, retain the common
@@ -885,15 +917,18 @@ inferred capabilities, and stable identity used by the decision.
 ### Lighthouse HMD families
 
 - [ ] **Bigscreen Beyond 2/2e active HMD.** Confirm SteamVR keeps the Beyond
-  device active while ALVR provides controller inputs only. Complete
-  discovery, profile apply, input/pose provenance, managed shutdown, and one
-  SteamVR restart without an HMD model-name dependency in LTB.
+  device at OpenVR index `0` while ALVR provides controller inputs only.
+  Confirm positive Lighthouse driver or tracking-system evidence passes the
+  gate. Complete production-wizard capture, profile apply, input/pose
+  provenance, managed shutdown, and one SteamVR restart without an HMD model-
+  name dependency in LTB.
 
 - [ ] **Valve Index active HMD.** Repeat the complete two-hand daily-use path
   with a Valve Index active. Confirm its descriptor receives the same HMD
-  class/capability inference without a model allowlist, ALVR does not replace
-  it, and tracker/controller selection, application bindings, pose composition,
-  and cleanup remain correct. LTB does not choose the active display.
+  class/capability inference and positive-Lighthouse-evidence gate without a
+  model allowlist, ALVR does not replace it, and tracker/controller selection,
+  application bindings, pose composition, and cleanup remain correct. LTB does
+  not choose the active display.
 
 - [ ] **HTC Vive or Vive Pro-family active HMD.** Repeat the Valve Index row
   with each actual HTC HMD model claimed by a release. Record each model and
@@ -901,10 +936,12 @@ inferred capabilities, and stable identity used by the decision.
   other member.
 
 - [ ] **Additional Lighthouse HMD.** For any other connected OpenVR HMD,
-  confirm its descriptor receives HMD class/capability inference without a
-  manufacturer or model allowlist and that LTB does not attempt to choose or
-  replace the display device. Complete the full daily-use and SafeDisable
-  acceptance before adding that model to release notes as hardware validated.
+  confirm the device at index `0` receives HMD class/capability inference
+  without a manufacturer or model allowlist and reports positive Lighthouse
+  driver or tracking-system evidence. Confirm LTB does not attempt to choose or
+  replace the display device. Complete the full wizard, daily-use, and
+  SafeDisable acceptance before adding that model to release notes as hardware
+  validated.
 
 ### Cross-family profile and integration acceptance
 

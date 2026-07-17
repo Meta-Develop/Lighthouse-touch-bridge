@@ -429,7 +429,9 @@ callbacks. The Windows UI framework decision therefore remains deliberately
 open.
 
 ```text
-ICalibrationWizardRuntime (dependencies, devices, capture, apply)
+ScriptedCalibrationWizardRuntime     production OpenVR/VMT/settings adapters
+                         \           /
+ ICalibrationWizardRuntime (dependencies, devices, capture, apply)
                          |
                          v
               TwoHandCalibrationWizard
@@ -480,23 +482,46 @@ flag, validation threshold, controller runtime/model, expected schema, and
 transform convention. A recognized stored-schema mismatch takes the capture
 path and atomically replaces the incompatible store after both new profiles
 validate; malformed JSON remains a fail-safe diagnostic. Apply remains behind
-the runtime port. `ScriptedCalibrationWizardRuntime` is the only Milestone 3
-runtime composition implemented here: it records deterministic fake capture
-and apply operations without opening SteamVR, OpenVR, VMT, or host settings.
-There is no production SteamVR two-hand wizard adapter yet, so live guided
-capture remains future Windows integration and verification work rather than a
-currently runnable wizard check. Milestone 4 separately provides the
-production `daily` composition for transactional two-hand application of an
-already complete saved profile store.
+the runtime port.
 
-The wizard's `ApplyProfilesAsync` port remains transactional: it may report
-`Active` only after both hands apply, and must roll back effects created by the
-attempt if either hand fails. The Milestone 3 scripted runtime remains
-fake-only. The production `daily` command implements the corresponding
-later-run transaction through live OpenVR, VMT, and settings adapters without
-adding live guided calibration capture.
+Two runtime compositions now implement that port. `wizard-demo` uses
+`ScriptedCalibrationWizardRuntime` and deterministic fake streams without
+opening SteamVR, OpenVR, VMT, or host settings. The production `wizard` opens
+the live OpenVR session, uses the Milestone 1 recorder for the original Touch
+and tracker streams, and reuses the same VMT, SteamVR settings, two-hand apply
+transaction, watchdog, and SafeDisable boundaries as `daily`.
 
-The repository-root scripted command is:
+The production composition is:
+
+```text
+wizard CLI -> TwoHandCalibrationWizard -> live OpenVR recorder
+                                  |     -> CalibrationWizardBackend
+                                  |     -> schema-1 profile store
+                                  v
+                         two-hand apply transaction
+                                  |
+                                  v
+                     Active -> watchdog -> SafeDisable
+```
+
+Before original Touch capture, the runtime releases both semantic-hand
+overrides and retains recovery ownership for settings effects. The recorder
+therefore cannot silently sample an already overridden Touch pose. Both
+calibrated profiles persist before the apply transaction starts. `Active` is
+allowed only after both VMT transforms and exact source-to-hand mappings apply;
+if either side fails, the transaction rolls back effects from that attempt.
+Cancellation or failure before or during capture also runs cleanup. The safe
+terminal state has no active hand override and preserves unrelated SteamVR
+settings; it does not reactivate a prior hand mapping that could name a stale
+source.
+
+The production command is:
+
+```text
+dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+```
+
+The deterministic command remains:
 
 ```bash
 dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
@@ -506,7 +531,10 @@ It uses deterministic fake controllers and fake tracker serials, intentionally
 reverses tracker enumeration, selects full 6DoF for the left hand and normal
 rotation-only fallback for the position-unavailable right hand, writes two
 profiles, and reloads them on the next invocation without native runtime calls.
-This is the implemented Milestone 3 CLI; it is not a live hardware command.
+It is not a live hardware command. Automated fake-backed tests prove the
+production composition boundary, including release-before-capture, apply
+rollback, abort cleanup, and active-HMD rejection, but real runtime timing and
+device provenance remain Windows checks.
 
 ## Milestone 4 reliable daily-use boundary
 
@@ -537,15 +565,21 @@ The monitor rate defaults to `20` Hz and reconnect delay to `0.25` seconds.
 The live adapter uses an internal `0.5`-second pose-staleness threshold and a
 five-second VMT heartbeat/discovery bound.
 
-The `daily` composition proves ALVR availability with two independent current
-observations before it can become `Ready`:
+The `daily` composition proves input and active-HMD readiness with three
+independent current observations before it can become `Ready`:
 
 1. `AlvrLocalDashboardProbe` requires a successful, nonempty response from the
    loopback endpoint `http://127.0.0.1:8082/api/version`. Version 0.1 fixes this
    address and port; it has no configurable dashboard-port CLI option. The HTTP
    request has a 500 ms bound, and the last result is reused for one second so
    dependency and watchdog loops cannot probe more often than 1 Hz.
-2. Current OpenVR properties must expose exactly one supported controller for
+2. `ActiveHmdReadiness` requires exactly one connected
+   `HeadMountedDisplay` at transient OpenVR index `0`, rejects
+   Quest/ALVR/Meta/Oculus evidence, and requires positive Lighthouse evidence
+   in the current driver or tracking-system metadata. Missing, conflicting, or
+   unknown evidence fails closed with the tracking-reference-only and intended-
+   Lighthouse-HMD remediation.
+3. Current OpenVR properties must expose exactly one supported controller for
    each hand. A central profile catalog recognizes the Quest 2 Touch, Quest 3
    Touch Plus, and Quest Pro Touch families from current driver, tracking
    system, manufacturer, role, model, controller type, and optional input-
@@ -560,14 +594,16 @@ descriptors classify to the same runtime/model, then compares them with stored
 profile values. A stored runtime/model claim cannot make an absent or
 mismatched current device acceptable.
 
-Both observations remain watchdog conditions after activation. Loss of the
+The ALVR endpoint and controller-descriptor observations remain watchdog
+conditions after activation. Loss of the
 local ALVR proof or a change to the selected controller's current OpenVR
 identity or metadata becomes `TouchInputLost` and triggers SafeDisable; the
 runtime never substitutes a stored tuple for the missing live observation.
 
 Readiness diagnostics preserve the failed boundary. An unavailable ALVR
-endpoint reports `DependencyUnavailable`. During device readiness, a missing
-or unsupported Meta Touch descriptor or physical pose source reports
+endpoint or failed active-HMD gate reports `DependencyUnavailable`. During
+device readiness, a missing or unsupported Meta Touch descriptor or physical
+pose source reports
 `DevicesUnavailable`, while a missing or stale VMT Alive heartbeat reports
 `VmtUnavailable`. A VMT
 recovery dependency loop can first emit `DependencyUnavailable` with its
@@ -684,7 +720,7 @@ The stable code vocabulary is grouped by purpose:
   `RollbackCompleted`, and `RollbackFailed`.
 
 `JsonLinesLtbLogSink` is the local append-only JSON Lines destination exposed
-by both `daily --log <events.jsonl>` and
+by `wizard --log <events.jsonl>`, `daily --log <events.jsonl>`, and
 `wizard-demo --log <events.jsonl>`. It creates a missing parent directory,
 appends one JSON object per event, and flushes each event. Omitting the option
 disables the JSONL sink and creates no default event file. Log-write failures
@@ -779,7 +815,7 @@ This gives each role one explicit acceptance rule:
 | --- | --- | --- |
 | Meta Touch input controller | A connected input controller has a left/right role and matches a known Meta Touch family. When OpenVR supplies an input-profile path, it must also match that family. Orientation-only calibration may proceed when controller position is unavailable; full 6DoF still requires valid position samples. | Current controller runtime, family/model, optional input profile, role, and optional exact serial are runtime observations. A stored profile cannot make an unknown live descriptor supported. |
 | Physical Lighthouse pose source | `CanUseAsPhysicalPoseSource` is true. A connected positional `GenericTracker` can satisfy this without a Vive-specific or Tundra-specific model check. | Exact stable serial remains the profile and reconnect key. VMT registered paths are marked virtual and excluded even though VMT also enumerates as `GenericTracker`, preventing a virtual output from following itself. |
-| Lighthouse HMD | An OpenVR `HeadMountedDisplay` descriptor receives positional capability without a manufacturer or model allowlist. LTB does not use an HMD as a physical controller-pose source. | LTB currently enumerates the descriptor but does not choose, replace, or apply a separate application readiness gate to the HMD. SteamVR remains responsible for the active display device, and Windows verification must prove each real HMD/runtime combination. |
+| Lighthouse HMD | The connected `HeadMountedDisplay` at transient OpenVR index `0` must report positive Lighthouse driver or tracking-system evidence. No manufacturer or model allowlist is used, and LTB does not use an HMD as a physical controller-pose source. | SteamVR chooses the active display. `wizard` and `daily` reject Quest/ALVR/Meta/Oculus evidence and fail closed on missing, duplicate, conflicting, or unknown active-HMD evidence. Windows verification must still prove each real HMD/runtime combination. |
 
 Stable identity and capability answer different questions. The exact serial
 answers whether a re-enumerated device is the same physical mount; capability
@@ -800,8 +836,8 @@ rather than silently changing schema-1 meaning.
 Fake pipeline tests cover Quest 2, Quest 3 Touch Plus, and Quest Pro Touch
 profiles plus Vive Tracker, Tundra Tracker, and generic eligible physical pose
 sources through association, synthetic calibration, and schema-1 persistence
-or reuse. Separate descriptor tests prove VMT virtual exclusion and infer
-position capability for multiple HMD descriptors without model allowlists;
+or reuse. Separate descriptor tests prove VMT virtual exclusion and exercise
+the fail-closed active-display gate without a Lighthouse-HMD model allowlist.
 HMDs do not participate in the calibration/profile pipeline. None of these
 tests claims that ALVR exposes every input component or that any named
 controller, pose source, or HMD combination works in a real SteamVR session.
