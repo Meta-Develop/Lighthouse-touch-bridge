@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: run-with-bitwarden (--domain VALUE | --id VALUE) --env NAME=field [--env NAME=field ...] -- COMMAND [ARG ...]' >&2
+}
+
+fail() {
+  printf 'run-with-bitwarden: %s\n' "$1" >&2
+  usage
+  exit 2
+}
+
+selector_count=0
+env_count=0
+aac_args=()
+child_args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --domain|--id)
+      selector_count=$((selector_count + 1))
+      selector_flag="$1"
+      shift
+      [[ $# -gt 0 ]] || fail "$selector_flag requires a value"
+      [[ -n "$1" ]] || fail "$selector_flag requires a non-empty value"
+      aac_args+=("$selector_flag" "$1")
+      shift
+      ;;
+    --domain=*|--id=*)
+      selector_count=$((selector_count + 1))
+      selector_flag="${1%%=*}"
+      selector_value="${1#*=}"
+      [[ -n "$selector_value" ]] || fail "$selector_flag requires a non-empty value"
+      aac_args+=("$selector_flag" "$selector_value")
+      shift
+      ;;
+    --env)
+      shift
+      [[ $# -gt 0 ]] || fail '--env requires NAME=field'
+      env_mapping="$1"
+      shift
+      env_count=$((env_count + 1))
+      if [[ ! "$env_mapping" =~ ^[A-Za-z_][A-Za-z0-9_]*=(username|password|totp|uri|notes|domain|credential_id)$ ]]; then
+        fail '--env must be NAME=field with a valid environment name and supported credential field'
+      fi
+      aac_args+=(--env "$env_mapping")
+      ;;
+    --env=*)
+      env_mapping="${1#*=}"
+      shift
+      env_count=$((env_count + 1))
+      if [[ ! "$env_mapping" =~ ^[A-Za-z_][A-Za-z0-9_]*=(username|password|totp|uri|notes|domain|credential_id)$ ]]; then
+        fail '--env must be NAME=field with a valid environment name and supported credential field'
+      fi
+      aac_args+=(--env "$env_mapping")
+      ;;
+    --env-all|--env-all=*)
+      fail '--env-all is prohibited; map only the required fields with --env NAME=field'
+      ;;
+    --)
+      shift
+      [[ $# -gt 0 ]] || fail 'a child command is required after --'
+      child_args=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "unsupported option before --: $1"
+      ;;
+  esac
+done
+
+[[ "$selector_count" -eq 1 ]] || fail 'exactly one --domain or --id is required'
+[[ "$env_count" -ge 1 ]] || fail 'at least one explicit --env NAME=field is required'
+[[ "${#child_args[@]}" -gt 0 ]] || fail 'a -- separator and child command are required'
+
+if ! command -v aac >/dev/null 2>&1; then
+  printf '%s\n' 'run-with-bitwarden: aac is not available on PATH' >&2
+  exit 127
+fi
+
+exec aac run "${aac_args[@]}" -- "${child_args[@]}"

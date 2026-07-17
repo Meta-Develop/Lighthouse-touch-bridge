@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  check-human-authorship identity LABEL VALUE
+  check-human-authorship message FILE
+  check-human-authorship commit COMMIT
+  check-human-authorship range REVISION_RANGE
+  check-human-authorship all-history [REPOSITORY]
+  check-human-authorship pre-push [REMOTE_NAME]
+  check-human-authorship metadata FILE [FILE...]
+  check-human-authorship metadata-tree [REPOSITORY]
+
+Reject machine, model, vendor, or agent self-attribution while allowing normal
+technical references and real human or organization credits. The pre-push mode
+reads standard Git pre-push records from stdin.
+EOF
+}
+
+ai_identity_re='(^|[^[:alnum:]])(ai|artificial[ -]+intelligence|ai[ -]+assistant|ai[ -]+agent|llm|claude|anthropic|chatgpt|openai|codex|github[ -]?(copilot|actions)|copilot|gemini|gpt([- ]?[0-9])?|llama|mistral|deepseek|grok|perplexity|cursor|windsurf|aider|devin|qwen|kimi|xai|coding[ -]+agent|software[ -]+agent|automation[ -]+agent|autonomous[ -]+agent|dependabot|renovate[ -]+bot|bot)([^[:alnum:]]|$)'
+constructed_agent_role_re='(^|[^[:alnum:]])(([[:alnum:]][[:alnum:]_.-]*[ -]+)?clean[ -]+worker|coding[ -]+worker|automation[ -]+worker|delegated[ -]+worker)([^[:alnum:]]|$)'
+placeholder_name_re='(^|[^[:alnum:]])(your[ ._-]*name|あなたの名前)([^[:alnum:]]|$)'
+placeholder_email_re='(^|[^[:alnum:]@._+-])((you|your[._+-]*(name|email|address)|user(name)?|name|author|developer|test|example)@(example[.][[:alnum:].-]+|[^@[:space:]]+[.](invalid|test)))([^[:alnum:]@._+-]|$)'
+prohibited_identity_re="(($ai_identity_re)|($constructed_agent_role_re)|($placeholder_name_re)|($placeholder_email_re))"
+credit_key_re='(co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|suggested-by|mentored-by|helped-by|developed-by|implemented-by|generated-by|authored-by|contributed-by)'
+credit_field_re='(authors?|contributors?|credits?|copyright|implementation|implemented[ -]by|generated[ -]by|created[ -]by|developed[ -]by|written[ -]by|reviewed[ -]by)'
+disclosure_action_re='(implemented|authored|written|generated|created|developed|built|produced|reviewed|tested|assisted|contributed)'
+
+failed=0
+
+report() {
+  printf 'human-authorship: %s\n' "$*" >&2
+  failed=1
+}
+
+contains_ai_identity() {
+  LC_ALL=C grep -Eiq -- "$prohibited_identity_re"
+}
+
+scan_identity() {
+  local label="$1"
+  local value="$2"
+
+  if printf '%s\n' "$value" | contains_ai_identity; then
+    report "$label uses a prohibited machine, model, vendor, or agent identity: $value"
+  fi
+}
+
+scan_text_file() {
+  local file="$1"
+  local label="${2:-$file}"
+
+  [[ -f "$file" ]] || {
+    report "missing input file: $file"
+    return
+  }
+
+  if ! LC_ALL=C awk \
+    -v label="$label" \
+    -v ai="$prohibited_identity_re" \
+    -v credit_key="$credit_key_re" \
+    -v credit_field="$credit_field_re" \
+    -v action="$disclosure_action_re" '
+      BEGIN {
+        trailer = "^[[:space:]]*" credit_key "[[:space:]]*:"
+        field_start = "^[[:space:]\"\047]*" credit_field "[[:space:]\"\047]*[:=]"
+        field_embedded = "[,{.][[:space:]\"\047]*" credit_field "[[:space:]\"\047]*:[^,}]*"
+        disclosure = "(^|[^[:alnum:]])" action "[[:space:][:punct:]]{0,20}(by|with|using)[[:space:][:punct:]]{0,20}" ai
+        agent_disclosure = "(^|[^[:alnum:]])ai[- ]+(assisted|authored|generated|implemented|written|reviewed|developed)([^[:alnum:]]|$)"
+        credit_block = 0
+      }
+      {
+        lower = tolower($0)
+        violation = ""
+        if (lower ~ trailer && lower ~ ai) {
+          violation = "contains a prohibited credit trailer"
+        } else if (lower ~ field_start && lower ~ ai) {
+          violation = "contains a prohibited authorship or implementation credit"
+        } else {
+          rest = lower
+          while (match(rest, field_embedded)) {
+            segment = substr(rest, RSTART, RLENGTH)
+            if (segment ~ ai) {
+              violation = "contains a prohibited authorship or implementation credit"
+              break
+            }
+            rest = substr(rest, RSTART + RLENGTH)
+          }
+        }
+        if (violation == "" && credit_block && lower ~ ai) {
+          violation = "contains a prohibited authorship or implementation credit"
+        }
+        if (violation == "" && lower ~ disclosure) {
+          violation = "contains a prohibited generated-by or implementation disclosure"
+        }
+        if (violation == "" && lower ~ agent_disclosure) {
+          violation = "contains a prohibited agent-implementation disclosure"
+        }
+        if (violation != "") {
+          print "human-authorship: " label ":" NR " " violation > "/dev/stderr"
+          found = 1
+        }
+
+        if (lower ~ field_start) {
+          if (lower ~ /[:=][[:space:]]*[\[{][[:space:]]*$/) {
+            credit_block = 2
+          } else if (lower ~ /[:=][[:space:]]*$/) {
+            credit_block = 1
+          } else {
+            credit_block = 0
+          }
+        } else if (credit_block == 1 && lower ~ /^[[:space:]]*$/) {
+          credit_block = 0
+        } else if (credit_block == 2 && lower ~ /^[[:space:]]*[\]}][,[:space:]]*$/) {
+          credit_block = 0
+        }
+      }
+      END { exit(found ? 1 : 0) }
+    ' "$file"; then
+    failed=1
+  fi
+}
+
+scan_commit() {
+  local commit="$1"
+  local -a fields=()
+  local message_file
+
+  if ! git cat-file -e "$commit^{commit}" 2>/dev/null; then
+    report "cannot inspect commit: $commit"
+    return
+  fi
+
+  mapfile -d '' -t fields < <(
+    git show -s --format='%an%x00%ae%x00%cn%x00%ce%x00%B%x00' "$commit"
+  )
+  if [[ "${#fields[@]}" -lt 5 ]]; then
+    report "cannot read commit metadata: $commit"
+    return
+  fi
+
+  scan_identity "commit $commit author name" "${fields[0]}"
+  scan_identity "commit $commit author email" "${fields[1]}"
+  scan_identity "commit $commit committer name" "${fields[2]}"
+  scan_identity "commit $commit committer email" "${fields[3]}"
+
+  message_file="$(mktemp)"
+  printf '%s' "${fields[4]}" > "$message_file"
+  scan_text_file "$message_file" "commit $commit message"
+  rm -f "$message_file"
+}
+
+scan_range() {
+  local revision_range="$1"
+  local commits
+  local commit
+
+  if ! commits="$(git rev-list "$revision_range")"; then
+    report "invalid revision range: $revision_range"
+    return
+  fi
+
+  while IFS= read -r commit; do
+    [[ -n "$commit" ]] && scan_commit "$commit"
+  done <<< "$commits"
+}
+
+scan_all_history() {
+  local repository="${1:-.}"
+  local top
+  local commits_file
+  local commit
+
+  if ! top="$(git -C "$repository" rev-parse --show-toplevel 2>/dev/null)"; then
+    report "cannot resolve repository: $repository"
+    return
+  fi
+
+  commits_file="$(mktemp)"
+  if ! git -C "$top" rev-list --all > "$commits_file"; then
+    report "cannot enumerate all history in: $repository"
+    rm -f "$commits_file"
+    return
+  fi
+
+  while IFS= read -r commit; do
+    [[ -n "$commit" ]] || continue
+    (
+      cd "$top"
+      scan_commit "$commit"
+      [[ "$failed" -eq 0 ]]
+    ) || failed=1
+  done < "$commits_file"
+  rm -f "$commits_file"
+}
+
+is_zero_oid() {
+  [[ "$1" =~ ^0{40,64}$ ]]
+}
+
+scan_pre_push() {
+  local remote_name="${1:-}"
+  local local_ref
+  local local_oid
+  local remote_ref
+  local remote_oid
+  local commit
+  local commits
+
+  while read -r local_ref local_oid remote_ref remote_oid; do
+    [[ -n "${local_oid:-}" ]] || continue
+    is_zero_oid "$local_oid" && continue
+
+    if is_zero_oid "$remote_oid"; then
+      if [[ -n "$remote_name" ]]; then
+        if ! commits="$(git rev-list "$local_oid" --not --remotes="$remote_name")"; then
+          report "cannot enumerate commits for new remote branch: $local_ref"
+          continue
+        fi
+      else
+        if ! commits="$(git rev-list "$local_oid" --not --remotes)"; then
+          report "cannot enumerate commits for new remote branch: $local_ref"
+          continue
+        fi
+      fi
+    else
+      if ! commits="$(git rev-list "$remote_oid..$local_oid")"; then
+        report "cannot enumerate commits for update: $local_ref -> $remote_ref"
+        continue
+      fi
+    fi
+
+    while IFS= read -r commit; do
+      [[ -n "$commit" ]] && scan_commit "$commit"
+    done <<< "$commits"
+  done
+}
+
+is_metadata_path() {
+  local path="$1"
+  local base="${path##*/}"
+  local lower
+
+  case "$path" in
+    .agents/*|.agent/*|.git/*|*/.git/*|*/node_modules/*|*/vendor/*|*/external/*|*/storage/*|*/build/*|*/target/*|*/dist/*)
+      return 1
+      ;;
+  esac
+
+  lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    authors|authors.*|contributors|contributors.*|credits|credits.*|acknowledgements|acknowledgements.*|acknowledgments|acknowledgments.*|citation.cff|package.json|pyproject.toml|setup.cfg|setup.py|cargo.toml|composer.json|*.gemspec|changelog*|history*|release_notes*|release-notes*|news*|copyright*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+scan_metadata_tree() {
+  local repository="${1:-.}"
+  local top
+  local path
+
+  top="$(git -C "$repository" rev-parse --show-toplevel)"
+  while IFS= read -r -d '' path; do
+    is_metadata_path "$path" || continue
+    scan_text_file "$top/$path" "$path"
+  done < <(git -C "$top" ls-files -z)
+}
+
+[[ $# -ge 1 ]] || {
+  usage
+  exit 2
+}
+
+command="$1"
+shift
+
+case "$command" in
+  identity)
+    [[ $# -eq 2 ]] || { usage; exit 2; }
+    scan_identity "$1" "$2"
+    ;;
+  message)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    scan_text_file "$1" "$1"
+    ;;
+  commit)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    scan_commit "$1"
+    ;;
+  range)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    scan_range "$1"
+    ;;
+  all-history)
+    [[ $# -le 1 ]] || { usage; exit 2; }
+    scan_all_history "${1:-.}"
+    ;;
+  pre-push)
+    [[ $# -le 1 ]] || { usage; exit 2; }
+    scan_pre_push "${1:-}"
+    ;;
+  metadata)
+    [[ $# -ge 1 ]] || { usage; exit 2; }
+    for file in "$@"; do
+      scan_text_file "$file" "$file"
+    done
+    ;;
+  metadata-tree)
+    [[ $# -le 1 ]] || { usage; exit 2; }
+    scan_metadata_tree "${1:-.}"
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+if [[ "$failed" -ne 0 ]]; then
+  exit 1
+fi

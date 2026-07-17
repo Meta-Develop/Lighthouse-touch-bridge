@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+marker='# human-authorship-guard dispatcher v2'
+managed_marker='# human-authorship-guard dispatcher v'
+mode=install
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: install-human-authorship-guard [--check]
+
+Install commit-msg and pre-push dispatchers in the active Git hooks directory.
+Existing hooks are preserved beside the dispatcher and run before the shared
+human-authorship check. Re-running the installer is idempotent.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check)
+      mode=check
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+repo_root="$(git rev-parse --show-toplevel)"
+guard="$repo_root/.agents/scripts/check-human-authorship"
+hooks_dir="$(git rev-parse --path-format=absolute --git-path hooks)"
+
+[[ -x "$guard" ]] || {
+  echo "install-human-authorship-guard: missing executable guard: $guard" >&2
+  exit 1
+}
+
+hook_is_installed() {
+  local hook="$1"
+  [[ -x "$hook" ]] && grep -Fq -- "$marker" "$hook"
+}
+
+hook_is_managed() {
+  local hook="$1"
+  [[ -f "$hook" ]] && grep -Fq -- "$managed_marker" "$hook"
+}
+
+if [[ "$mode" == check ]]; then
+  status=0
+  for name in commit-msg pre-push; do
+    if ! hook_is_installed "$hooks_dir/$name"; then
+      echo "missing human-authorship dispatcher: $hooks_dir/$name" >&2
+      status=1
+    fi
+  done
+  exit "$status"
+fi
+
+mkdir -p "$hooks_dir"
+
+install_commit_msg() {
+  local hook="$hooks_dir/commit-msg"
+  local previous="$hook.human-authorship-previous"
+
+  hook_is_installed "$hook" && return 0
+  if [[ -e "$hook" ]] && ! hook_is_managed "$hook"; then
+    [[ ! -e "$previous" ]] || {
+      echo "install-human-authorship-guard: refusing to replace existing backup: $previous" >&2
+      return 1
+    }
+    mv "$hook" "$previous"
+  fi
+
+  cat > "$hook" <<'EOF'
+#!/usr/bin/env bash
+# human-authorship-guard dispatcher v2
+set -euo pipefail
+self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+previous="$self.human-authorship-previous"
+if [[ -x "$previous" ]]; then
+  "$previous" "$@"
+fi
+repo_root="$(git rev-parse --show-toplevel)"
+guard="$repo_root/.agents/scripts/check-human-authorship"
+"$guard" identity 'pending author identity' "$(git var GIT_AUTHOR_IDENT)"
+"$guard" identity 'pending committer identity' "$(git var GIT_COMMITTER_IDENT)"
+exec "$guard" message "$1"
+EOF
+  chmod +x "$hook"
+}
+
+install_pre_push() {
+  local hook="$hooks_dir/pre-push"
+  local previous="$hook.human-authorship-previous"
+
+  hook_is_installed "$hook" && return 0
+  if [[ -e "$hook" ]] && ! hook_is_managed "$hook"; then
+    [[ ! -e "$previous" ]] || {
+      echo "install-human-authorship-guard: refusing to replace existing backup: $previous" >&2
+      return 1
+    }
+    mv "$hook" "$previous"
+  fi
+
+  cat > "$hook" <<'EOF'
+#!/usr/bin/env bash
+# human-authorship-guard dispatcher v2
+set -euo pipefail
+self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+previous="$self.human-authorship-previous"
+input="$(mktemp)"
+trap 'rm -f "$input"' EXIT
+cat > "$input"
+if [[ -x "$previous" ]]; then
+  "$previous" "$@" < "$input"
+fi
+repo_root="$(git rev-parse --show-toplevel)"
+"$repo_root/.agents/scripts/check-human-authorship" pre-push "${1:-}" < "$input"
+EOF
+  chmod +x "$hook"
+}
+
+install_commit_msg
+install_pre_push
+
+printf 'Installed human-authorship guards in %s\n' "$hooks_dir"

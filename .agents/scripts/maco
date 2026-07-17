@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+project_root=$(cd -- "$script_dir/../.." && pwd -P)
+manifest="$project_root/.agents/external/multi-agent-coding-orchestrator/Cargo.toml"
+
+if ! command -v cargo >/dev/null 2>&1; then
+    printf '%s\n' "maco: cargo is required but was not found in PATH." >&2
+    exit 127
+fi
+
+if [[ ! -f "$manifest" ]]; then
+    printf 'maco: missing orchestrator manifest: %s\n' "$manifest" >&2
+    printf '%s\n' "maco: attach the registry-managed multi-agent-coding-orchestrator package before running this wrapper." >&2
+    exit 1
+fi
+
+exec cargo run --quiet --manifest-path "$manifest" -- "$@"

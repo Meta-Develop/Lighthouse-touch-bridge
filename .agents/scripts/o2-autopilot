@@ -1,0 +1,691 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: o2-autopilot [OPTIONS] [TASK...]
+
+Run a bounded autonomous O2 top-supervisor loop from a project-local .agents tree.
+
+Options:
+  --task-file FILE       Read the initial task from FILE.
+  --task TEXT            Use TEXT as the initial task.
+  --run-id ID            Store artifacts under this run id.
+  --max-depth N          Maximum O2 task depth. Default: 10.
+  --max-rounds N         Maximum O2 tasks executed. Default: 3.
+  --max-peer-o2 N        Maximum peer O2 tasks accepted. Default: 3.
+  --model MODEL          Codex model. Default: ${CODEX_O2_MODEL:-gpt-5.6-sol}.
+                         Cheaper GPT-5-series models are only for clearly
+                         trivial, low-risk tasks.
+  --reasoning-effort E   Codex reasoning effort. Default:
+                         ${CODEX_O2_REASONING_EFFORT:-xhigh}.
+  --dry-run              Write prompts and queue state without running Codex.
+  -h, --help             Show this help.
+
+If --task-file and --task are omitted, remaining arguments are joined as the
+initial task text.
+USAGE
+}
+
+die() {
+    printf 'o2-autopilot: %s\n' "$*" >&2
+    exit 1
+}
+
+is_uint() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]]
+}
+
+sanitize_tsv() {
+    local value=${1//$'\t'/ }
+    value=${value//$'\r'/ }
+    value=${value//$'\n'/ }
+    printf '%s' "$value"
+}
+
+timestamp_utc() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+hash_string() {
+    local value=$1
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$value" | sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$value" | shasum -a 256 | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        printf '%s' "$value" | openssl dgst -sha256 -r | awk '{print $1}'
+    else
+        die "sha256sum, shasum, or openssl is required to derive scope keys"
+    fi
+}
+
+resolve_existing_file() {
+    local base_dir=$1
+    local input=$2
+    local candidate
+    local dir
+    local name
+
+    if [[ "$input" == /* ]]; then
+        candidate=$input
+    else
+        candidate=$base_dir/$input
+    fi
+
+    [[ -f "$candidate" ]] || return 1
+    dir=$(cd -- "$(dirname -- "$candidate")" && pwd -P) || return 1
+    name=$(basename -- "$candidate")
+    printf '%s/%s\n' "$dir" "$name"
+}
+
+run_maco_capture() {
+    local label=$1
+    local output=$2
+    shift 2
+
+    if "$maco_path" "$@" >"$output" 2>"$output.err"; then
+        printf 'ok\n' >"$preflight_dir/$label.status"
+    else
+        printf 'failed\n' >"$preflight_dir/$label.status"
+    fi
+}
+
+seen_scope() {
+    local key=$1
+    [[ -s "$seen_file" ]] && grep -Fqx -- "$key" "$seen_file"
+}
+
+append_seen() {
+    printf '%s\n' "$1" >>"$seen_file"
+}
+
+queue_size() {
+    awk 'NR > 1 { count++ } END { print count + 0 }' "$queue_file"
+}
+
+queue_task() {
+    local depth=$1
+    local scope_key=$2
+    local task_file=$3
+    local reason=$4
+    local task_id
+    local task_count
+
+    if (( depth > max_depth )); then
+        log_skip "$scope_key" "$task_file" "$reason" "depth budget exceeded"
+        return 1
+    fi
+
+    if seen_scope "$scope_key"; then
+        log_skip "$scope_key" "$task_file" "$reason" "duplicate scope key"
+        return 1
+    fi
+
+    task_count=$(queue_size)
+    task_id=$(printf 'o2-%04d' "$((task_count + 1))")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$task_id" \
+        "$depth" \
+        "$(sanitize_tsv "$scope_key")" \
+        "$(sanitize_tsv "$task_file")" \
+        "$(sanitize_tsv "$reason")" \
+        "pending" \
+        "" >>"$queue_file"
+    append_seen "$scope_key"
+    return 0
+}
+
+log_skip() {
+    local scope_key=$1
+    local task_file=$2
+    local reason=$3
+    local skip_reason=$4
+
+    printf '%s\t%s\t%s\t%s\n' \
+        "$(sanitize_tsv "$scope_key")" \
+        "$(sanitize_tsv "$task_file")" \
+        "$(sanitize_tsv "$reason")" \
+        "$(sanitize_tsv "$skip_reason")" >>"$skips_file"
+}
+
+next_pending_row() {
+    awk -F '\t' 'NR > 1 && $6 == "pending" { print; exit }' "$queue_file"
+}
+
+mark_task_status() {
+    local task_id=$1
+    local status=$2
+    local note=${3:-}
+    local tmp=$queue_file.tmp.$$
+
+    awk -F '\t' -v OFS='\t' -v id="$task_id" -v status="$status" -v note="$note" '
+        NR == 1 { print; next }
+        $1 == id { $6 = status; $7 = note }
+        { print }
+    ' "$queue_file" >"$tmp"
+    mv -- "$tmp" "$queue_file"
+}
+
+mark_pending_skipped() {
+    local note=$1
+    local tmp=$queue_file.tmp.$$
+
+    awk -F '\t' -v OFS='\t' -v note="$note" '
+        NR == 1 { print; next }
+        $6 == "pending" { $6 = "skipped"; $7 = note }
+        { print }
+    ' "$queue_file" >"$tmp"
+    mv -- "$tmp" "$queue_file"
+}
+
+count_status() {
+    local status=$1
+    awk -F '\t' -v status="$status" 'NR > 1 && $6 == status { count++ } END { print count + 0 }' "$queue_file"
+}
+
+count_skip_rows() {
+    if [[ -s "$skips_file" ]]; then
+        wc -l <"$skips_file" | awk '{print $1}'
+    else
+        printf '0\n'
+    fi
+}
+
+write_state_snapshot() {
+    local phase=$1
+    local task_id=${2:-}
+    local note=${3:-}
+    local completed_count=0
+    local failed_count=0
+    local running_count=0
+    local skipped_task_count=0
+    local skipped_candidate_count=0
+    local skipped_count=0
+    local pending_count=0
+
+    if [[ -f "${queue_file:-}" ]]; then
+        completed_count=$(count_status completed)
+        failed_count=$(count_status failed)
+        running_count=$(count_status running)
+        skipped_task_count=$(count_status skipped)
+        skipped_candidate_count=$(count_skip_rows)
+        skipped_count=$((skipped_task_count + skipped_candidate_count))
+        pending_count=$(count_status pending)
+    fi
+
+    {
+        printf 'key\tvalue\n'
+        printf 'updated_at\t%s\n' "$(timestamp_utc)"
+        printf 'run_id\t%s\n' "$run_id"
+        printf 'project_root\t%s\n' "$project_root"
+        printf 'model\t%s\n' "$model"
+        printf 'reasoning_effort\t%s\n' "$reasoning_effort"
+        printf 'dry_run\t%s\n' "$dry_run"
+        printf 'max_depth\t%s\n' "$max_depth"
+        printf 'max_rounds\t%s\n' "$max_rounds"
+        printf 'max_peer_o2\t%s\n' "$max_peer_o2"
+        printf 'human_root_o2\tout_of_band_not_counted_against_autonomous_depth\n'
+        printf 'autonomous_o2\tbounded_subprocess_with_task_depth\n'
+        printf 'context_strategy\tdurable_ledger_snapshots_not_single_growing_llm_context\n'
+        printf 'ledger_files\tSTATE.tsv,HEARTBEAT.tsv,queue.tsv,skipped.tsv,SUMMARY.md,tasks/*/prompt.md,tasks/*/events.jsonl,tasks/*/final.md\n'
+        printf 'o2_to_o2_followup\tNEXT_O2_TASKS.tsv_durable_queue_only_no_native_subagent\n'
+        printf 'terminal_roles\tworker,researcher,review_auditor\n'
+        printf 'current_phase\t%s\n' "$(sanitize_tsv "$phase")"
+        printf 'current_task_id\t%s\n' "$(sanitize_tsv "$task_id")"
+        printf 'last_note\t%s\n' "$(sanitize_tsv "$note")"
+        printf 'completed\t%s\n' "$completed_count"
+        printf 'failed\t%s\n' "$failed_count"
+        printf 'running\t%s\n' "$running_count"
+        printf 'skipped\t%s\n' "$skipped_count"
+        printf 'pending\t%s\n' "$pending_count"
+        printf 'peer_o2_accepted\t%s\n' "${peer_added:-0}"
+    } >"$state_file"
+}
+
+record_heartbeat() {
+    local phase=$1
+    local task_id=${2:-}
+    local status=${3:-}
+    local note=${4:-}
+
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(timestamp_utc)" \
+        "$(sanitize_tsv "$phase")" \
+        "$(sanitize_tsv "$task_id")" \
+        "$(sanitize_tsv "$status")" \
+        "$(sanitize_tsv "$note")" >>"$heartbeat_file"
+    write_state_snapshot "$phase" "$task_id" "$note"
+}
+
+generate_prompt() {
+    local task_id=$1
+    local depth=$2
+    local scope_key=$3
+    local task_file=$4
+    local task_dir=$5
+    local prompt_file=$task_dir/prompt.md
+
+    {
+        printf 'ROLE: O2_TOP_SUPERVISOR\n'
+        printf '\n'
+        printf 'Run id: %s\n' "$run_id"
+        printf 'Task id: %s\n' "$task_id"
+        printf 'Task depth: %s\n' "$depth"
+        printf 'Scope key: %s\n' "$scope_key"
+        printf 'Project root: %s\n' "$project_root"
+        printf 'Task directory: %s\n' "$task_dir"
+        printf 'Task file: %s\n' "$task_file"
+        printf '\n'
+        printf 'You are an O2 top supervisor launched by .agents/scripts/o2-autopilot.\n'
+        printf 'The human/user-directed root O2 is a separate out-of-band supervisor. It is not represented by task_depth and is not counted against max_depth.\n'
+        printf 'This subprocess is an autonomous O2 supervisor with bounded task_depth %s; the initial autonomous task begins at depth 0.\n' "$depth"
+        printf 'Long-running supervision context must be maintained through durable ledger snapshots in STATE.tsv, HEARTBEAT.tsv, queue.tsv, task prompt/final/event files, NEXT_O2_TASKS.tsv, and SUMMARY.md, not by one growing LLM context.\n'
+        printf 'Before acting, read AGENTS.md and relevant .agents docs, workflows, and skills in this project. Project-local instructions override this generated prompt.\n'
+        printf '\n'
+        printf 'Use the tiered launch policy: simple bounded terminal leaf work uses native host SubAgent; moderately complex non-leaf coordination uses O1; large, cross-cutting, long-running, or autonomous work uses O2.\n'
+        printf 'Use MACO through .agents/scripts/maco for O1/O2 orchestration and gates when useful or project-required:\n'
+        printf -- '- Run or consult repo map and sync status before decomposition, claims, or overlapping assignments when relevant.\n'
+        printf -- '- Use claim/scope coordination and review/merge gates where supported or required.\n'
+        printf -- '- Launch or structure O2/O1 delegating orchestration flows through MACO when available.\n'
+        printf -- '- Do not launch MACO worker, researcher, review-auditor, or equivalent terminal leaf roles.\n'
+        printf -- '- Treat MACO failures as evidence; stop only when the local gate requires that evidence before mutation.\n'
+        printf '\n'
+        printf 'Hands-on implementation, artifact generation, and integration work must be assigned according to that tiered policy: native host SubAgent for simple bounded terminal leaf work, O1 for moderately complex non-leaf coordination, and O2 for large or autonomous coordination.\n'
+        printf 'Do not wrap terminal leaf roles in raw Codex CLI subprocess prompts. Prohibited patterns include codex exec ... ROLE=TERMINAL_WORKER, ROLE=RESEARCHER, ROLE=REVIEW_AUDITOR, and raw codex exec prompts described as delegated workers, delegated implementation workers, delegated preflight workers, delegated validation workers, delegated cleanup workers, researchers, or review auditors. If native terminal-leaf capacity is unavailable, wait, narrow the task, report a capacity blocker, or escalate to O1/O2 only when the task complexity warrants non-leaf coordination. O2 and O1 children that may delegate should run through MACO when .agents/scripts/maco is available; otherwise they may use Codex CLI subprocess workflows, not native host SubAgent leaf-worker sessions. Give every child exact scope, write access, avoid lists, validation, and final report requirements.\n'
+        printf 'This child O2 was launched as a Codex CLI subprocess with danger-full-access, goals, and multi_agent enabled; preserve that boundary for any O2/O1 role that may delegate.\n'
+        printf 'Nested O2/O1 Codex CLI subprocess chains should also use danger-full-access, goals, and multi_agent. Do not use workspace-write for O2/O1 subprocess chains because nested Codex CLI may fail writing ~/.codex/state_5.sqlite.\n'
+        printf 'Default to gpt-5.6-sol for non-trivial O1/O2 or delegated Codex CLI work; the model choice is fixed and reasoning effort is the scaling knob: baseline xhigh, max for genuinely difficult work, ultra only for the very hardest work, lower effort only for clearly trivial, low-risk tasks. This run requested model %s with reasoning effort %s. If the runtime exposes no GPT-5.6-series model, fall back to the strongest available GPT-5-series model (for example gpt-5.5) with the same effort ladder.\n' "$model" "$reasoning_effort"
+        printf 'Before a manual Codex CLI O1/O2 launch, inspect codex exec --help and codex debug models read-only. Do not launch child sessions solely to probe model labels, service tiers, runtime labels, exact echo behavior, or delegation capability. Use runtime metadata, codex --help, codex exec --help, codex debug models, or read-only configuration inspection. If those are insufficient and no real safely scoped delegated task can run, report a concrete blocker instead of spawning a probe-only child session.\n'
+        printf 'Do not retry the same O1/O2 prompt by cycling unsupported model names, service tiers, config-bypass flags, or equivalent launch-option guesses. If a selected launch fails because of model, service-tier, or config compatibility, fix the proven cause once or report a concrete blocker instead of blind retrying.\n'
+        printf '\n'
+        printf 'This autonomous run is bounded. Do not widen it yourself:\n'
+        printf -- '- max_depth: %s\n' "$max_depth"
+        printf -- '- max_rounds: %s\n' "$max_rounds"
+        printf -- '- max_peer_o2: %s\n' "$max_peer_o2"
+        printf '\n'
+        printf 'Do not treat this prompt as permission to bypass project safety gates, hardware gates, live-service rules, secrets policy, privacy boundaries, branch rules, validation gates, publication rules, protected-branch rules, merge approval, destructive-command restrictions, or unrelated-change preservation.\n'
+        printf '\n'
+        printf 'If you discover new cross-cutting work that genuinely needs a peer O2 supervisor, write %s/NEXT_O2_TASKS.tsv with rows formatted exactly as:\n' "$task_dir"
+        printf 'scope_key<TAB>task_file<TAB>reason\n'
+        printf 'O2-to-O2 follow-up must go through NEXT_O2_TASKS.tsv/durable queue state, not native SubAgent.\n'
+        printf 'Ordinary terminal worker, researcher, and review-auditor roles remain terminal and use native host SubAgent or another approved runtime-native terminal-leaf path; do not launch them through MACO or raw Codex CLI.\n'
+        printf 'Use NEXT_O2_TASKS.tsv only for newly discovered peer-O2 tasks, not ordinary follow-up work inside this scope. Put each peer task in a separate task file. Relative task_file values are resolved from this task directory. Leave scope_key blank only when the wrapper should derive it from the task path.\n'
+        printf '\n'
+        printf 'Write your final result normally. The wrapper captures the final message in final.md and the JSON event stream in events.jsonl.\n'
+        printf '\n'
+        printf 'TASK CONTENT BEGIN\n'
+        sed 's/\r$//' "$task_file"
+        printf '\nTASK CONTENT END\n'
+    } >"$prompt_file"
+}
+
+ingest_next_tasks() {
+    local parent_task_id=$1
+    local parent_depth=$2
+    local task_dir=$3
+    local next_file=$task_dir/NEXT_O2_TASKS.tsv
+    local line_scope_key
+    local line_task_file
+    local line_reason
+    local extra
+    local resolved_task_file
+    local child_depth
+
+    [[ -f "$next_file" ]] || return 0
+
+    while IFS=$'\t' read -r line_scope_key line_task_file line_reason extra || [[ -n "${line_scope_key:-}${line_task_file:-}${line_reason:-}${extra:-}" ]]; do
+        if [[ -z "${line_scope_key:-}${line_task_file:-}${line_reason:-}${extra:-}" ]]; then
+            continue
+        fi
+        if [[ "${line_scope_key:-}" == \#* ]]; then
+            continue
+        fi
+        if [[ "${line_scope_key:-}" == "scope_key" && "${line_task_file:-}" == "task_file" ]]; then
+            continue
+        fi
+        if [[ -n "${extra:-}" ]]; then
+            log_skip "${line_scope_key:-}" "${line_task_file:-}" "${line_reason:-}" "malformed NEXT_O2_TASKS.tsv row"
+            continue
+        fi
+        if [[ -z "${line_task_file:-}" ]]; then
+            log_skip "${line_scope_key:-}" "" "${line_reason:-}" "missing task_file"
+            continue
+        fi
+        if ! resolved_task_file=$(resolve_existing_file "$task_dir" "$line_task_file"); then
+            log_skip "${line_scope_key:-}" "$line_task_file" "${line_reason:-}" "task_file not found"
+            continue
+        fi
+
+        if [[ -z "${line_scope_key:-}" ]]; then
+            line_scope_key=$(hash_string "$resolved_task_file")
+        fi
+
+        child_depth=$((parent_depth + 1))
+        if (( child_depth > max_depth )); then
+            log_skip "$line_scope_key" "$resolved_task_file" "${line_reason:-}" "depth budget exceeded"
+            continue
+        fi
+        if (( peer_added >= max_peer_o2 )); then
+            log_skip "$line_scope_key" "$resolved_task_file" "${line_reason:-}" "peer O2 budget exceeded"
+            continue
+        fi
+        if seen_scope "$line_scope_key"; then
+            log_skip "$line_scope_key" "$resolved_task_file" "${line_reason:-}" "duplicate scope key"
+            continue
+        fi
+
+        if queue_task "$child_depth" "$line_scope_key" "$resolved_task_file" "peer from $parent_task_id: ${line_reason:-}"; then
+            peer_added=$((peer_added + 1))
+        fi
+    done <"$next_file"
+}
+
+write_summary() {
+    local completed_count
+    local failed_count
+    local skipped_task_count
+    local skipped_candidate_count
+    local skipped_count
+    local pending_count
+    local next_action
+
+    completed_count=$(count_status completed)
+    failed_count=$(count_status failed)
+    skipped_task_count=$(count_status skipped)
+    skipped_candidate_count=$(count_skip_rows)
+    skipped_count=$((skipped_task_count + skipped_candidate_count))
+    pending_count=$(count_status pending)
+
+    if (( failed_count > 0 )); then
+        next_action="Inspect failed task directories, final.md, stderr.txt, and events.jsonl before rerunning or widening scope."
+    elif (( pending_count > 0 || skipped_count > 0 )); then
+        next_action="Review skipped and pending tasks before increasing depth, round, or peer-O2 budgets."
+    else
+        next_action="Review task final.md files and run project-local verification before accepting or integrating results."
+    fi
+
+    {
+        printf '# O2 Autopilot Summary\n'
+        printf '\n'
+        printf -- '- Run id: %s\n' "$run_id"
+        printf -- '- Project root: %s\n' "$project_root"
+        printf -- '- Model: %s\n' "$model"
+        printf -- '- Reasoning effort: %s\n' "$reasoning_effort"
+        printf -- '- Dry run: %s\n' "$dry_run"
+        printf -- '- Max depth: %s\n' "$max_depth"
+        printf -- '- Max rounds: %s\n' "$max_rounds"
+        printf -- '- Max peer O2: %s\n' "$max_peer_o2"
+        printf -- '- Peer O2 accepted: %s\n' "$peer_added"
+        printf '\n'
+        printf '## Counts\n'
+        printf '\n'
+        printf -- '- Completed: %s\n' "$completed_count"
+        printf -- '- Failed: %s\n' "$failed_count"
+        printf -- '- Skipped: %s\n' "$skipped_count"
+        printf -- '- Pending: %s\n' "$pending_count"
+        printf '\n'
+        printf '## Files\n'
+        printf '\n'
+        printf -- '- Queue: %s\n' "$queue_file"
+        printf -- '- Seen scopes: %s\n' "$seen_file"
+        printf -- '- Skips: %s\n' "$skips_file"
+        printf '\n'
+        printf '## Next Safe Action\n'
+        printf '\n'
+        printf '%s\n' "$next_action"
+    } >"$summary_file"
+    record_heartbeat "summary_written" "" "completed" "summary written"
+}
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+project_root=$(cd -- "$script_dir/../.." && pwd -P)
+invocation_dir=$(pwd -P)
+
+task_file_input=
+task_text=
+run_id=
+max_depth=10
+max_rounds=3
+max_peer_o2=3
+model=${CODEX_O2_MODEL:-gpt-5.6-sol}
+reasoning_effort=${CODEX_O2_REASONING_EFFORT:-xhigh}
+dry_run=false
+remaining=()
+
+while (($#)); do
+    case "$1" in
+        --task-file)
+            (($# >= 2)) || die "--task-file requires FILE"
+            task_file_input=$2
+            shift 2
+            ;;
+        --task)
+            (($# >= 2)) || die "--task requires TEXT"
+            task_text=$2
+            shift 2
+            ;;
+        --run-id)
+            (($# >= 2)) || die "--run-id requires ID"
+            run_id=$2
+            shift 2
+            ;;
+        --max-depth)
+            (($# >= 2)) || die "--max-depth requires N"
+            max_depth=$2
+            shift 2
+            ;;
+        --max-rounds)
+            (($# >= 2)) || die "--max-rounds requires N"
+            max_rounds=$2
+            shift 2
+            ;;
+        --max-peer-o2)
+            (($# >= 2)) || die "--max-peer-o2 requires N"
+            max_peer_o2=$2
+            shift 2
+            ;;
+        --model)
+            (($# >= 2)) || die "--model requires MODEL"
+            model=$2
+            shift 2
+            ;;
+        --reasoning-effort)
+            (($# >= 2)) || die "--reasoning-effort requires EFFORT"
+            reasoning_effort=$2
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            remaining=("$@")
+            break
+            ;;
+        --*)
+            die "unknown option: $1"
+            ;;
+        *)
+            remaining=("$@")
+            break
+            ;;
+    esac
+done
+
+if [[ -n "$task_file_input" && -n "$task_text" ]]; then
+    die "use only one of --task-file or --task"
+fi
+if [[ -n "$task_file_input" && ${#remaining[@]} -gt 0 ]]; then
+    die "remaining task arguments cannot be combined with --task-file"
+fi
+if [[ -n "$task_text" && ${#remaining[@]} -gt 0 ]]; then
+    die "remaining task arguments cannot be combined with --task"
+fi
+if [[ -z "$task_file_input" && -z "$task_text" && ${#remaining[@]} -gt 0 ]]; then
+    task_text=${remaining[*]}
+fi
+if [[ -z "$task_file_input" && -z "$task_text" ]]; then
+    usage >&2
+    exit 2
+fi
+
+is_uint "$max_depth" || die "--max-depth must be a non-negative integer"
+is_uint "$max_rounds" || die "--max-rounds must be a non-negative integer"
+is_uint "$max_peer_o2" || die "--max-peer-o2 must be a non-negative integer"
+[[ "$reasoning_effort" =~ ^[A-Za-z0-9._-]+$ ]] || die "--reasoning-effort contains unsupported characters"
+
+if [[ -z "$run_id" ]]; then
+    run_id=$(printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$$")
+fi
+[[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "--run-id may contain only letters, numbers, dot, underscore, and dash"
+
+if git_status_text=$(git -C "$project_root" status --short --branch 2>&1); then
+    git_status_result=ok
+else
+    git_status_result=failed
+fi
+
+run_dir=$project_root/.maco/o2-autopilot/runs/$run_id
+preflight_dir=$run_dir/preflight
+tasks_dir=$run_dir/tasks
+queue_file=$run_dir/queue.tsv
+seen_file=$run_dir/seen-scope-keys.txt
+skips_file=$run_dir/skipped.tsv
+state_file=$run_dir/STATE.tsv
+heartbeat_file=$run_dir/HEARTBEAT.tsv
+summary_file=$run_dir/SUMMARY.md
+
+if [[ -e "$run_dir" ]]; then
+    die "run directory already exists: $run_dir"
+fi
+
+mkdir -p "$preflight_dir" "$tasks_dir" "$run_dir/input"
+printf 'task_id\tdepth\tscope_key\ttask_file\treason\tstatus\tnote\n' >"$queue_file"
+: >"$seen_file"
+: >"$skips_file"
+printf 'timestamp\tphase\ttask_id\tstatus\tnote\n' >"$heartbeat_file"
+
+printf '%s\n' "$git_status_text" >"$preflight_dir/git-status.txt"
+printf '%s\n' "$git_status_result" >"$preflight_dir/git-status.status"
+
+if command -v codex >/dev/null 2>&1; then
+    codex_path=$(command -v codex)
+    printf 'ok\t%s\n' "$codex_path" >"$preflight_dir/codex.txt"
+    codex_available=true
+    codex_reasoning_args=(-c "model_reasoning_effort=\"$reasoning_effort\"")
+    codex_approval_args=()
+    if codex_exec_help=$("$codex_path" exec --help 2>&1); then
+        if grep -Fq -- '--ask-for-approval' <<<"$codex_exec_help"; then
+            codex_approval_args=(--ask-for-approval never)
+            printf 'supported\t--ask-for-approval never\n' >"$preflight_dir/codex-ask-for-approval.txt"
+        else
+            printf 'unsupported\n' >"$preflight_dir/codex-ask-for-approval.txt"
+        fi
+    else
+        printf 'help-failed\n' >"$preflight_dir/codex-ask-for-approval.txt"
+    fi
+else
+    printf 'missing\n' >"$preflight_dir/codex.txt"
+    codex_available=false
+    codex_reasoning_args=()
+    codex_approval_args=()
+    printf 'codex-missing\n' >"$preflight_dir/codex-ask-for-approval.txt"
+fi
+
+maco_path=$project_root/.agents/scripts/maco
+if [[ -x "$maco_path" ]]; then
+    printf 'ok\t%s\n' "$maco_path" >"$preflight_dir/maco.txt"
+    run_maco_capture repo-map "$preflight_dir/repo-map.json" repo map --repo "$project_root" --json
+    run_maco_capture sync-status "$preflight_dir/sync-status.json" sync status --repo "$project_root" --json
+else
+    printf 'missing\t%s\n' "$maco_path" >"$preflight_dir/maco.txt"
+fi
+
+{
+    printf 'run_id\t%s\n' "$run_id"
+    printf 'project_root\t%s\n' "$project_root"
+    printf 'model\t%s\n' "$model"
+    printf 'reasoning_effort\t%s\n' "$reasoning_effort"
+    printf 'dry_run\t%s\n' "$dry_run"
+    printf 'max_depth\t%s\n' "$max_depth"
+    printf 'max_rounds\t%s\n' "$max_rounds"
+    printf 'max_peer_o2\t%s\n' "$max_peer_o2"
+    printf 'human_root_o2\tout-of-band-not-counted-against-autonomous-depth\n'
+    printf 'context_strategy\tdurable-ledger-snapshots-not-single-growing-llm-context\n'
+} >"$preflight_dir/run.tsv"
+
+if [[ -n "$task_file_input" ]]; then
+    if ! initial_task_file=$(resolve_existing_file "$invocation_dir" "$task_file_input"); then
+        die "task file not found: $task_file_input"
+    fi
+    initial_scope_key=$(hash_string "$initial_task_file")
+else
+    initial_task_file=$run_dir/input/initial-task.md
+    printf '%s\n' "$task_text" >"$initial_task_file"
+    initial_scope_key=$(hash_string "$task_text")
+fi
+
+queue_task 0 "$initial_scope_key" "$initial_task_file" "initial task" >/dev/null
+
+peer_added=0
+record_heartbeat "initialized" "" "ready" "initial autonomous task queued; human root O2 is out-of-band"
+
+if [[ "$codex_available" != true && "$dry_run" != true ]]; then
+    mark_pending_skipped "codex unavailable"
+    record_heartbeat "task_skipped" "" "skipped" "codex unavailable"
+    write_summary
+    printf 'o2-autopilot: codex is required unless --dry-run is used\n' >&2
+    exit 127
+fi
+
+round=0
+while (( round < max_rounds )); do
+    row=$(next_pending_row)
+    [[ -n "$row" ]] || break
+
+    IFS=$'\t' read -r task_id task_depth task_scope_key task_file task_reason task_status task_note <<<"$row"
+    task_dir=$tasks_dir/$task_id
+    mkdir -p "$task_dir"
+
+    generate_prompt "$task_id" "$task_depth" "$task_scope_key" "$task_file" "$task_dir"
+
+    if [[ "$dry_run" == true ]]; then
+        mark_task_status "$task_id" "skipped" "dry-run"
+        record_heartbeat "task_skipped" "$task_id" "skipped" "dry-run"
+        break
+    fi
+
+    mark_task_status "$task_id" "running" ""
+    record_heartbeat "task_running" "$task_id" "running" ""
+    if "$codex_path" exec --json --enable goals --enable multi_agent --sandbox danger-full-access "${codex_reasoning_args[@]}" "${codex_approval_args[@]}" --cd "$project_root" -m "$model" -o "$task_dir/final.md" - \
+        <"$task_dir/prompt.md" >"$task_dir/events.jsonl" 2>"$task_dir/stderr.txt"; then
+        mark_task_status "$task_id" "completed" ""
+        record_heartbeat "task_completed" "$task_id" "completed" ""
+    else
+        mark_task_status "$task_id" "failed" "codex exec failed"
+        record_heartbeat "task_failed" "$task_id" "failed" "codex exec failed"
+    fi
+
+    ingest_next_tasks "$task_id" "$task_depth" "$task_dir"
+    round=$((round + 1))
+done
+
+if [[ "$dry_run" == true ]]; then
+    mark_pending_skipped "dry-run"
+elif [[ -n "$(next_pending_row)" ]]; then
+    mark_pending_skipped "max rounds reached"
+    record_heartbeat "task_skipped" "" "skipped" "max rounds reached"
+fi
+
+write_summary
+
+if (( $(count_status failed) > 0 )); then
+    exit 1
+fi
