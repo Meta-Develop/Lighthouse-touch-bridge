@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Ltb.Calibration\Ltb.Calibration.csproj" />
+    <ProjectReference Include="..\..\tools\Ltb.SyntheticData\Ltb.SyntheticData.csproj" />
   </ItemGroup>
 
 </Project>
