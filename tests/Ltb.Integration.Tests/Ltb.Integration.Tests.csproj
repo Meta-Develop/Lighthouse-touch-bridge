@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Ltb.App\Ltb.App.csproj" />
     <ProjectReference Include="..\..\src\Ltb.Core\Ltb.Core.csproj" />
     <ProjectReference Include="..\..\src\Ltb.OpenVr\Ltb.OpenVr.csproj" />
     <ProjectReference Include="..\..\src\Ltb.Alvr\Ltb.Alvr.csproj" />

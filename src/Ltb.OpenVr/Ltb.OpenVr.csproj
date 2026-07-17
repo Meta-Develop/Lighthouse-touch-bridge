@@ -2,6 +2,32 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Ltb.Core\Ltb.Core.csproj" />
+    <ProjectReference Include="Interop\Ltb.OpenVr.Interop.csproj"
+                      Aliases="OpenVrInterop"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Interop\**\*.cs" />
+    <Compile Remove="ThirdParty\OpenVR\openvr_api.cs" />
+    <None Remove="Interop\bin\**\*" />
+    <None Remove="Interop\obj\**\*" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' Or '$(RuntimeIdentifier)' == 'win-x64'">
+    <None Update="runtimes\win-x64\native\openvr_api.dll">
+      <TargetPath>openvr_api.dll</TargetPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="ThirdParty\OpenVR\LICENSE">
+      <TargetPath>licenses\Valve.OpenVR.LICENSE.txt</TargetPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
   </ItemGroup>
 
   <PropertyGroup>

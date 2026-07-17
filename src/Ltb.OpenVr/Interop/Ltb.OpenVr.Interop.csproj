@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>Ltb.OpenVr.Interop</AssemblyName>
+    <RootNamespace>Valve.VR</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\ThirdParty\OpenVR\openvr_api.cs" Link="openvr_api.cs" />
+  </ItemGroup>
+
+</Project>
