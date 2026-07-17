@@ -3,9 +3,11 @@ using Ltb.Calibration;
 namespace Ltb.SyntheticData;
 
 internal sealed record CommandLineOptions(
+    SyntheticCommand Command,
     SyntheticScenario Scenario,
     int Seed,
     CalibrationPolicy Policy,
+    string? OutputPath,
     bool ShowHelp)
 {
     public static bool TryParse(
@@ -16,9 +18,19 @@ internal sealed record CommandLineOptions(
         var scenario = SyntheticScenario.Clean;
         var seed = 20260717;
         var policy = CalibrationPolicy.Auto;
+        string? outputPath = null;
         var showHelp = false;
+        var command = SyntheticCommand.Calibrate;
+        var startIndex = 0;
 
-        for (var index = 0; index < arguments.Count; index++)
+        if (arguments.Count > 0 &&
+            string.Equals(arguments[0], "record-simulate", StringComparison.Ordinal))
+        {
+            command = SyntheticCommand.RecordSimulate;
+            startIndex = 1;
+        }
+
+        for (var index = startIndex; index < arguments.Count; index++)
         {
             var argument = arguments[index];
             switch (argument)
@@ -31,7 +43,7 @@ internal sealed record CommandLineOptions(
                         !TryParseScenario(scenarioValue!, out scenario))
                     {
                         error ??= $"Unknown scenario '{scenarioValue}'.";
-                        options = new CommandLineOptions(default, default, default, default);
+                        options = Empty;
                         return false;
                     }
 
@@ -41,7 +53,7 @@ internal sealed record CommandLineOptions(
                         !int.TryParse(seedValue, out seed))
                     {
                         error ??= $"Seed must be a 32-bit integer; received '{seedValue}'.";
-                        options = new CommandLineOptions(default, default, default, default);
+                        options = Empty;
                         return false;
                     }
 
@@ -51,40 +63,74 @@ internal sealed record CommandLineOptions(
                         !TryParsePolicy(policyValue!, out policy))
                     {
                         error ??= $"Unknown policy '{policyValue}'.";
-                        options = new CommandLineOptions(default, default, default, default);
+                        options = Empty;
+                        return false;
+                    }
+
+                    break;
+                case "--output":
+                    if (!TryReadValue(arguments, ref index, argument, out outputPath, out error))
+                    {
+                        options = Empty;
+                        return false;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(outputPath))
+                    {
+                        error = "Output path cannot be empty.";
+                        options = Empty;
                         return false;
                     }
 
                     break;
                 default:
                     error = $"Unknown option '{argument}'.";
-                    options = new CommandLineOptions(default, default, default, default);
+                    options = Empty;
                     return false;
             }
         }
 
-        options = new CommandLineOptions(scenario, seed, policy, showHelp);
+        if (!showHelp && command == SyntheticCommand.RecordSimulate && outputPath is null)
+        {
+            error = "The record-simulate command requires --output <recording.json>.";
+            options = Empty;
+            return false;
+        }
+
+        if (!showHelp && command == SyntheticCommand.Calibrate && outputPath is not null)
+        {
+            error = "--output is only valid with the record-simulate command.";
+            options = Empty;
+            return false;
+        }
+
+        options = new CommandLineOptions(command, scenario, seed, policy, outputPath, showHelp);
         error = null;
         return true;
     }
 
     public static void PrintUsage(TextWriter writer)
     {
-        writer.WriteLine("Lighthouse Touch Bridge synthetic offline calibration proof");
+        writer.WriteLine("Lighthouse Touch Bridge synthetic data utility");
         writer.WriteLine();
         writer.WriteLine("Usage:");
         writer.WriteLine("  dotnet run --project tools/Ltb.SyntheticData -- [options]");
+        writer.WriteLine("  dotnet run --project tools/Ltb.SyntheticData -- record-simulate --output <recording.json> [options]");
         writer.WriteLine();
         writer.WriteLine("Options:");
         writer.WriteLine("  --scenario <name>  clean | noisy | static | single-axis | pure-translation | translation-degenerate");
         writer.WriteLine("                     Default: clean");
         writer.WriteLine("  --seed <integer>   Deterministic random seed. Default: 20260717");
-        writer.WriteLine("  --policy <name>    auto | rotation | full. Default: auto");
+        writer.WriteLine("  --policy <name>    auto | rotation | full. Default: auto (offline report only)");
+        writer.WriteLine("  --output <path>    Destination for record-simulate (required for that command)");
         writer.WriteLine("  -h, --help         Show this help.");
         writer.WriteLine();
-        writer.WriteLine("Milestone 0 uses the generator's known lag to create truth-aligned pose pairs;");
-        writer.WriteLine("lag estimation belongs to Milestone 1.");
+        writer.WriteLine("With no subcommand, the Milestone 0 truth-aligned report behavior is preserved.");
+        writer.WriteLine("record-simulate exports raw lagged streams using recording schema 1.");
     }
+
+    private static CommandLineOptions Empty { get; } =
+        new(default, default, default, default, null, default);
 
     private static bool TryReadValue(
         IReadOnlyList<string> arguments,
@@ -131,4 +177,10 @@ internal sealed record CommandLineOptions(
         };
         return Enum.IsDefined(policy);
     }
+}
+
+internal enum SyntheticCommand
+{
+    Calibrate,
+    RecordSimulate,
 }
