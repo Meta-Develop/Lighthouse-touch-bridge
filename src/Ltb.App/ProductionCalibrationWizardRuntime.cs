@@ -241,18 +241,6 @@ internal sealed class ProductionCalibrationWizardRuntime :
         var failures = new List<Exception>();
         foreach (var hand in Enum.GetValues<CalibrationWizardHand>())
         {
-            var deactivateFailure = await RunBoundedCleanupAsync(
-                    token => _backend.DeactivateWizardVmtAsync(
-                        hand,
-                        CurrentDevices,
-                        token),
-                    $"VMT deactivation for {hand}")
-                .ConfigureAwait(false);
-            if (deactivateFailure is not null)
-            {
-                failures.Add(deactivateFailure);
-            }
-
             var releaseFailure = await RunBoundedCleanupAsync(
                     token => _backend.ReleaseWizardHandOverrideAsync(hand, token),
                     $"semantic-hand override release for {hand}")
@@ -260,6 +248,19 @@ internal sealed class ProductionCalibrationWizardRuntime :
             if (releaseFailure is not null)
             {
                 failures.Add(releaseFailure);
+                continue;
+            }
+
+            var deactivateFailure = await RunBoundedCleanupAsync(
+                    token => _backend.DeactivateWizardVmtAsync(
+                        hand,
+                        CurrentDevices,
+                        token),
+                    $"VMT deactivation after confirmed semantic-hand release for {hand}")
+                .ConfigureAwait(false);
+            if (deactivateFailure is not null)
+            {
+                failures.Add(deactivateFailure);
             }
         }
 

@@ -439,12 +439,13 @@ internal sealed class ProductionReliableDailyUseRuntime :
         var state = State(application);
         var session = Session;
 
-        // Both cleanup mutations are part of this application transaction.
-        // If a later step fails, RollbackProfileOverrideAsync consumes their
-        // recovery points in reverse order.
+        // Release this exact slot-to-hand mapping before the slot can become an
+        // inactive pose source. If a later step fails, rollback consumes the
+        // recovery point and then releases the semantic hand again before the
+        // shared transaction is allowed to deactivate VMT.
+        state.SettingsRecoveryPoints.Add(_settings.ReleaseOverride(state.CleanupBinding));
         await _vmt.DeactivateAsync(state.Configuration, cancellationToken)
             .ConfigureAwait(false);
-        state.SettingsRecoveryPoints.Add(_settings.ReleaseOverride(state.CleanupBinding));
 
         var devices = session.EnumerateDevices();
         EnsureCurrentDescriptor(devices, state.Tracker, "physical tracker");
@@ -495,7 +496,6 @@ internal sealed class ProductionReliableDailyUseRuntime :
         state.TrackerSource = trackerSource;
         state.VmtDevice = vmtDevice;
         state.VmtSource = vmtSource;
-        state.ActiveBinding = binding;
     }
 
     public async Task DeactivateProfileAsync(
@@ -503,8 +503,10 @@ internal sealed class ProductionReliableDailyUseRuntime :
         CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
-        await _vmt.DeactivateAsync(State(application).Configuration, cancellationToken)
+        var state = State(application);
+        await _vmt.DeactivateAsync(state.Configuration, cancellationToken)
             .ConfigureAwait(false);
+        _applications.Remove(application.OperationId);
     }
 
     public Task RollbackProfileOverrideAsync(
@@ -529,14 +531,24 @@ internal sealed class ProductionReliableDailyUseRuntime :
         }
 
         state.SettingsRecoveryPoints.Clear();
+        try
+        {
+            _ = _settings.ReleaseOverridesTargetingSemanticHand(
+                state.CleanupBinding.SemanticHandPath);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
         if (failures.Count > 0)
         {
             throw new AggregateException(
-                "One or more profile-application settings recovery points could not be rolled back.",
+                "One or more profile-application settings recovery points could not be " +
+                "rolled back, or the semantic hand could not be confirmed released.",
                 failures);
         }
 
-        _applications.Remove(application.OperationId);
         return Task.CompletedTask;
     }
 
@@ -547,9 +559,9 @@ internal sealed class ProductionReliableDailyUseRuntime :
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
         var state = State(application);
-        _settings.ReleaseOverride(state.ActiveBinding ?? state.CleanupBinding);
+        _ = _settings.ReleaseOverridesTargetingSemanticHand(
+            state.CleanupBinding.SemanticHandPath);
         state.SettingsRecoveryPoints.Clear();
-        _applications.Remove(application.OperationId);
         return Task.CompletedTask;
     }
 
@@ -1219,7 +1231,5 @@ internal sealed class ProductionReliableDailyUseRuntime :
         public SteamVrDeviceDescriptor? VmtDevice { get; set; }
 
         public TrackedPoseSource? VmtSource { get; set; }
-
-        public TrackingOverrideBinding? ActiveBinding { get; set; }
     }
 }

@@ -141,6 +141,36 @@ public sealed class TwoHandCalibrationWizardStateTests
     }
 
     [Fact]
+    public async Task ReusableProfileOutputFailureAfterApplySafeDisablesBothHands()
+    {
+        var backend = new InMemoryWizardBackend();
+        var seed = await new TwoHandCalibrationWizard(
+            new ScriptedWizardRuntime(),
+            backend,
+            new RecordingWizardOutput()).RunAsync();
+        Assert.True(seed.Success);
+
+        var runtime = new CleanupOwnedWizardRuntime();
+        var result = await new TwoHandCalibrationWizard(
+            runtime,
+            backend,
+            new ThrowOnAppliedProfileOutput()).RunAsync();
+
+        Assert.False(result.Success);
+        Assert.Equal(CalibrationWizardState.Ready, result.FinalState);
+        Assert.Equal(1, runtime.SafeDisableCalls);
+        Assert.Empty(runtime.ActiveHands);
+        Assert.Equal(
+            [
+                CalibrationWizardState.ApplyProfile,
+                CalibrationWizardState.SafeDisable,
+                CalibrationWizardState.Ready,
+            ],
+            result.StateHistory.TakeLast(3));
+        Assert.Contains("unexpected production-wizard operation", result.Diagnostic);
+    }
+
+    [Fact]
     public async Task BadRotationReturnsReadyWithDiagnosticInsteadOfFallback()
     {
         var runtime = new ScriptedWizardRuntime();
@@ -509,4 +539,72 @@ internal sealed class RecordingWizardOutput : ICalibrationWizardOutput
     }
 
     public void WriteLine(string message) => Lines.Add(message);
+}
+
+internal sealed class CleanupOwnedWizardRuntime :
+    ICalibrationWizardRuntime,
+    ICalibrationWizardCleanupRuntime
+{
+    private readonly ScriptedWizardRuntime _inner = new();
+
+    public HashSet<CalibrationWizardHand> ActiveHands { get; } = [];
+
+    public int SafeDisableCalls { get; private set; }
+
+    public Task<CalibrationWizardDependencyStatus> CheckDependenciesAsync(
+        CancellationToken cancellationToken) =>
+        _inner.CheckDependenciesAsync(cancellationToken);
+
+    public Task WaitForSteamVrAsync(CancellationToken cancellationToken) =>
+        _inner.WaitForSteamVrAsync(cancellationToken);
+
+    public Task<CalibrationWizardDeviceSet> WaitForDevicesAsync(
+        CancellationToken cancellationToken) =>
+        _inner.WaitForDevicesAsync(cancellationToken);
+
+    public Task ReleaseOverridesAsync(
+        CalibrationWizardDeviceSet devices,
+        CancellationToken cancellationToken) =>
+        _inner.ReleaseOverridesAsync(devices, cancellationToken);
+
+    public Task<CalibrationWizardCapture> CaptureAsync(
+        CalibrationWizardHand hand,
+        CalibrationWizardDeviceSet devices,
+        IProgress<CalibrationWizardCaptureProgress> progress,
+        CancellationToken cancellationToken) =>
+        _inner.CaptureAsync(hand, devices, progress, cancellationToken);
+
+    public async Task ApplyProfilesAsync(
+        IReadOnlyList<CalibrationWizardProfileView> profiles,
+        CancellationToken cancellationToken)
+    {
+        await _inner.ApplyProfilesAsync(profiles, cancellationToken);
+        ActiveHands.UnionWith(profiles.Select(profile => profile.Hand));
+    }
+
+    public Task<IReadOnlyList<Exception>> SafeDisableAsync()
+    {
+        SafeDisableCalls++;
+        ActiveHands.Clear();
+        return Task.FromResult<IReadOnlyList<Exception>>(Array.Empty<Exception>());
+    }
+}
+
+internal sealed class ThrowOnAppliedProfileOutput : ICalibrationWizardOutput
+{
+    public void OnStateChanged(CalibrationWizardState state, string diagnostic)
+    {
+    }
+
+    public void OnCaptureProgress(CalibrationWizardCaptureProgress progress)
+    {
+    }
+
+    public void WriteLine(string message)
+    {
+        if (message.StartsWith("profile:", StringComparison.Ordinal))
+        {
+            throw new IOException("synthetic post-apply output failure");
+        }
+    }
 }

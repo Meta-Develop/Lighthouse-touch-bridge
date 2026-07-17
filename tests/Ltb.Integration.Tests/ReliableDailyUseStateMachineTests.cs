@@ -357,10 +357,10 @@ public sealed class ReliableDailyUseStateMachineTests
         Assert.Single(result.SafeDisableFailures);
         Assert.Equal(
             [
-                "deactivate:right:3",
                 "release-override:right:3",
-                "deactivate:left:3",
+                "deactivate:right:3",
                 "release-override:left:3",
+                "deactivate:left:3",
             ],
             context.Runtime.Journal.Where(entry =>
                 entry.StartsWith("deactivate:", StringComparison.Ordinal) ||
@@ -369,6 +369,9 @@ public sealed class ReliableDailyUseStateMachineTests
             context.Log.Events,
             entry => entry.Code == LtbDiagnosticCode.SafeDisableFailed);
         Assert.Empty(context.Runtime.ActiveOverrideHands);
+        Assert.Equal(
+            [CalibrationWizardHand.Right],
+            context.Runtime.ActiveVmtHands);
     }
 
     [Fact]
@@ -388,10 +391,20 @@ public sealed class ReliableDailyUseStateMachineTests
         Assert.Same(run, completed);
         var result = await run;
         Assert.Equal(ReliableDailyUseStopReason.SafeDisableFailed, result.StopReason);
-        Assert.Contains("release-override:right:3", context.Runtime.Journal);
-        Assert.Contains("deactivate:left:3", context.Runtime.Journal);
-        Assert.Contains("release-override:left:3", context.Runtime.Journal);
+        Assert.Equal(
+            [
+                "release-override:right:3",
+                "deactivate:right:3",
+                "release-override:left:3",
+                "deactivate:left:3",
+            ],
+            context.Runtime.Journal.Where(entry =>
+                entry.StartsWith("deactivate:", StringComparison.Ordinal) ||
+                entry.StartsWith("release-override:", StringComparison.Ordinal)));
         Assert.Empty(context.Runtime.ActiveOverrideHands);
+        Assert.Equal(
+            [CalibrationWizardHand.Right],
+            context.Runtime.ActiveVmtHands);
     }
 
     [Fact]
@@ -421,10 +434,10 @@ public sealed class ReliableDailyUseStateMachineTests
             failure.Properties["exceptionMessage"]);
         Assert.Equal(
             [
-                "deactivate:right:3",
                 "release-override:right:3",
-                "deactivate:left:3",
+                "deactivate:right:3",
                 "release-override:left:3",
+                "deactivate:left:3",
             ],
             context.Runtime.Journal.Where(entry =>
                 entry.StartsWith("deactivate:", StringComparison.Ordinal) ||
@@ -470,16 +483,17 @@ public sealed class ReliableDailyUseStateMachineTests
             entry => entry.Code == LtbDiagnosticCode.SafeDisableFailed);
         Assert.Equal(
             [
-                "deactivate:right:3",
                 "release-override:right:3",
-                "deactivate:left:3",
                 "release-override:left:3",
+                "deactivate:left:3",
             ],
             context.Runtime.Journal.Where(entry =>
                 entry.StartsWith("deactivate:", StringComparison.Ordinal) ||
                 entry.StartsWith("release-override:", StringComparison.Ordinal)));
         Assert.Empty(context.Runtime.ActiveOverrideHands);
-        Assert.Empty(context.Runtime.ActiveVmtHands);
+        Assert.Equal(
+            [CalibrationWizardHand.Right],
+            context.Runtime.ActiveVmtHands);
     }
 
     [Fact]
@@ -500,10 +514,9 @@ public sealed class ReliableDailyUseStateMachineTests
         Assert.Single(result.SafeDisableFailures);
         Assert.Equal(
             [
-                "deactivate:right:3",
                 "release-override:right:3",
-                "deactivate:left:3",
                 "release-override:left:3",
+                "deactivate:left:3",
             ],
             context.Runtime.Journal.Where(entry =>
                 entry.StartsWith("deactivate:", StringComparison.Ordinal) ||
@@ -512,7 +525,9 @@ public sealed class ReliableDailyUseStateMachineTests
             context.Log.Events,
             entry => entry.Code == LtbDiagnosticCode.SafeDisableFailed);
         Assert.Empty(context.Runtime.ActiveOverrideHands);
-        Assert.Empty(context.Runtime.ActiveVmtHands);
+        Assert.Equal(
+            [CalibrationWizardHand.Right],
+            context.Runtime.ActiveVmtHands);
     }
 
     private static ReliableDailyUseContext CreateContext(

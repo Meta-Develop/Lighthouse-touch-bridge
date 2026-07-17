@@ -95,25 +95,6 @@ internal sealed class TwoHandProfileApplicationTransaction
         var failures = new List<Exception>();
         foreach (var application in applications.Reverse())
         {
-            var deactivateFailure = await RunBoundedCleanupAsync(
-                    token => _runtime.DeactivateProfileAsync(application, token),
-                    cleanupKind == ProfileApplicationCleanupKind.Rollback
-                        ? $"rollback VMT deactivation for {application.Profile.Hand}"
-                        : $"SafeDisable VMT deactivation for {application.Profile.Hand}")
-                .ConfigureAwait(false);
-            if (deactivateFailure is not null)
-            {
-                failures.Add(new InvalidOperationException(
-                    cleanupKind == ProfileApplicationCleanupKind.Rollback
-                        ? $"Rollback VMT deactivation failed for {application.Profile.Hand} " +
-                          $"profile '{application.Profile.ProfileName}': " +
-                          deactivateFailure.Message
-                        : $"SafeDisable VMT deactivation failed for {application.Profile.Hand} " +
-                          $"profile '{application.Profile.ProfileName}': " +
-                          deactivateFailure.Message,
-                    deactivateFailure));
-            }
-
             var overrideFailure = await RunBoundedCleanupAsync(
                     token => cleanupKind == ProfileApplicationCleanupKind.Rollback
                         ? _runtime.RollbackProfileOverrideAsync(application, token)
@@ -133,6 +114,26 @@ internal sealed class TwoHandProfileApplicationTransaction
                           $"{application.Profile.Hand} profile " +
                           $"'{application.Profile.ProfileName}': {overrideFailure.Message}",
                     overrideFailure));
+                continue;
+            }
+
+            var deactivateFailure = await RunBoundedCleanupAsync(
+                    token => _runtime.DeactivateProfileAsync(application, token),
+                    cleanupKind == ProfileApplicationCleanupKind.Rollback
+                        ? $"rollback VMT deactivation after confirmed TrackingOverride cleanup for {application.Profile.Hand}"
+                        : $"SafeDisable VMT deactivation after confirmed TrackingOverride release for {application.Profile.Hand}")
+                .ConfigureAwait(false);
+            if (deactivateFailure is not null)
+            {
+                failures.Add(new InvalidOperationException(
+                    cleanupKind == ProfileApplicationCleanupKind.Rollback
+                        ? $"Rollback VMT deactivation failed after confirmed TrackingOverride " +
+                          $"cleanup for {application.Profile.Hand} profile " +
+                          $"'{application.Profile.ProfileName}': {deactivateFailure.Message}"
+                        : $"SafeDisable VMT deactivation failed after confirmed " +
+                          $"TrackingOverride release for {application.Profile.Hand} profile " +
+                          $"'{application.Profile.ProfileName}': {deactivateFailure.Message}",
+                    deactivateFailure));
             }
         }
 

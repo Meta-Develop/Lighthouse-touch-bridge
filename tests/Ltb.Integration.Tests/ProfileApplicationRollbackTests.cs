@@ -22,10 +22,10 @@ public sealed class ProfileApplicationRollbackTests
         Assert.Empty(result.RollbackFailures);
         Assert.Equal(
             [
-                "deactivate:right:31",
                 "rollback-override:right:31",
-                "deactivate:left:31",
+                "deactivate:right:31",
                 "rollback-override:left:31",
+                "deactivate:left:31",
             ],
             RollbackJournal(context.Runtime));
         Assert.Contains(
@@ -40,7 +40,7 @@ public sealed class ProfileApplicationRollbackTests
     }
 
     [Fact]
-    public async Task RollbackFailureIsTypedStopsAndStillProcessesOlderReceipt()
+    public async Task RollbackSettingsFailureKeepsSourceActiveAndStillProcessesOlderReceipt()
     {
         var context = CreateContext();
         context.Runtime.FailApplyCall = 2;
@@ -53,10 +53,9 @@ public sealed class ProfileApplicationRollbackTests
         Assert.Single(result.RollbackFailures);
         Assert.Equal(
             [
-                "deactivate:right:31",
                 "rollback-override:right:31",
-                "deactivate:left:31",
                 "rollback-override:left:31",
+                "deactivate:left:31",
             ],
             RollbackJournal(context.Runtime));
         Assert.Contains(
@@ -64,7 +63,9 @@ public sealed class ProfileApplicationRollbackTests
             entry => entry.Code == LtbDiagnosticCode.RollbackFailed &&
                      entry.Level == LtbLogLevel.Error);
         Assert.Empty(context.Runtime.ActiveOverrideHands);
-        Assert.Empty(context.Runtime.ActiveVmtHands);
+        Assert.Equal(
+            [CalibrationWizardHand.Right],
+            context.Runtime.ActiveVmtHands);
     }
 
     [Fact]
@@ -114,16 +115,17 @@ public sealed class ProfileApplicationRollbackTests
         Assert.Single(result.RollbackFailures);
         Assert.Equal(
             [
-                "deactivate:right:31",
                 "rollback-override:right:31",
-                "deactivate:left:31",
                 "rollback-override:left:31",
+                "deactivate:left:31",
             ],
             RollbackJournal(context.Runtime));
         Assert.Equal(
             [CalibrationWizardHand.Right],
             context.Runtime.ActiveOverrideHands);
-        Assert.Empty(context.Runtime.ActiveVmtHands);
+        Assert.Equal(
+            [CalibrationWizardHand.Right],
+            context.Runtime.ActiveVmtHands);
         Assert.Contains(
             context.Log.Events,
             entry => entry.Code == LtbDiagnosticCode.RollbackFailed);
@@ -149,10 +151,10 @@ public sealed class ProfileApplicationRollbackTests
         Assert.Empty(attempt.RollbackFailures);
         Assert.Equal(
             [
-                "deactivate:right:0",
                 "rollback-override:right:0",
-                "deactivate:left:0",
+                "deactivate:right:0",
                 "rollback-override:left:0",
+                "deactivate:left:0",
             ],
             RollbackJournal(runtime));
         Assert.Empty(runtime.ActiveOverrideHands);
@@ -183,10 +185,10 @@ public sealed class ProfileApplicationRollbackTests
 
         Assert.Equal(
             [
-                "deactivate:right:0",
                 "rollback-override:right:0",
-                "deactivate:left:0",
+                "deactivate:right:0",
                 "rollback-override:left:0",
+                "deactivate:left:0",
             ],
             RollbackJournal(runtime));
         Assert.Empty(runtime.ActiveOverrideHands);

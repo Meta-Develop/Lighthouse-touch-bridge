@@ -282,7 +282,7 @@ internal sealed class TwoHandCalibrationWizard
     private readonly ILtbLogSink _logSink;
     private readonly TimeProvider _timeProvider;
     private readonly List<CalibrationWizardState> _history = [];
-    private bool _captureSafetyRequired;
+    private bool _externalCleanupRequired;
 
     public TwoHandCalibrationWizard(
         ICalibrationWizardRuntime runtime,
@@ -302,7 +302,7 @@ internal sealed class TwoHandCalibrationWizard
         CancellationToken cancellationToken = default)
     {
         _history.Clear();
-        _captureSafetyRequired = false;
+        _externalCleanupRequired = false;
         try
         {
             var result = await RunCoreAsync(cancellationToken).ConfigureAwait(false);
@@ -427,6 +427,7 @@ internal sealed class TwoHandCalibrationWizard
         _output.WriteLine($"profile_lookup: {reusable.Diagnostic}");
         if (reusable.HasCompletePair)
         {
+            _externalCleanupRequired = true;
             Transition(CalibrationWizardState.ApplyProfile,
                 "matching serial-and-hand profiles found; capture is not required");
             try
@@ -448,7 +449,7 @@ internal sealed class TwoHandCalibrationWizard
             return Complete(true, reusable.Profiles, reusable.Diagnostic);
         }
 
-        _captureSafetyRequired = true;
+        _externalCleanupRequired = true;
         Transition(CalibrationWizardState.OverrideRelease,
             "releasing active hand overrides before original Touch pose capture");
         try
@@ -699,7 +700,7 @@ internal sealed class TwoHandCalibrationWizard
     }
 
     private bool RequiresProductionCleanup =>
-        _captureSafetyRequired && _runtime is ICalibrationWizardCleanupRuntime;
+        _externalCleanupRequired && _runtime is ICalibrationWizardCleanupRuntime;
 
     private async Task<CalibrationWizardResult> CompleteAbortCleanupAsync(
         CalibrationWizardResult result)
