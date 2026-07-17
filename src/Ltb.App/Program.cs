@@ -30,6 +30,11 @@ internal static class Program
 
         try
         {
+            if (options.Command == AppCommand.WizardDemo)
+            {
+                return await WizardDemoAsync(options).ConfigureAwait(false);
+            }
+
             using var session = OpenVrSession.Open();
             if (options.Command == AppCommand.Bridge)
             {
@@ -64,6 +69,24 @@ internal static class Program
             Console.Error.WriteLine($"Lighthouse Touch Bridge failed: {exception.Message}");
             return 2;
         }
+    }
+
+    private static async Task<int> WizardDemoAsync(AppCommandLineOptions options)
+    {
+        var output = new ConsoleCalibrationWizardOutput(Console.Out);
+        var runtime = new ScriptedCalibrationWizardRuntime(output);
+        var backend = new FileCalibrationWizardBackend(options.WizardProfileStorePath!);
+        var wizard = new TwoHandCalibrationWizard(runtime, backend, output);
+
+        Console.WriteLine("Lighthouse Touch Bridge - Scripted Two-Hand Calibration Wizard");
+        Console.WriteLine($"profile_store: {Path.GetFullPath(options.WizardProfileStorePath!)}");
+        Console.WriteLine("runtime: deterministic fake devices (no SteamVR/OpenVR/VMT calls)");
+        var result = await wizard.RunAsync().ConfigureAwait(false);
+        Console.WriteLine($"wizard_result: {(result.Success ? "success" : "failed")}");
+        Console.WriteLine($"profile_path: {(result.ReusedProfiles ? "later-run-reuse" : "first-run-capture")}");
+        Console.WriteLine($"final_state: {result.FinalState}");
+        Console.WriteLine($"diagnostic: {result.Diagnostic}");
+        return result.Success ? 0 : 2;
     }
 
     private static async Task<int> BridgeAsync(
@@ -297,6 +320,7 @@ internal sealed record AppCommandLineOptions(
     string? SteamVrSettingsPath,
     double StaleAfterSeconds,
     double MonitorRateHz,
+    string? WizardProfileStorePath,
     bool ShowHelp)
 {
     private const double MaximumDurationSeconds = 3_600d;
@@ -320,7 +344,7 @@ internal sealed record AppCommandLineOptions(
         if (arguments.Count == 0 || !TryParseCommand(arguments[0], out var command))
         {
             error = arguments.Count == 0
-                ? "A devices, record, or bridge command is required."
+                ? "A devices, record, bridge, or wizard-demo command is required."
                 : $"Unknown command '{arguments[0]}'.";
             return false;
         }
@@ -338,6 +362,8 @@ internal sealed record AppCommandLineOptions(
         var monitorRateHz = 20d;
         var recorderOptionSpecified = false;
         var bridgeOptionSpecified = false;
+        var wizardOptionSpecified = false;
+        string? wizardProfileStorePath = null;
         var showHelp = false;
         for (var index = 1; index < arguments.Count; index++)
         {
@@ -450,6 +476,19 @@ internal sealed record AppCommandLineOptions(
                     }
 
                     break;
+                case "--profiles":
+                    wizardOptionSpecified = true;
+                    if (!TryReadValue(
+                            arguments,
+                            ref index,
+                            argument,
+                            out wizardProfileStorePath,
+                            out error))
+                    {
+                        return false;
+                    }
+
+                    break;
                 default:
                     error = $"Unknown option '{argument}'.";
                     return false;
@@ -464,9 +503,9 @@ internal sealed record AppCommandLineOptions(
 
         if (command == AppCommand.Devices)
         {
-            if (recorderOptionSpecified || bridgeOptionSpecified)
+            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified)
             {
-                error = "The devices command does not accept record or bridge options.";
+                error = "The devices command does not accept record, bridge, or wizard options.";
                 return false;
             }
 
@@ -476,9 +515,9 @@ internal sealed record AppCommandLineOptions(
 
         if (command == AppCommand.Bridge)
         {
-            if (recorderOptionSpecified)
+            if (recorderOptionSpecified || wizardOptionSpecified)
             {
-                error = "The bridge command does not accept record options.";
+                error = "The bridge command does not accept record or wizard options.";
                 return false;
             }
 
@@ -522,9 +561,31 @@ internal sealed record AppCommandLineOptions(
             return true;
         }
 
-        if (bridgeOptionSpecified)
+        if (command == AppCommand.WizardDemo)
         {
-            error = "The record command does not accept bridge options.";
+            if (recorderOptionSpecified || bridgeOptionSpecified)
+            {
+                error = "The wizard-demo command does not accept record or bridge options.";
+                return false;
+            }
+
+            if (wizardProfileStorePath is null)
+            {
+                error = "The wizard-demo command requires --profiles <profile-store.json>.";
+                return false;
+            }
+
+            options = Empty with
+            {
+                Command = command,
+                WizardProfileStorePath = wizardProfileStorePath,
+            };
+            return true;
+        }
+
+        if (bridgeOptionSpecified || wizardOptionSpecified)
+        {
+            error = "The record command does not accept bridge or wizard options.";
             return false;
         }
 
@@ -579,6 +640,7 @@ internal sealed record AppCommandLineOptions(
             null,
             0.5d,
             20d,
+            null,
             false);
         return true;
     }
@@ -591,6 +653,7 @@ internal sealed record AppCommandLineOptions(
         writer.WriteLine("  dotnet run --project src/Ltb.App -- devices");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- record --tracker <stable-serial> [--tracker <stable-serial> ...] --controller <stable-serial> [--controller <stable-serial> ...] --output <recording.json> --override-released [--duration <seconds>] [--rate <hz>]");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>");
         writer.WriteLine();
         writer.WriteLine("Defaults: record --duration 10 --rate 90; bridge --stale-after 0.5 --monitor-rate 20.");
         writer.WriteLine("The bridge command touches only the explicit --steamvr-settings path; it never searches for host settings.");
@@ -600,6 +663,7 @@ internal sealed record AppCommandLineOptions(
         writer.WriteLine("Bridge exit codes: 0 cancelled+disabled, 2 startup/run failure, 3 health-triggered SafeDisable, 4 incomplete SafeDisable cleanup.");
         writer.WriteLine("--override-released explicitly acknowledges that VMT and SteamVR pose overrides are inactive, so the original controller pose is sampled.");
         writer.WriteLine("The record command does not inspect or modify SteamVR settings.");
+        writer.WriteLine("wizard-demo uses deterministic fake devices and never opens SteamVR, VMT, or host settings; rerun with the same store to exercise profile reuse.");
     }
 
     private static AppCommandLineOptions Empty { get; } = new(
@@ -615,6 +679,7 @@ internal sealed record AppCommandLineOptions(
         null,
         0.5d,
         20d,
+        null,
         false);
 
     private static bool TryParseCommand(string value, out AppCommand command)
@@ -624,6 +689,7 @@ internal sealed record AppCommandLineOptions(
             "devices" => AppCommand.Devices,
             "record" => AppCommand.Record,
             "bridge" => AppCommand.Bridge,
+            "wizard-demo" => AppCommand.WizardDemo,
             _ => (AppCommand)(-1),
         };
         return Enum.IsDefined(command);
@@ -704,4 +770,5 @@ internal enum AppCommand
     Devices,
     Record,
     Bridge,
+    WizardDemo,
 }
