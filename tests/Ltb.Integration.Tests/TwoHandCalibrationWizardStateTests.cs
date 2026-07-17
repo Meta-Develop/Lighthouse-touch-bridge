@@ -212,15 +212,49 @@ public sealed class TwoHandCalibrationWizardStateTests
         Assert.Empty(runtime.AppliedProfiles);
         Assert.Contains("saved but could not be applied", result.Diagnostic);
     }
+
+    [Fact]
+    public async Task ActiveHmdFailureStopsAtDependencyCheckBeforeAnyRuntimeEffects()
+    {
+        var dependencyStatus = new CalibrationWizardDependencyStatus(
+            AlvrAvailable: true,
+            VmtAvailable: true,
+            "Quest/ALVR is the active SteamVR display HMD. Configure ALVR in " +
+            "tracking-reference-only mode and make the intended Lighthouse HMD active.",
+            ActiveHmdReady: false);
+        var runtime = new ScriptedWizardRuntime(dependencyStatus: dependencyStatus);
+
+        var result = await new TwoHandCalibrationWizard(
+            runtime,
+            new InMemoryWizardBackend(),
+            new RecordingWizardOutput()).RunAsync();
+
+        Assert.False(result.Success);
+        Assert.Equal(CalibrationWizardState.Ready, result.FinalState);
+        Assert.Equal(
+            [CalibrationWizardState.DependencyCheck, CalibrationWizardState.Ready],
+            result.StateHistory);
+        Assert.Contains("tracking-reference-only", result.Diagnostic);
+        Assert.False(runtime.OverridesReleased);
+        Assert.Empty(runtime.CapturedHands);
+        Assert.Empty(runtime.AppliedProfiles);
+    }
 }
 
 internal sealed class ScriptedWizardRuntime : ICalibrationWizardRuntime
 {
     private readonly bool _failApply;
+    private readonly CalibrationWizardDependencyStatus _dependencyStatus;
 
-    public ScriptedWizardRuntime(bool failApply = false)
+    public ScriptedWizardRuntime(
+        bool failApply = false,
+        CalibrationWizardDependencyStatus? dependencyStatus = null)
     {
         _failApply = failApply;
+        _dependencyStatus = dependencyStatus ?? new CalibrationWizardDependencyStatus(
+            true,
+            true,
+            "scripted dependencies available");
     }
 
     public static CalibrationWizardDeviceSet Devices { get; } = new(
@@ -238,10 +272,7 @@ internal sealed class ScriptedWizardRuntime : ICalibrationWizardRuntime
 
     public Task<CalibrationWizardDependencyStatus> CheckDependenciesAsync(
         CancellationToken cancellationToken) =>
-        Task.FromResult(new CalibrationWizardDependencyStatus(
-            true,
-            true,
-            "scripted dependencies available"));
+        Task.FromResult(_dependencyStatus);
 
     public Task WaitForSteamVrAsync(CancellationToken cancellationToken) =>
         Task.CompletedTask;

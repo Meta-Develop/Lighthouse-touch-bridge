@@ -175,6 +175,42 @@ public sealed class ReliableDailyUseStateMachineTests
     }
 
     [Fact]
+    public async Task ActiveHmdGateBlocksDailyStartupUntilLighthouseHmdIsReady()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var context = CreateContext(cancellation);
+        context.Runtime.QueueDependencies(
+            new CalibrationWizardDependencyStatus(
+                AlvrAvailable: true,
+                VmtAvailable: true,
+                "Quest/ALVR is active; configure ALVR tracking-reference-only and use " +
+                "the intended Lighthouse HMD",
+                ActiveHmdReady: false),
+            new CalibrationWizardDependencyStatus(
+                AlvrAvailable: true,
+                VmtAvailable: true,
+                "active Lighthouse HMD ready",
+                ActiveHmdReady: true));
+        context.Runtime.CancelOnMonitorDelayNumber = 1;
+
+        var result = await context.Coordinator.RunAsync(cancellation.Token);
+
+        Assert.Equal(ReliableDailyUseStopReason.Cancellation, result.StopReason);
+        Assert.Equal(2, context.Runtime.DependencyCheckCalls);
+        Assert.Equal(1, context.Runtime.WaitForSteamVrCalls);
+        Assert.Equal(ReconnectDelay, context.Runtime.Delays[0]);
+        Assert.Equal(
+            2,
+            context.Runtime.Journal.TakeWhile(entry => entry != "wait-steamvr")
+                .Count(entry => entry == "dependency-check"));
+        Assert.Contains(
+            context.Log.Events,
+            entry => entry.Code == LtbDiagnosticCode.DependencyUnavailable &&
+                     entry.Message.Contains("tracking-reference-only", StringComparison.Ordinal));
+        AssertNoFrozenHand(context);
+    }
+
+    [Fact]
     public async Task SteamVrStoppingDuringVmtRecoveryIsTerminalAndNeverReapplies()
     {
         var context = CreateContext();

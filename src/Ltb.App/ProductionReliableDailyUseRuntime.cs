@@ -128,12 +128,44 @@ internal sealed class ProductionReliableDailyUseRuntime :
 
         if (_session is null)
         {
-            return new CalibrationWizardDependencyStatus(
-                AlvrAvailable: alvr.IsAvailable,
-                VmtAvailable: true,
-                $"{alvr.Diagnostic}. The loopback VMT client and response pump initialized; " +
-                "VMT Alive is verified after SteamVR connects, and a supported current Meta " +
-                "Touch OpenVR identity remains mandatory before profile application.");
+            try
+            {
+                _session = OpenVrSession.Open();
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return new CalibrationWizardDependencyStatus(
+                    AlvrAvailable: alvr.IsAvailable,
+                    VmtAvailable: true,
+                    $"{alvr.Diagnostic}. The loopback VMT client and response pump " +
+                    $"initialized, but the active Lighthouse HMD cannot be verified " +
+                    $"until SteamVR opens: {exception.Message}",
+                    ActiveHmdReady: false);
+            }
+        }
+
+        var session = _session;
+        ActiveHmdReadinessResult activeHmd;
+        try
+        {
+            var runtimeHealth = session.GetRuntimeHealth();
+            if (!runtimeHealth.IsRunning)
+            {
+                throw new ReliableDailyUseSteamVrStoppedException(
+                    "SteamVR stopped before active Lighthouse HMD readiness could be " +
+                    $"verified: {runtimeHealth.Diagnostic}");
+            }
+
+            activeHmd = ActiveHmdReadiness.Evaluate(session.EnumerateDevices());
+        }
+        catch (Exception exception) when (
+            exception is not OperationCanceledException and
+            not ReliableDailyUseSteamVrStoppedException)
+        {
+            activeHmd = new ActiveHmdReadinessResult(
+                false,
+                "Active SteamVR display HMD readiness could not be inspected safely: " +
+                exception.Message);
         }
 
         var vmtAvailable = false;
@@ -157,8 +189,9 @@ internal sealed class ProductionReliableDailyUseRuntime :
         return new CalibrationWizardDependencyStatus(
             AlvrAvailable: alvr.IsAvailable,
             VmtAvailable: vmtAvailable,
-            $"{alvr.Diagnostic}. {vmtDiagnostic}. Connected supported Meta Touch identity " +
-            "properties are mandatory before Ready.");
+            $"{alvr.Diagnostic}. {vmtDiagnostic}. {activeHmd.Diagnostic} Connected " +
+            "supported Meta Touch identity properties are mandatory before Ready.",
+            ActiveHmdReady: activeHmd.IsReady);
     }
 
     public async Task WaitForSteamVrAsync(CancellationToken cancellationToken)
@@ -215,6 +248,14 @@ internal sealed class ProductionReliableDailyUseRuntime :
         }
 
         var devices = session.EnumerateDevices();
+        var activeHmd = ActiveHmdReadiness.Evaluate(devices);
+        if (!activeHmd.IsReady)
+        {
+            return DailyUseDeviceReadiness.Unavailable(
+                LtbDiagnosticCode.DependencyUnavailable,
+                activeHmd.Diagnostic);
+        }
+
         if (!TryCreateDeviceSet(devices, out var deviceSet, out var deviceDiagnostic))
         {
             return DailyUseDeviceReadiness.Unavailable(

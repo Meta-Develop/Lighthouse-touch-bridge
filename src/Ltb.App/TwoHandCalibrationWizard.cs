@@ -32,9 +32,10 @@ internal enum CalibrationWizardHand
 internal sealed record CalibrationWizardDependencyStatus(
     bool AlvrAvailable,
     bool VmtAvailable,
-    string Diagnostic)
+    string Diagnostic,
+    bool ActiveHmdReady = true)
 {
-    public bool IsReady => AlvrAvailable && VmtAvailable;
+    public bool IsReady => AlvrAvailable && VmtAvailable && ActiveHmdReady;
 }
 
 internal sealed record CalibrationWizardDeviceSet(
@@ -295,7 +296,7 @@ internal sealed class TwoHandCalibrationWizard
     {
         _history.Clear();
         Transition(CalibrationWizardState.DependencyCheck,
-            "checking ALVR and VMT dependencies");
+            "checking ALVR, VMT, and active Lighthouse HMD dependencies");
         CalibrationWizardDependencyStatus dependencyStatus;
         try
         {
