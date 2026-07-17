@@ -248,9 +248,16 @@ internal sealed class ProductionCalibrationWizardRuntime :
             if (releaseFailure is not null)
             {
                 failures.Add(releaseFailure);
-                continue;
             }
+        }
 
+        if (failures.Count > 0)
+        {
+            return failures.AsReadOnly();
+        }
+
+        foreach (var hand in Enum.GetValues<CalibrationWizardHand>())
+        {
             var deactivateFailure = await RunBoundedCleanupAsync(
                     token => _backend.DeactivateWizardVmtAsync(
                         hand,

@@ -122,6 +122,45 @@ public sealed class SteamVrSettingsManager
     }
 
     /// <summary>
+    /// Atomically removes every mapping that either references the configured
+    /// application pose source or targets its intended semantic hand. Additional
+    /// discovered pose-source paths may be included when the active runtime path
+    /// differs from the configured path. Unrelated settings and mappings are
+    /// preserved, and no unknown source mapping is recreated.
+    /// </summary>
+    public SteamVrSettingsRecoveryPoint ReleaseApplicationSafetyOverrides(
+        TrackingOverrideBinding configuredBinding,
+        params string[] additionalPoseSourceDevicePaths)
+    {
+        ArgumentNullException.ThrowIfNull(configuredBinding);
+        ArgumentNullException.ThrowIfNull(additionalPoseSourceDevicePaths);
+        var sourcePaths = new HashSet<string>(StringComparer.Ordinal)
+        {
+            configuredBinding.PoseSourceDevicePath,
+        };
+        foreach (var sourcePath in additionalPoseSourceDevicePaths)
+        {
+            _ = new TrackingOverrideBinding(
+                sourcePath,
+                configuredBinding.SemanticHandPath);
+            _ = sourcePaths.Add(sourcePath);
+        }
+
+        using var operationLock = AcquireOperationLock();
+        return ApplyJsonMutation(
+            SteamVrSettingsOperation.ReleaseApplicationSafetyOverrides,
+            configuredBinding,
+            root => ReleaseApplicationSafetyOverrides(
+                root,
+                sourcePaths,
+                configuredBinding.SemanticHandPath),
+            root => ValidateApplicationSafetyOverridesReleased(
+                root,
+                sourcePaths,
+                configuredBinding.SemanticHandPath));
+    }
+
+    /// <summary>
     /// Restores the bytes captured by a completed operation. The content being
     /// replaced is backed up first, so the returned recovery point can undo
     /// this rollback if necessary.
@@ -428,6 +467,37 @@ public sealed class SteamVrSettingsManager
         return matchingSources.Length > 0;
     }
 
+    private static bool ReleaseApplicationSafetyOverrides(
+        JsonObject root,
+        IReadOnlySet<string> poseSourceDevicePaths,
+        string semanticHandPath)
+    {
+        if (!root.TryGetPropertyValue(TrackingOverridesSectionName, out var overridesNode))
+        {
+            return false;
+        }
+
+        if (overridesNode is not JsonObject overrides)
+        {
+            throw WrongSectionType(TrackingOverridesSectionName);
+        }
+
+        var matchingSources = overrides
+            .Where(pair =>
+                poseSourceDevicePaths.Contains(pair.Key) ||
+                pair.Value is JsonValue value &&
+                value.TryGetValue<string>(out var targetPath) &&
+                string.Equals(targetPath, semanticHandPath, StringComparison.Ordinal))
+            .Select(pair => pair.Key)
+            .ToArray();
+        foreach (var source in matchingSources)
+        {
+            _ = overrides.Remove(source);
+        }
+
+        return matchingSources.Length > 0;
+    }
+
     private static void ValidateEnabled(
         JsonObject root,
         TrackingOverrideBinding binding)
@@ -498,6 +568,32 @@ public sealed class SteamVrSettingsManager
             throw new InvalidDataException(
                 $"A SteamVR TrackingOverrides mapping targeting '{semanticHandPath}' remains active.");
         }
+    }
+
+    private static void ValidateApplicationSafetyOverridesReleased(
+        JsonObject root,
+        IReadOnlySet<string> poseSourceDevicePaths,
+        string semanticHandPath)
+    {
+        if (!root.TryGetPropertyValue(TrackingOverridesSectionName, out var overridesNode))
+        {
+            return;
+        }
+
+        if (overridesNode is not JsonObject overrides)
+        {
+            throw WrongSectionType(TrackingOverridesSectionName);
+        }
+
+        var remainingSource = poseSourceDevicePaths.FirstOrDefault(overrides.ContainsKey);
+        if (remainingSource is not null)
+        {
+            throw new InvalidDataException(
+                $"SteamVR TrackingOverrides still references application pose source " +
+                $"'{remainingSource}'.");
+        }
+
+        ValidateSemanticHandReleased(root, semanticHandPath);
     }
 
     private static void ValidateSemanticHandPath(string semanticHandPath)

@@ -7,6 +7,7 @@ public enum SteamVrSettingsOperation
     ReleaseTrackingOverride = 1,
     RestoreBackup = 2,
     ReleaseSemanticHandOverrides = 3,
+    ReleaseApplicationSafetyOverrides = 4,
 }
 
 /// <summary>

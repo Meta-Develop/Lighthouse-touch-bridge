@@ -320,10 +320,13 @@ internal sealed class ProductionReliableDailyUseRuntime :
     {
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
-        _ = _settings.ReleaseOverridesTargetingSemanticHand(
-            hand == CalibrationWizardHand.Left
-                ? TrackingOverrideBinding.LeftHandPath
-                : TrackingOverrideBinding.RightHandPath);
+        var slot = hand == CalibrationWizardHand.Left ? _leftSlot : _rightSlot;
+        _ = _settings.ReleaseApplicationSafetyOverrides(
+            new TrackingOverrideBinding(
+                slot.DevicePath,
+                hand == CalibrationWizardHand.Left
+                    ? TrackingOverrideBinding.LeftHandPath
+                    : TrackingOverrideBinding.RightHandPath));
         return Task.CompletedTask;
     }
 
@@ -439,11 +442,11 @@ internal sealed class ProductionReliableDailyUseRuntime :
         var state = State(application);
         var session = Session;
 
-        // Release this exact slot-to-hand mapping before the slot can become an
-        // inactive pose source. If a later step fails, rollback consumes the
-        // recovery point and then releases the semantic hand again before the
+        // Remove both source-centric and hand-centric mappings before the slot
+        // can become an inactive pose source. If a later step fails, rollback
+        // consumes the recovery point and repeats this safety release before the
         // shared transaction is allowed to deactivate VMT.
-        state.SettingsRecoveryPoints.Add(_settings.ReleaseOverride(state.CleanupBinding));
+        state.SettingsRecoveryPoints.Add(ReleaseApplicationSafetyOverrides(state));
         await _vmt.DeactivateAsync(state.Configuration, cancellationToken)
             .ConfigureAwait(false);
 
@@ -492,6 +495,7 @@ internal sealed class ProductionReliableDailyUseRuntime :
                 "VMT heartbeat became stale before TrackingOverrides could be enabled.");
         }
 
+        state.ActiveBinding = binding;
         state.SettingsRecoveryPoints.Add(_settings.EnableOverride(binding));
         state.TrackerSource = trackerSource;
         state.VmtDevice = vmtDevice;
@@ -533,8 +537,7 @@ internal sealed class ProductionReliableDailyUseRuntime :
         state.SettingsRecoveryPoints.Clear();
         try
         {
-            _ = _settings.ReleaseOverridesTargetingSemanticHand(
-                state.CleanupBinding.SemanticHandPath);
+            _ = ReleaseApplicationSafetyOverrides(state);
         }
         catch (Exception exception)
         {
@@ -559,8 +562,7 @@ internal sealed class ProductionReliableDailyUseRuntime :
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
         var state = State(application);
-        _ = _settings.ReleaseOverridesTargetingSemanticHand(
-            state.CleanupBinding.SemanticHandPath);
+        _ = ReleaseApplicationSafetyOverrides(state);
         state.SettingsRecoveryPoints.Clear();
         return Task.CompletedTask;
     }
@@ -745,6 +747,23 @@ internal sealed class ProductionReliableDailyUseRuntime :
         return _applications.TryGetValue(application.OperationId, out var state)
             ? state
             : throw new InvalidOperationException("Unknown daily-use profile-application handle.");
+    }
+
+    private SteamVrSettingsRecoveryPoint ReleaseApplicationSafetyOverrides(
+        ApplicationState state)
+    {
+        if (state.ActiveBinding is null ||
+            string.Equals(
+                state.ActiveBinding.PoseSourceDevicePath,
+                state.CleanupBinding.PoseSourceDevicePath,
+                StringComparison.Ordinal))
+        {
+            return _settings.ReleaseApplicationSafetyOverrides(state.CleanupBinding);
+        }
+
+        return _settings.ReleaseApplicationSafetyOverrides(
+            state.CleanupBinding,
+            state.ActiveBinding.PoseSourceDevicePath);
     }
 
     private bool TryCreateDeviceSet(
@@ -1231,5 +1250,7 @@ internal sealed class ProductionReliableDailyUseRuntime :
         public SteamVrDeviceDescriptor? VmtDevice { get; set; }
 
         public TrackedPoseSource? VmtSource { get; set; }
+
+        public TrackingOverrideBinding? ActiveBinding { get; set; }
     }
 }

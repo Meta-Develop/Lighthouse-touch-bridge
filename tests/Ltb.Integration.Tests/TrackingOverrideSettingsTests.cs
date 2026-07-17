@@ -163,6 +163,147 @@ public sealed class TrackingOverrideSettingsTests
     }
 
     [Fact]
+    public void ApplicationSafetyReleaseRemovesCrossWiredSourcesAndIntendedHandAtomically()
+    {
+        const string discoveredAlias = "/devices/vmt/VMT_9";
+        using var sandbox = SettingsSandbox.FromText(
+            """
+            {
+              "steamvr": {
+                "activateMultipleDrivers": true,
+                "custom": "keep"
+              },
+              "TrackingOverrides": {
+                "/devices/vmt/VMT_1": "/user/hand/right",
+                "/devices/vmt/VMT_9": "/user/head",
+                "/devices/legacy/old-left": "/user/hand/left",
+                "/devices/vmt/VMT_2": "/user/hand/right",
+                "/devices/unrelated/head": "/user/head",
+                "/devices/unrelated/malformed": { "keep": true }
+              },
+              "dashboard": { "keep": 23 }
+            }
+            """);
+        var originalBytes = File.ReadAllBytes(sandbox.SettingsPath);
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+        var configured = LeftBinding();
+
+        var release = manager.ReleaseApplicationSafetyOverrides(
+            configured,
+            discoveredAlias);
+
+        Assert.True(release.SettingsChanged);
+        Assert.Equal(
+            SteamVrSettingsOperation.ReleaseApplicationSafetyOverrides,
+            release.Operation);
+        Assert.Equal(configured, release.Binding);
+        Assert.Equal(originalBytes, File.ReadAllBytes(release.BackupFilePath!));
+        using (var written = JsonDocument.Parse(File.ReadAllBytes(sandbox.SettingsPath)))
+        {
+            var root = written.RootElement;
+            var overrides = root.GetProperty("TrackingOverrides");
+            Assert.False(overrides.TryGetProperty(LeftVmtPath, out _));
+            Assert.False(overrides.TryGetProperty(discoveredAlias, out _));
+            Assert.False(overrides.TryGetProperty("/devices/legacy/old-left", out _));
+            Assert.Equal(
+                TrackingOverrideBinding.RightHandPath,
+                overrides.GetProperty(RightVmtPath).GetString());
+            Assert.Equal(
+                "/user/head",
+                overrides.GetProperty("/devices/unrelated/head").GetString());
+            Assert.True(overrides.GetProperty("/devices/unrelated/malformed")
+                .GetProperty("keep")
+                .GetBoolean());
+            Assert.Equal("keep", root.GetProperty("steamvr").GetProperty("custom").GetString());
+            Assert.Equal(23, root.GetProperty("dashboard").GetProperty("keep").GetInt32());
+        }
+
+        var idempotent = manager.ReleaseApplicationSafetyOverrides(
+            configured,
+            discoveredAlias);
+        Assert.False(idempotent.SettingsChanged);
+        Assert.Single(manager.FindRecoveryBackups());
+    }
+
+    [Fact]
+    public void ApplicationSafetyReleaseRejectsInvalidAdditionalSourceBeforeMutation()
+    {
+        using var sandbox = SettingsSandbox.FromFixture(
+            "two-active-overrides.vrsettings.json");
+        var originalBytes = File.ReadAllBytes(sandbox.SettingsPath);
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+
+        Assert.Throws<ArgumentException>(() =>
+            manager.ReleaseApplicationSafetyOverrides(
+                LeftBinding(),
+                "/user/hand/right"));
+
+        Assert.Equal(originalBytes, File.ReadAllBytes(sandbox.SettingsPath));
+        Assert.Empty(manager.FindRecoveryBackups());
+    }
+
+    [Fact]
+    public void ApplicationSafetyReleaseAfterRollbackRemovesRestoredCrossWiredSource()
+    {
+        using var sandbox = SettingsSandbox.FromText(
+            """
+            {
+              "steamvr": { "activateMultipleDrivers": true },
+              "TrackingOverrides": {
+                "/devices/vmt/VMT_1": "/user/hand/right",
+                "/devices/legacy/old-left": "/user/hand/left",
+                "/devices/unrelated/head": "/user/head"
+              }
+            }
+            """);
+        var originalBytes = File.ReadAllBytes(sandbox.SettingsPath);
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+
+        var firstSafetyRelease = manager.ReleaseApplicationSafetyOverrides(LeftBinding());
+        _ = manager.Rollback(firstSafetyRelease);
+
+        Assert.Equal(originalBytes, File.ReadAllBytes(sandbox.SettingsPath));
+
+        var finalSafetyRelease = manager.ReleaseApplicationSafetyOverrides(LeftBinding());
+
+        Assert.True(finalSafetyRelease.SettingsChanged);
+        using var written = JsonDocument.Parse(File.ReadAllBytes(sandbox.SettingsPath));
+        var overrides = written.RootElement.GetProperty("TrackingOverrides");
+        Assert.False(overrides.TryGetProperty(LeftVmtPath, out _));
+        Assert.False(overrides.TryGetProperty("/devices/legacy/old-left", out _));
+        Assert.Equal(
+            "/user/head",
+            overrides.GetProperty("/devices/unrelated/head").GetString());
+    }
+
+    [Fact]
+    public void ApplicationSafetyReleaseNeverOverwritesPostWriteExternalWinner()
+    {
+        using var sandbox = SettingsSandbox.FromText(
+            """
+            {
+              "steamvr": { "activateMultipleDrivers": true },
+              "TrackingOverrides": {
+                "/devices/vmt/VMT_1": "/user/hand/right",
+                "/devices/legacy/old-left": "/user/hand/left"
+              }
+            }
+            """);
+        var externalWinner = Encoding.UTF8.GetBytes(
+            "{\n  \"postWriteExternalWinner\": true\n}\n");
+        var manager = new SteamVrSettingsManager(
+            sandbox.SettingsPath,
+            path => File.WriteAllBytes(path, externalWinner));
+
+        var failure = Assert.Throws<SteamVrSettingsUpdateException>(() =>
+            manager.ReleaseApplicationSafetyOverrides(LeftBinding()));
+
+        Assert.False(failure.OriginalRestored);
+        Assert.Contains("later writer", failure.Message, StringComparison.Ordinal);
+        Assert.Equal(externalWinner, File.ReadAllBytes(sandbox.SettingsPath));
+    }
+
+    [Fact]
     public void ExactExistingActivationIsIdempotentWithoutCreatingBackup()
     {
         using var sandbox = SettingsSandbox.FromFixture(
