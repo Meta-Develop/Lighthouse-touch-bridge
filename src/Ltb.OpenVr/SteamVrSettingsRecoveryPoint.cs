@@ -6,6 +6,7 @@ public enum SteamVrSettingsOperation
     EnableTrackingOverride = 0,
     ReleaseTrackingOverride = 1,
     RestoreBackup = 2,
+    ReleaseSemanticHandOverrides = 3,
 }
 
 /// <summary>

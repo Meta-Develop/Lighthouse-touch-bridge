@@ -102,6 +102,26 @@ public sealed class SteamVrSettingsManager
     }
 
     /// <summary>
+    /// Removes every pose-source mapping that targets one semantic Touch hand.
+    /// This is the calibration safety operation: the source path may belong to
+    /// another tool or an earlier VMT slot, so matching by a caller-assumed
+    /// source path is not sufficient. Unrelated mappings and settings are
+    /// preserved, including malformed values that do not represent a hand
+    /// target.
+    /// </summary>
+    public SteamVrSettingsRecoveryPoint ReleaseOverridesTargetingSemanticHand(
+        string semanticHandPath)
+    {
+        ValidateSemanticHandPath(semanticHandPath);
+        using var operationLock = AcquireOperationLock();
+        return ApplyJsonMutation(
+            SteamVrSettingsOperation.ReleaseSemanticHandOverrides,
+            binding: null,
+            root => ReleaseOverridesTargetingSemanticHand(root, semanticHandPath),
+            root => ValidateSemanticHandReleased(root, semanticHandPath));
+    }
+
+    /// <summary>
     /// Restores the bytes captured by a completed operation. The content being
     /// replaced is backed up first, so the returned recovery point can undo
     /// this rollback if necessary.
@@ -226,7 +246,7 @@ public sealed class SteamVrSettingsManager
 
     private SteamVrSettingsRecoveryPoint ApplyJsonMutation(
         SteamVrSettingsOperation operation,
-        TrackingOverrideBinding binding,
+        TrackingOverrideBinding? binding,
         Func<JsonObject, bool> mutate,
         Action<JsonObject> validateOperation)
     {
@@ -379,6 +399,35 @@ public sealed class SteamVrSettingsManager
         return overrides.Remove(binding.PoseSourceDevicePath);
     }
 
+    private static bool ReleaseOverridesTargetingSemanticHand(
+        JsonObject root,
+        string semanticHandPath)
+    {
+        if (!root.TryGetPropertyValue(TrackingOverridesSectionName, out var overridesNode))
+        {
+            return false;
+        }
+
+        if (overridesNode is not JsonObject overrides)
+        {
+            throw WrongSectionType(TrackingOverridesSectionName);
+        }
+
+        var matchingSources = overrides
+            .Where(pair =>
+                pair.Value is JsonValue value &&
+                value.TryGetValue<string>(out var targetPath) &&
+                string.Equals(targetPath, semanticHandPath, StringComparison.Ordinal))
+            .Select(pair => pair.Key)
+            .ToArray();
+        foreach (var source in matchingSources)
+        {
+            _ = overrides.Remove(source);
+        }
+
+        return matchingSources.Length > 0;
+    }
+
     private static void ValidateEnabled(
         JsonObject root,
         TrackingOverrideBinding binding)
@@ -423,6 +472,45 @@ public sealed class SteamVrSettingsManager
         {
             throw new InvalidDataException(
                 "The intended SteamVR TrackingOverrides mapping remains active.");
+        }
+    }
+
+    private static void ValidateSemanticHandReleased(
+        JsonObject root,
+        string semanticHandPath)
+    {
+        if (!root.TryGetPropertyValue(TrackingOverridesSectionName, out var overridesNode))
+        {
+            return;
+        }
+
+        if (overridesNode is not JsonObject overrides)
+        {
+            throw WrongSectionType(TrackingOverridesSectionName);
+        }
+
+        var remainingSource = overrides.FirstOrDefault(pair =>
+            pair.Value is JsonValue value &&
+            value.TryGetValue<string>(out var targetPath) &&
+            string.Equals(targetPath, semanticHandPath, StringComparison.Ordinal));
+        if (!string.IsNullOrEmpty(remainingSource.Key))
+        {
+            throw new InvalidDataException(
+                $"A SteamVR TrackingOverrides mapping targeting '{semanticHandPath}' remains active.");
+        }
+    }
+
+    private static void ValidateSemanticHandPath(string semanticHandPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(semanticHandPath);
+        if (semanticHandPath is not (
+                TrackingOverrideBinding.LeftHandPath or
+                TrackingOverrideBinding.RightHandPath))
+        {
+            throw new ArgumentException(
+                $"Semantic hand path must be '{TrackingOverrideBinding.LeftHandPath}' or " +
+                $"'{TrackingOverrideBinding.RightHandPath}'.",
+                nameof(semanticHandPath));
         }
     }
 

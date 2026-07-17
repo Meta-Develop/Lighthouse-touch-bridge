@@ -109,6 +109,60 @@ public sealed class TrackingOverrideSettingsTests
     }
 
     [Fact]
+    public void SemanticHandReleaseRemovesEveryPriorSourceAndPreservesUnrelatedSettings()
+    {
+        using var sandbox = SettingsSandbox.FromText(
+            """
+            {
+              "steamvr": {
+                "activateMultipleDrivers": true,
+                "custom": "keep"
+              },
+              "TrackingOverrides": {
+                "/devices/vmt/VMT_1": "/user/hand/left",
+                "/devices/legacy/old-left": "/user/hand/left",
+                "/devices/vmt/VMT_2": "/user/hand/right",
+                "/devices/unrelated/head": "/user/head",
+                "/devices/unrelated/malformed": { "keep": true }
+              },
+              "dashboard": { "keep": 17 }
+            }
+            """);
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+
+        var release = manager.ReleaseOverridesTargetingSemanticHand(
+            TrackingOverrideBinding.LeftHandPath);
+
+        Assert.True(release.SettingsChanged);
+        Assert.Equal(
+            SteamVrSettingsOperation.ReleaseSemanticHandOverrides,
+            release.Operation);
+        Assert.Null(release.Binding);
+        using var written = JsonDocument.Parse(File.ReadAllBytes(sandbox.SettingsPath));
+        var root = written.RootElement;
+        var overrides = root.GetProperty("TrackingOverrides");
+        Assert.False(overrides.TryGetProperty(LeftVmtPath, out _));
+        Assert.False(overrides.TryGetProperty("/devices/legacy/old-left", out _));
+        Assert.Equal(
+            TrackingOverrideBinding.RightHandPath,
+            overrides.GetProperty(RightVmtPath).GetString());
+        Assert.Equal(
+            "/user/head",
+            overrides.GetProperty("/devices/unrelated/head").GetString());
+        Assert.True(overrides.GetProperty("/devices/unrelated/malformed")
+            .GetProperty("keep")
+            .GetBoolean());
+        Assert.Equal("keep", root.GetProperty("steamvr").GetProperty("custom").GetString());
+        Assert.Equal(17, root.GetProperty("dashboard").GetProperty("keep").GetInt32());
+
+        var idempotent = manager.ReleaseOverridesTargetingSemanticHand(
+            TrackingOverrideBinding.LeftHandPath);
+        Assert.False(idempotent.SettingsChanged);
+        Assert.Throws<ArgumentException>(() =>
+            manager.ReleaseOverridesTargetingSemanticHand("/user/head"));
+    }
+
+    [Fact]
     public void ExactExistingActivationIsIdempotentWithoutCreatingBackup()
     {
         using var sandbox = SettingsSandbox.FromFixture(
