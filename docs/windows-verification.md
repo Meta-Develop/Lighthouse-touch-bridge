@@ -226,3 +226,197 @@ For each checked item, append a short dated entry containing the test ID or
 heading, environment summary, result, redacted evidence location, and any
 follow-up issue. If a runtime or binding update changes enumeration, pose, or
 timestamp semantics, reopen the affected checks.
+
+## Milestone 2 one-hand live bridge
+
+Milestone 2 adds deterministic Linux coverage for OSC encoding, the
+tracker-local VMT transform adapter, fixture-based SteamVR settings updates and
+recovery, one-hand activation with fake backends, verification-contract
+enforcement, and SafeDisable after simulated health loss. These tests prove
+the coordinator and file-level contracts only. They are not evidence that a
+real VMT device appears, that SteamVR applies the override, or that a real
+Touch controller remains the input source while VMT supplies its pose.
+
+Use the command and profile contract in [setup.md](setup.md). The transform,
+adapter, settings, and health decisions are recorded in
+[architecture.md](architecture.md), and the acceptance intent comes from
+specification sections [15, 16, 18, and 24](specification.md). VMT command and
+override behavior should be compared with the
+[official VMT API](https://gpsnmeajp.github.io/VirtualMotionTrackerDocument/api/);
+OpenVR registered-device properties and tracker classes should be compared with
+Valve's [driver API documentation](https://github.com/ValveSoftware/openvr/blob/master/docs/Driver_API_Documentation.md).
+
+### Milestone 2 evidence requirements
+
+For every checked item below, retain a dated evidence record containing:
+
+- Windows, SteamVR, VMT, ALVR, .NET, tracker firmware, and LTB commit versions;
+- the exact LTB command with local paths and stable hardware identifiers
+  redacted consistently;
+- a redacted profile or its hash, including the tested hand, selected mode,
+  translation, and quaternion;
+- redacted `devices` output and the relevant SteamVR System Report excerpt
+  before activation, while active, and after SafeDisable when applicable;
+- a semantic before/after `steamvr.vrsettings` diff and hashes of any backups,
+  retained outside the repository rather than committing settings or backups;
+- timestamped LTB output and the VMT/SteamVR diagnostic excerpt needed to
+  establish the tested transition; and
+- for input/pose provenance checks, a screen recording or synchronized runtime
+  capture that shows the physical action and observed input or pose change.
+
+Redaction must preserve stable token correspondence within one record. For
+example, the same tracker can be `TRACKER-A` throughout while its real serial
+and owner-local path remain absent. Record failures as evidence too; do not
+check an item merely because the Linux fake for that transition passes.
+
+### Device, transform, and override acceptance
+
+- [ ] **Register a fresh slot, then discover the real VMT source.** With VMT
+  installed and enabled, close VMT Manager so LTB can own response port
+  `39571`, start a fresh SteamVR session, and record whether the requested slot
+  is absent from `devices`. Confirm LTB attempts both selected-slot VMT
+  deactivation and stale exact mapping release before any SteamVR enumeration
+  or device-selection gate, reports either failure, and does not attempt a new
+  activation unless both cleanup surfaces succeed. Confirm it then enumerates
+  and passes tracker, Touch, and heartbeat gates, sends the enabled Joint
+  configuration with device mode `1` (`Tracker`), and only then discovers one
+  connected `GenericTracker`. Confirm its actual source path comes from the
+  OpenVR registered-device property normalized to
+  `/devices/<driver>/<device>` and is the path used for activation and cleanup.
+  Record the redacted raw property,
+  normalized path, stable identity, class, connectivity, and transient index.
+  First register a separate test slot in a non-Tracker mode, confirm changing
+  the later command does not reclassify it in that SteamVR process, then restart
+  SteamVR and confirm LTB's first mode-1 registration yields `GenericTracker`.
+  Also confirm discovery succeeds if its transient index changes.
+
+- [ ] **Validate `/VMT/Joint/Driver` transform direction and serialization.**
+  Use a safe, measured mount or bench sequence with independently recognizable
+  positive translation and rotations about multiple axes. Confirm the wire
+  values are right-handed meters and normalized quaternion `XYZW`, represent
+  `T_T_C`, and produce `T_L_tracker * T_T_C`. Verify both translation lever-arm
+  motion and orientation. Confirm `/VMT/Set/AutoPoseUpdate(1)` is sent before
+  the enabled Joint command and that the result is tracker-local rather than a
+  room-space rotation. Repeat once with zero translation for a rotation-only
+  profile.
+
+- [ ] **Make the VMT device appear and apply the one-hand override.** Start from
+  no mapping for the selected semantic hand. Run the bridge and confirm the
+  chosen VMT slot becomes connected before the settings mapping is enabled.
+  Confirm LTB reads that VMT output through OpenVR and requires a connected,
+  `RunningOk`, orientation-valid, position-valid, and tracking-valid pose before
+  writing the mapping. Confirm the measured VMT output agrees with
+  `T_L_tracker * T_T_C` within the implemented sample-skew, position-error, and
+  rotation-error safety bounds before enable and throughout monitoring: `0.05`
+  seconds, `0.15` meters, and `pi/9` radians (20 degrees), respectively. Treat
+  these as fail-safe mismatch limits rather than calibration-quality targets.
+  Confirm `activateMultipleDrivers` is true, the discovered source maps to the
+  intended `/user/hand/left` or `/user/hand/right`, unrelated settings and
+  mappings are unchanged, and SteamVR reports the hand pose following the
+  mounted tracker through the calibrated Joint transform. Record
+  `effective_monitor_rate_hz` and confirm it is at least the requested rate and
+  fast enough for both configured freshness bounds.
+
+- [ ] **Prove Touch input provenance while VMT supplies pose.** While the
+  override is active, hold the tracker and Touch controller in a configuration
+  that distinguishes their pose sources. Exercise buttons, trigger, grip,
+  stick axes, and capacitive states where exposed. Confirm the semantic hand's
+  pose follows tracker plus `T_T_C`, while every exercised input continues to
+  originate from the selected Touch controller. Record the redacted Touch
+  identity, VMT source path, application input observations, and pose
+  observations; an active mapping alone is insufficient evidence.
+
+- [ ] **Release the override and reveal the original Touch pose.** Press Ctrl+C
+  from a healthy active run. Confirm LTB disables the VMT slot, removes only
+  its exact source-to-hand mapping, reports zero SafeDisable failures, and
+  leaves unrelated settings intact. With Touch and tracker deliberately
+  distinguishable, confirm the hand pose returns to the original ALVR Touch
+  pose while Touch inputs remain usable.
+
+### SafeDisable and settings acceptance
+
+- [ ] **SafeDisable on physical-tracker loss or invalid pose.** In separate
+  runs, safely occlude tracking, power off or disconnect the tracker, and
+  induce each available non-`RunningOk` or invalid-pose state. If the backend
+  exposes sample age, also cross the configured `--stale-after` threshold and record
+  the measured age. If age remains unavailable from synchronous OpenVR, record
+  that limitation rather than claiming an age test. Confirm the effective
+  monitor interval is no longer than half the configured stale threshold. Each
+  failure must produce
+  health exit code `3` only after both VMT deactivation and exact mapping
+  release succeed; no stale override may remain active.
+
+- [ ] **SafeDisable on VMT output or driver loss.** During separate active
+  runs, induce invalid, non-`RunningOk`, disconnected, and reported-stale VMT
+  output poses; stop the VMT driver or its heartbeat path; and make the active
+  VMT device disappear or change identity. If synchronous OpenVR exposes no
+  pose age, record that limitation and do not claim a measured VMT-age test.
+  Confirm each available output-pose failure, stale `/VMT/Out/Alive`, VMT
+  disconnect, disappearance, and identity change enters SafeDisable. Verify
+  both cleanup steps are attempted and the hand is not left mapped to a stale
+  virtual source.
+
+- [ ] **SafeDisable on Touch loss.** Disconnect or power down only the selected
+  Touch controller while the tracker and VMT remain healthy. Confirm LTB treats
+  loss of the input device as a health failure, disables the virtual source,
+  and releases the exact hand mapping instead of leaving pose without the
+  intended inputs.
+
+- [ ] **Expose cleanup failures without skipping the second cleanup step.** In
+  controlled tests, deny one VMT deactivation and separately deny settings
+  release during startup and SafeDisable. Confirm a deactivation failure does
+  not prevent an attempted exact mapping release, every failure is reported,
+  startup cleanup failure blocks new activation, and the command returns
+  cleanup exit code `4`. On Ctrl+C cleanup failure, confirm output does not say
+  the bridge was safely disabled. Restore the environment manually before the
+  next test and confirm no unreviewed override remains.
+
+- [ ] **Recover from an abrupt, unmanaged termination.** Use a controlled
+  non-worn setup with the tracked area clear. After reaching `state: active`,
+  terminate only the LTB process without Ctrl+C so its managed cleanup cannot
+  run; do not induce a real OS crash or power loss. Confirm the terminated
+  process makes no safe-disable claim. Before recovery, separately inspect and
+  record whether the VMT slot remains enabled and whether the persistent exact
+  `TrackingOverrides` mapping remains. Start the same command again and confirm
+  it attempts both cleanup surfaces before any SteamVR enumeration or device
+  selection, clears the residual state, and blocks activation if either cleanup
+  fails. Finally, with LTB stopped, exercise the documented reviewed settings
+  recovery as needed, restart SteamVR, and confirm the old runtime device and
+  stale mapping no longer control the hand. Record that console destruction,
+  OS crash, and power loss have the same unmanaged-cleanup limitation even
+  though those destructive cases were not induced.
+
+- [ ] **Verify backup, atomic replacement, rollback, ACL, and lock behavior.**
+  Begin with unrelated typed settings and at least one unrelated override.
+  Confirm each actual LTB change creates a unique, byte-exact sibling
+  `.ltb-backup`, same-directory staging is flushed before replacement, and
+  post-write JSON and intended mapping validation pass. Exercise a denied file
+  ACL, denied directory create/rename permission, an LTB sibling-lock
+  contender, a SteamVR or external-writer race, a malformed settings file, and
+  a forced post-write validation failure. Confirm bounded diagnostics, no
+  partial JSON, automatic restoration only when LTB still owns its write, and
+  preservation of a later external winner. Recover one reviewed sibling backup
+  and confirm the replaced content receives its own undo backup.
+
+### Restart and profile reuse acceptance
+
+- [ ] **Record the first required SteamVR restart.** Starting from a clean VMT
+  installation or newly enabled add-on, document whether VMT requests a
+  restart and remember that device mode is honored only on first registration
+  after SteamVR starts. Confirm LTB sends mode `1` (`Tracker`) and the slot
+  becomes `GenericTracker`. If it was first registered in another mode, restart
+  SteamVR and confirm LTB's next mode-1 command supplies the first registration.
+  After the restart, confirm the requested VMT slot is discoverable, the
+  one-hand mapping takes effect, Touch input remains live, and SafeDisable
+  releases the mapping. Record the exact boundary at which the first restart
+  was necessary rather than attributing it to routine profile activation.
+
+- [ ] **Reuse the profile without routine manual edits.** After one successful
+  run, start and stop the same profile again without restarting SteamVR.
+  Confirm discovery, activation, monitoring, and release all succeed without a
+  manual settings edit. Then restart SteamVR and reuse the profile again;
+  rediscover the device path rather than relying on its prior transient index,
+  confirm any intended persistent VMT registration behavior, and verify that
+  no stale prior mapping or duplicate source owns the hand. Record whether the
+  normalized source path remains stable and investigate any change before
+  accepting profile reuse.
