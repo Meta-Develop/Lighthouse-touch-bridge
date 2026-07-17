@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
+using Ltb.Calibration;
 using Ltb.Configuration;
 using Ltb.Core;
 using Ltb.OpenVr;
@@ -16,6 +17,7 @@ namespace Ltb.App;
 /// </summary>
 internal sealed class ProductionReliableDailyUseRuntime :
     IReliableDailyUseRuntime,
+    IProductionCalibrationWizardBackend,
     IAsyncDisposable
 {
     private static readonly TimeSpan DependencyProbeTimeout = TimeSpan.FromMilliseconds(250);
@@ -292,6 +294,113 @@ internal sealed class ProductionReliableDailyUseRuntime :
             deviceSet!,
             "Compatible Meta Touch roles, Lighthouse pose-source candidates, and VMT " +
             "heartbeat are ready.");
+    }
+
+    public async Task DeactivateWizardVmtAsync(
+        CalibrationWizardHand hand,
+        CalibrationWizardDeviceSet devices,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(devices);
+        var slot = hand == CalibrationWizardHand.Left ? _leftSlot : _rightSlot;
+        var followSerial = devices.TrackerSerials.Count > 0
+            ? devices.TrackerSerials[0]
+            : throw new InvalidOperationException(
+                "Wizard VMT cleanup requires at least one discovered tracker serial.");
+        await _vmt.DeactivateAsync(
+                new VmtDeviceConfiguration(slot, followSerial, RigidTransform.Identity),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public Task ReleaseWizardHandOverrideAsync(
+        CalibrationWizardHand hand,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        cancellationToken.ThrowIfCancellationRequested();
+        _ = _settings.ReleaseOverridesTargetingSemanticHand(
+            hand == CalibrationWizardHand.Left
+                ? TrackingOverrideBinding.LeftHandPath
+                : TrackingOverrideBinding.RightHandPath);
+        return Task.CompletedTask;
+    }
+
+    public Task VerifyOriginalTouchPosesAsync(
+        CalibrationWizardDeviceSet devices,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(devices);
+        cancellationToken.ThrowIfCancellationRequested();
+        var current = Session.EnumerateDevices();
+        foreach (var hand in Enum.GetValues<CalibrationWizardHand>())
+        {
+            var controller = SelectWizardController(current, devices, hand);
+            var source = Session.CreateInputControllerPoseSource(controller);
+            if (source.Device != controller)
+            {
+                throw new InvalidOperationException(
+                    $"The {hand} recorder source does not retain the discovered original " +
+                    "Touch device descriptor.");
+            }
+
+            EnsureHealthyOriginalTouchPose(source.ReadPose(), hand);
+        }
+
+        _currentDevices = current.ToArray();
+        return Task.CompletedTask;
+    }
+
+    public Task<CalibrationWizardCapture> CaptureWizardHandAsync(
+        CalibrationWizardHand hand,
+        CalibrationWizardDeviceSet devices,
+        double durationSeconds,
+        double sampleRateHz,
+        IProgress<CalibrationWizardCaptureProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(devices);
+        ArgumentNullException.ThrowIfNull(progress);
+        var current = Session.EnumerateDevices();
+        var controller = SelectWizardController(current, devices, hand);
+        var controllerSource = Session.CreateInputControllerPoseSource(controller);
+        var trackerSources = devices.TrackerSerials
+            .Select(serial => Session.CreateTrackedPoseSource(
+                SelectCurrentTracker(current, serial)))
+            .ToArray();
+        var controllerSamples = new List<TimestampedPoseSample>();
+        var reportEvery = Math.Max(1, (int)Math.Round(sampleRateHz / 5d));
+        var lastReportedCount = 0;
+        var capture = PoseRecordingCapture.Capture(
+            trackerSources,
+            [controllerSource],
+            durationSeconds,
+            sampleRateHz,
+            new StopwatchRecordingCaptureClock(),
+            cancellationToken,
+            tick =>
+            {
+                var sample = tick.Samples.Single(observation =>
+                    observation.Identity.SourceKind == PoseSourceKind.InputController);
+                controllerSamples.Add(sample.Sample.PoseSample);
+                if (controllerSamples.Count - lastReportedCount < reportEvery)
+                {
+                    return;
+                }
+
+                ReportWizardCoverage(hand, controllerSamples, progress);
+                lastReportedCount = controllerSamples.Count;
+            });
+        if (controllerSamples.Count != lastReportedCount)
+        {
+            ReportWizardCoverage(hand, controllerSamples, progress);
+        }
+
+        _currentDevices = current.ToArray();
+        return Task.FromResult(new CalibrationWizardCapture(hand, capture.Recording));
     }
 
     public DailyUseProfileApplication CreateProfileApplication(
@@ -853,6 +962,81 @@ internal sealed class ProductionReliableDailyUseRuntime :
         throw new TimeoutException(
             $"VMT slot {slot.Index} was not discovered as a connected GenericTracker " +
             $"within {VmtDiscoveryTimeout.TotalSeconds:R} seconds after activation.");
+    }
+
+    private static SteamVrDeviceDescriptor SelectWizardController(
+        IReadOnlyList<SteamVrDeviceDescriptor> devices,
+        CalibrationWizardDeviceSet expected,
+        CalibrationWizardHand hand)
+    {
+        var serial = hand == CalibrationWizardHand.Left
+            ? expected.LeftControllerSerial
+            : expected.RightControllerSerial;
+        var role = hand == CalibrationWizardHand.Left
+            ? SteamVrControllerRole.LeftHand
+            : SteamVrControllerRole.RightHand;
+        var matches = devices.Where(device =>
+            device.Category == SteamVrDeviceCategory.InputController &&
+            device.ControllerRole == role &&
+            device.IsConnected &&
+            SteamVrInputDeviceClassifier.Classify(device).IsSupported &&
+            string.Equals(device.StableDeviceId, serial, StringComparison.Ordinal))
+            .ToArray();
+        return matches.Length == 1
+            ? matches[0]
+            : throw new InvalidOperationException(
+                $"Expected exactly one connected original {hand} Touch pose source with " +
+                $"stable serial '{serial}'.");
+    }
+
+    private void EnsureHealthyOriginalTouchPose(
+        PoseSourceSample sample,
+        CalibrationWizardHand hand)
+    {
+        const PoseValidity required =
+            PoseValidity.Orientation | PoseValidity.TrackingValid;
+        if (!sample.IsConnected ||
+            sample.TrackingResult != PoseTrackingResult.RunningOk ||
+            (sample.Validity & required) != required)
+        {
+            throw new InvalidOperationException(
+                $"The original {hand} Touch pose is not connected with a tracking-valid " +
+                "orientation after semantic-hand overrides were released.");
+        }
+
+        if (sample.SampleAgeSeconds is { } age &&
+            (!double.IsFinite(age) || age < 0d || age >= _staleAfter.TotalSeconds))
+        {
+            throw new InvalidOperationException(
+                $"The original {hand} Touch pose is stale (age {age:R}s; threshold " +
+                $"{_staleAfter.TotalSeconds:R}s). Keep Quest cameras able to observe " +
+                "the controllers, then retry.");
+        }
+    }
+
+    private static void ReportWizardCoverage(
+        CalibrationWizardHand hand,
+        IReadOnlyList<TimestampedPoseSample> samples,
+        IProgress<CalibrationWizardCaptureProgress> progress)
+    {
+        var coverage = MotionCoverageAnalyzer.Evaluate(samples);
+        var diagnostic = !coverage.IsRotationSufficient
+            ? "continue multi-axis rotation for capture readiness"
+            : coverage.IsPositionSufficient
+                ? "rotation and position capture gates passed"
+                : "rotation capture gates passed; position unavailable, so Auto may fall back normally";
+        progress.Report(new CalibrationWizardCaptureProgress(
+            hand,
+            coverage.SampleCount,
+            coverage.OrientationValidityFraction,
+            coverage.PositionValidityFraction,
+            coverage.RotationAxisCoverage,
+            coverage.TotalRotationDegrees,
+            coverage.RotationProgress,
+            coverage.PositionProgress,
+            coverage.IsRotationSufficient,
+            coverage.IsPositionSufficient,
+            diagnostic));
     }
 
     private void EnsureHealthyPoseSample(PoseSourceSample sample, string sourceName)

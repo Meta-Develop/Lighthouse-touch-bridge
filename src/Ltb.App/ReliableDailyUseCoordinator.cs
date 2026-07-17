@@ -462,6 +462,102 @@ internal sealed class ReliableDailyUseCoordinator
         }
     }
 
+    /// <summary>
+    /// Continues the reliable-use health/watchdog lifecycle for a two-hand
+    /// lease that was already applied and post-apply checked by the production
+    /// calibration wizard. This is the wizard-to-daily handoff point; it uses
+    /// the same monitor and SafeDisable implementations as later-run startup.
+    /// </summary>
+    internal async Task<ReliableDailyUseResult> MonitorActiveLeaseAsync(
+        TwoHandProfileApplicationLease activeLease,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(activeLease);
+        _history.Clear();
+        CurrentState = RuntimeApplicationState.Stopped;
+        RecordCurrentState("reliable watchdog accepted the wizard's active lease");
+        try
+        {
+            var health = await _runtime.CheckHealthAsync(
+                    activeLease.Applications,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (health.IsHealthy)
+            {
+                Log(
+                    LtbLogLevel.Information,
+                    LtbDiagnosticCode.ProfileApplied,
+                    "Wizard profiles passed the watchdog handoff health gate.");
+                Transition(
+                    RuntimeApplicationState.Active,
+                    "wizard-calibrated hand profiles are active under watchdog monitoring");
+                health = await MonitorUntilFailureAsync(
+                        activeLease.Applications,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            LogHealthFailure(health);
+            var safeDisableFailures = await SafeDisableAsync(activeLease)
+                .ConfigureAwait(false);
+            Transition(
+                RuntimeApplicationState.Stopped,
+                safeDisableFailures.Count == 0
+                    ? "watchdog termination completed SafeDisable"
+                    : "watchdog termination reported incomplete SafeDisable");
+            return Result(
+                safeDisableFailures.Count > 0
+                    ? ReliableDailyUseStopReason.SafeDisableFailed
+                    : health.FailureKind == RuntimeHealthFailureKind.SteamVrStopped
+                        ? ReliableDailyUseStopReason.SteamVrStopped
+                        : ReliableDailyUseStopReason.RuntimeFailure,
+                health.Diagnostic,
+                safeDisableFailures);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Log(
+                LtbLogLevel.Information,
+                LtbDiagnosticCode.ShutdownRequested,
+                "Clean wizard shutdown was requested.");
+            var safeDisableFailures = await SafeDisableAsync(activeLease)
+                .ConfigureAwait(false);
+            Transition(
+                RuntimeApplicationState.Stopped,
+                safeDisableFailures.Count == 0
+                    ? "wizard shutdown completed SafeDisable"
+                    : "wizard shutdown reported incomplete SafeDisable");
+            return Result(
+                safeDisableFailures.Count == 0
+                    ? ReliableDailyUseStopReason.Cancellation
+                    : ReliableDailyUseStopReason.SafeDisableFailed,
+                safeDisableFailures.Count == 0
+                    ? "Cancellation requested; active wizard profiles were safely disabled."
+                    : "Cancellation requested; wizard SafeDisable cleanup is incomplete.",
+                safeDisableFailures);
+        }
+        catch (Exception exception)
+        {
+            Log(
+                LtbLogLevel.Error,
+                LtbDiagnosticCode.RuntimeFailure,
+                $"The wizard watchdog failed: {exception.Message}");
+            var safeDisableFailures = await SafeDisableAsync(activeLease)
+                .ConfigureAwait(false);
+            Transition(
+                RuntimeApplicationState.Stopped,
+                safeDisableFailures.Count == 0
+                    ? "wizard watchdog failure completed SafeDisable"
+                    : "wizard watchdog failure reported incomplete SafeDisable");
+            return Result(
+                safeDisableFailures.Count == 0
+                    ? ReliableDailyUseStopReason.RuntimeFailure
+                    : ReliableDailyUseStopReason.SafeDisableFailed,
+                exception.Message,
+                safeDisableFailures);
+        }
+    }
+
     private async Task<CalibrationWizardDeviceSet> WaitForCompleteStartupAsync(
         IReadOnlyList<CalibrationWizardProfileView>? expectedProfiles,
         CancellationToken cancellationToken)

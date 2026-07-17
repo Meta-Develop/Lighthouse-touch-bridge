@@ -19,6 +19,18 @@ public sealed class DailyCommandLineTests
         "  dotnet run --project src/Ltb.App -- wizard-demo " +
         "--profiles <profile-store.json> [--log <events.jsonl>]";
 
+    private const string ProductionWizardUsage =
+        "  dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> " +
+        "--left-vmt-slot <0..57> --right-vmt-slot <0..57> " +
+        "--steamvr-settings <steamvr.vrsettings> [--duration <seconds>] " +
+        "[--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] " +
+        "[--reconnect-delay <seconds>]";
+
+    private const string ProductionWizardExitMeanings =
+        "Wizard exit codes: 0 clean cancellation after SafeDisable, " +
+        "2 dependency/device/capture/calibration/application failure, " +
+        "3 post-Active health termination, 4 any incomplete cleanup or rollback.";
+
     [Fact]
     public void DailyCommandParsesRequiredAndOptionalSettings()
     {
@@ -57,6 +69,65 @@ public sealed class DailyCommandLineTests
         Assert.Null(options.DailyLogPath);
         Assert.Equal(20d, options.MonitorRateHz);
         Assert.Equal(0.25d, options.DailyReconnectDelaySeconds);
+    }
+
+    [Fact]
+    public void ProductionWizardParsesExactRequiredAndOptionalContract()
+    {
+        Assert.True(AppCommandLineOptions.TryParse(
+            [
+                "wizard",
+                "--profiles", "profiles.json",
+                "--left-vmt-slot", "0",
+                "--right-vmt-slot", "57",
+                "--steamvr-settings", "steamvr.vrsettings",
+                "--duration", "12.5",
+                "--rate", "120",
+                "--log", "events.jsonl",
+                "--monitor-rate", "40",
+                "--reconnect-delay", "1.5",
+            ],
+            out var options,
+            out var error), error);
+
+        Assert.Equal(AppCommand.Wizard, options.Command);
+        Assert.Equal("profiles.json", options.WizardProfileStorePath);
+        Assert.Equal(0, options.WizardLeftVmtSlot);
+        Assert.Equal(57, options.WizardRightVmtSlot);
+        Assert.Equal("steamvr.vrsettings", options.SteamVrSettingsPath);
+        Assert.Equal(12.5d, options.DurationSeconds);
+        Assert.Equal(120d, options.SampleRateHz);
+        Assert.Equal("events.jsonl", options.WizardLogPath);
+        Assert.Equal(40d, options.MonitorRateHz);
+        Assert.Equal(1.5d, options.WizardReconnectDelaySeconds);
+    }
+
+    [Fact]
+    public void ProductionWizardUsesDocumentedCaptureAndMonitorDefaults()
+    {
+        Assert.True(AppCommandLineOptions.TryParse(
+            RequiredWizardArguments(),
+            out var options,
+            out var error), error);
+
+        Assert.Equal(10d, options.DurationSeconds);
+        Assert.Equal(90d, options.SampleRateHz);
+        Assert.Equal(20d, options.MonitorRateHz);
+        Assert.Equal(0.25d, options.WizardReconnectDelaySeconds);
+        Assert.Null(options.WizardLogPath);
+    }
+
+    [Theory]
+    [InlineData("--profiles")]
+    [InlineData("--left-vmt-slot")]
+    [InlineData("--right-vmt-slot")]
+    [InlineData("--steamvr-settings")]
+    public void ProductionWizardRejectsEachMissingRequiredSetting(string optionToOmit)
+    {
+        var arguments = WithoutOption(RequiredWizardArguments(), optionToOmit);
+
+        Assert.False(AppCommandLineOptions.TryParse(arguments, out _, out var error));
+        Assert.Contains("wizard command requires", error, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -118,7 +189,7 @@ public sealed class DailyCommandLineTests
     }
 
     [Fact]
-    public void UsageContainsExactDailyAndWizardCommandsAndDailyExitMeanings()
+    public void UsageContainsExactDailyAndWizardCommandsAndExitMeanings()
     {
         using var writer = new StringWriter();
 
@@ -127,8 +198,10 @@ public sealed class DailyCommandLineTests
         var lines = writer.ToString()
             .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         Assert.Contains(DailyUsage, lines);
+        Assert.Contains(ProductionWizardUsage, lines);
         Assert.Contains(WizardUsage, lines);
         Assert.Contains(DailyExitMeanings, lines);
+        Assert.Contains(ProductionWizardExitMeanings, lines);
     }
 
     [Fact]
@@ -215,6 +288,15 @@ public sealed class DailyCommandLineTests
     private static string[] RequiredDailyArguments() =>
     [
         "daily",
+        "--profiles", "profiles.json",
+        "--left-vmt-slot", "1",
+        "--right-vmt-slot", "2",
+        "--steamvr-settings", "steamvr.vrsettings",
+    ];
+
+    private static string[] RequiredWizardArguments() =>
+    [
+        "wizard",
         "--profiles", "profiles.json",
         "--left-vmt-slot", "1",
         "--right-vmt-slot", "2",

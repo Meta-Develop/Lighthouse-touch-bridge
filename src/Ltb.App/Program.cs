@@ -35,6 +35,11 @@ internal static class Program
                 return await WizardDemoAsync(options).ConfigureAwait(false);
             }
 
+            if (options.Command == AppCommand.Wizard)
+            {
+                return await WizardAsync(options).ConfigureAwait(false);
+            }
+
             if (options.Command == AppCommand.Daily)
             {
                 return await DailyAsync(options).ConfigureAwait(false);
@@ -171,6 +176,146 @@ internal static class Program
         Console.WriteLine($"final_state: {result.FinalState}");
         Console.WriteLine($"diagnostic: {result.Diagnostic}");
         return result.Success ? 0 : 2;
+    }
+
+    private static async Task<int> WizardAsync(AppCommandLineOptions options)
+    {
+        using var jsonLog = options.WizardLogPath is null
+            ? null
+            : new JsonLinesLtbLogSink(options.WizardLogPath);
+        var logSink = (ILtbLogSink?)jsonLog ?? NullLtbLogSink.Instance;
+        var reconnectDelay = TimeSpan.FromSeconds(options.WizardReconnectDelaySeconds);
+        await using var liveRuntime = new ProductionReliableDailyUseRuntime(
+            options.WizardProfileStorePath!,
+            options.SteamVrSettingsPath!,
+            new VmtDeviceAddress(options.WizardLeftVmtSlot),
+            new VmtDeviceAddress(options.WizardRightVmtSlot),
+            staleAfter: TimeSpan.FromSeconds(0.5d),
+            reconnectDelay);
+        var productionRuntime = new ProductionCalibrationWizardRuntime(
+            liveRuntime,
+            new ProductionCalibrationWizardOptions
+            {
+                CaptureDurationSeconds = options.DurationSeconds,
+                CaptureRateHz = options.SampleRateHz,
+                DeviceRetryDelay = reconnectDelay,
+            });
+        var backend = new FileCalibrationWizardBackend(options.WizardProfileStorePath!);
+        var output = new ConsoleCalibrationWizardOutput(Console.Out);
+        var wizard = new TwoHandCalibrationWizard(
+            productionRuntime,
+            backend,
+            output,
+            logSink);
+
+        using var stop = new CancellationTokenSource();
+        ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            stop.Cancel();
+        };
+        Console.CancelKeyPress += cancelHandler;
+        try
+        {
+            Console.WriteLine("Lighthouse Touch Bridge - Production Two-Hand Calibration Wizard");
+            Console.WriteLine($"profiles: {Path.GetFullPath(options.WizardProfileStorePath!)}");
+            Console.WriteLine($"left_vmt_slot: {options.WizardLeftVmtSlot}");
+            Console.WriteLine($"right_vmt_slot: {options.WizardRightVmtSlot}");
+            Console.WriteLine($"steamvr_settings: {Path.GetFullPath(options.SteamVrSettingsPath!)}");
+            Console.WriteLine($"capture_duration_seconds: {options.DurationSeconds:R}");
+            Console.WriteLine($"capture_rate_hz: {options.SampleRateHz:R}");
+            Console.WriteLine($"monitor_rate_hz: {options.MonitorRateHz:R}");
+            Console.WriteLine($"reconnect_delay_seconds: {options.WizardReconnectDelaySeconds:R}");
+            Console.WriteLine($"structured_log: {(options.WizardLogPath is null ? "disabled" : Path.GetFullPath(options.WizardLogPath))}");
+            Console.WriteLine("state: starting");
+
+            var result = await wizard.RunAsync(stop.Token).ConfigureAwait(false);
+            Console.WriteLine($"wizard_result: {(result.Success ? "success" : result.Cancelled ? "cancelled" : "failed")}");
+            Console.WriteLine($"profile_path: {(result.ReusedProfiles ? "later-run-reuse" : "first-run-capture")}");
+            Console.WriteLine($"final_state: {result.FinalState}");
+            Console.WriteLine($"cleanup_failures: {result.CleanupFailures.Count}");
+            Console.WriteLine($"diagnostic: {result.Diagnostic}");
+            foreach (var failure in result.CleanupFailures)
+            {
+                Console.Error.WriteLine($"Cleanup failure: {failure.Message}");
+            }
+
+            if (!result.Success)
+            {
+                return result.CleanupFailures.Count > 0
+                    ? 4
+                    : result.Cancelled
+                        ? 0
+                        : 2;
+            }
+
+            var activeLease = productionRuntime.ActiveLease ??
+                throw new InvalidOperationException(
+                    "The production wizard reached Active without retaining its application lease.");
+            ReliableDailyUseResult monitored;
+            try
+            {
+                var watchdog = new ReliableDailyUseCoordinator(
+                    liveRuntime,
+                    backend,
+                    logSink,
+                    new ReliableDailyUseOptions
+                    {
+                        MonitorInterval = TimeSpan.FromSeconds(1d / options.MonitorRateHz),
+                        ReconnectRetryDelay = reconnectDelay,
+                    });
+                monitored = await watchdog.MonitorActiveLeaseAsync(activeLease, stop.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                IReadOnlyList<Exception> fallbackFailures;
+                try
+                {
+                    fallbackFailures = await activeLease.SafeDisableAsync()
+                        .ConfigureAwait(false);
+                }
+                catch (Exception cleanupException)
+                {
+                    fallbackFailures = [cleanupException];
+                }
+
+                foreach (var failure in fallbackFailures)
+                {
+                    Console.Error.WriteLine($"Fallback SafeDisable failure: {failure.Message}");
+                }
+
+                if (fallbackFailures.Count > 0)
+                {
+                    Console.Error.WriteLine(
+                        $"The watchdog handoff failed ({exception.Message}) and fallback " +
+                        "SafeDisable is incomplete.");
+                    return 4;
+                }
+
+                throw;
+            }
+
+            Console.WriteLine($"state: {monitored.FinalState}");
+            Console.WriteLine($"stop_reason: {monitored.StopReason}");
+            Console.WriteLine($"safe_disable_failures: {monitored.SafeDisableFailures.Count}");
+            Console.WriteLine($"message: {monitored.Diagnostic}");
+            foreach (var failure in monitored.SafeDisableFailures)
+            {
+                Console.Error.WriteLine($"SafeDisable failure: {failure.Message}");
+            }
+
+            if (monitored.SafeDisableFailures.Count > 0)
+            {
+                return 4;
+            }
+
+            return monitored.StopReason == ReliableDailyUseStopReason.Cancellation ? 0 : 3;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancelHandler;
+        }
     }
 
     private static async Task<int> BridgeAsync(
@@ -489,6 +634,12 @@ internal sealed record AppCommandLineOptions(
 
     public string? WizardLogPath { get; init; }
 
+    public int WizardLeftVmtSlot { get; init; } = -1;
+
+    public int WizardRightVmtSlot { get; init; } = -1;
+
+    public double WizardReconnectDelaySeconds { get; init; } = 0.25d;
+
     public static bool TryParse(
         IReadOnlyList<string> arguments,
         out AppCommandLineOptions options,
@@ -505,7 +656,7 @@ internal sealed record AppCommandLineOptions(
         if (arguments.Count == 0 || !TryParseCommand(arguments[0], out var command))
         {
             error = arguments.Count == 0
-                ? "A devices, record, bridge, daily, or wizard-demo command is required."
+                ? "A devices, record, bridge, daily, wizard, or wizard-demo command is required."
                 : $"Unknown command '{arguments[0]}'.";
             return false;
         }
@@ -524,6 +675,7 @@ internal sealed record AppCommandLineOptions(
         var recorderOptionSpecified = false;
         var bridgeOptionSpecified = false;
         var wizardOptionSpecified = false;
+        var wizardLiveOptionSpecified = false;
         var dailyOptionSpecified = false;
         string? wizardProfileStorePath = null;
         string? wizardLogPath = null;
@@ -570,7 +722,14 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--duration":
-                    recorderOptionSpecified = true;
+                    if (command == AppCommand.Wizard)
+                    {
+                        wizardLiveOptionSpecified = true;
+                    }
+                    else
+                    {
+                        recorderOptionSpecified = true;
+                    }
                     if (!TryReadDouble(arguments, ref index, argument, out durationSeconds, out error))
                     {
                         return false;
@@ -578,7 +737,14 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--rate":
-                    recorderOptionSpecified = true;
+                    if (command == AppCommand.Wizard)
+                    {
+                        wizardLiveOptionSpecified = true;
+                    }
+                    else
+                    {
+                        recorderOptionSpecified = true;
+                    }
                     if (!TryReadDouble(arguments, ref index, argument, out sampleRateHz, out error))
                     {
                         return false;
@@ -609,6 +775,10 @@ internal sealed record AppCommandLineOptions(
                     if (command == AppCommand.Daily)
                     {
                         dailyOptionSpecified = true;
+                    }
+                    else if (command == AppCommand.Wizard)
+                    {
+                        wizardLiveOptionSpecified = true;
                     }
                     else
                     {
@@ -642,6 +812,10 @@ internal sealed record AppCommandLineOptions(
                     if (command == AppCommand.Daily)
                     {
                         dailyOptionSpecified = true;
+                    }
+                    else if (command == AppCommand.Wizard)
+                    {
+                        wizardLiveOptionSpecified = true;
                     }
                     else
                     {
@@ -688,7 +862,14 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--left-vmt-slot":
-                    dailyOptionSpecified = true;
+                    if (command == AppCommand.Wizard)
+                    {
+                        wizardLiveOptionSpecified = true;
+                    }
+                    else
+                    {
+                        dailyOptionSpecified = true;
+                    }
                     if (!TryReadInt32(
                             arguments,
                             ref index,
@@ -701,7 +882,14 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--right-vmt-slot":
-                    dailyOptionSpecified = true;
+                    if (command == AppCommand.Wizard)
+                    {
+                        wizardLiveOptionSpecified = true;
+                    }
+                    else
+                    {
+                        dailyOptionSpecified = true;
+                    }
                     if (!TryReadInt32(
                             arguments,
                             ref index,
@@ -718,7 +906,7 @@ internal sealed record AppCommandLineOptions(
                     {
                         dailyOptionSpecified = true;
                     }
-                    else if (command == AppCommand.WizardDemo)
+                    else if (command is AppCommand.Wizard or AppCommand.WizardDemo)
                     {
                         wizardOptionSpecified = true;
                     }
@@ -736,7 +924,7 @@ internal sealed record AppCommandLineOptions(
                         return false;
                     }
 
-                    if (command == AppCommand.WizardDemo)
+                    if (command is AppCommand.Wizard or AppCommand.WizardDemo)
                     {
                         wizardLogPath = parsedLogPath;
                     }
@@ -747,7 +935,14 @@ internal sealed record AppCommandLineOptions(
 
                     break;
                 case "--reconnect-delay":
-                    dailyOptionSpecified = true;
+                    if (command == AppCommand.Wizard)
+                    {
+                        wizardLiveOptionSpecified = true;
+                    }
+                    else
+                    {
+                        dailyOptionSpecified = true;
+                    }
                     if (!TryReadDouble(
                             arguments,
                             ref index,
@@ -774,7 +969,7 @@ internal sealed record AppCommandLineOptions(
         if (command == AppCommand.Devices)
         {
             if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified ||
-                dailyOptionSpecified)
+                wizardLiveOptionSpecified || dailyOptionSpecified)
             {
                 error = "The devices command does not accept record, bridge, or wizard options.";
                 return false;
@@ -786,7 +981,8 @@ internal sealed record AppCommandLineOptions(
 
         if (command == AppCommand.Bridge)
         {
-            if (recorderOptionSpecified || wizardOptionSpecified || dailyOptionSpecified)
+            if (recorderOptionSpecified || wizardOptionSpecified ||
+                wizardLiveOptionSpecified || dailyOptionSpecified)
             {
                 error = "The bridge command does not accept record or wizard options.";
                 return false;
@@ -834,7 +1030,8 @@ internal sealed record AppCommandLineOptions(
 
         if (command == AppCommand.Daily)
         {
-            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified)
+            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified ||
+                wizardLiveOptionSpecified)
             {
                 error = "The daily command accepts only daily-use options.";
                 return false;
@@ -899,9 +1096,97 @@ internal sealed record AppCommandLineOptions(
             return true;
         }
 
-        if (command == AppCommand.WizardDemo)
+        if (command == AppCommand.Wizard)
         {
             if (recorderOptionSpecified || bridgeOptionSpecified || dailyOptionSpecified)
+            {
+                error = "The wizard command accepts only production-wizard options.";
+                return false;
+            }
+
+            if (wizardProfileStorePath is null ||
+                dailyLeftVmtSlot < 0 ||
+                dailyRightVmtSlot < 0 ||
+                steamVrSettingsPath is null)
+            {
+                error = "The wizard command requires --profiles <profile-store.json>, " +
+                    "--left-vmt-slot <0..57>, --right-vmt-slot <0..57>, and " +
+                    "--steamvr-settings <steamvr.vrsettings>.";
+                return false;
+            }
+
+            if (dailyLeftVmtSlot is < VmtDeviceAddress.MinimumIndex or
+                    > VmtDeviceAddress.MaximumIndex ||
+                dailyRightVmtSlot is < VmtDeviceAddress.MinimumIndex or
+                    > VmtDeviceAddress.MaximumIndex)
+            {
+                error = $"Wizard VMT slots must be between {VmtDeviceAddress.MinimumIndex} " +
+                    $"and {VmtDeviceAddress.MaximumIndex}.";
+                return false;
+            }
+
+            if (dailyLeftVmtSlot == dailyRightVmtSlot)
+            {
+                error = "--left-vmt-slot and --right-vmt-slot must be distinct.";
+                return false;
+            }
+
+            if (!double.IsFinite(durationSeconds) ||
+                durationSeconds <= 0d ||
+                durationSeconds > MaximumDurationSeconds)
+            {
+                error = $"--duration must be greater than zero and at most " +
+                    $"{MaximumDurationSeconds:F0} seconds.";
+                return false;
+            }
+
+            if (!double.IsFinite(sampleRateHz) ||
+                sampleRateHz <= 0d ||
+                sampleRateHz > MaximumSampleRateHz)
+            {
+                error = $"--rate must be greater than zero and at most " +
+                    $"{MaximumSampleRateHz:F0} Hz.";
+                return false;
+            }
+
+            if (!double.IsFinite(monitorRateHz) ||
+                monitorRateHz <= 0d ||
+                monitorRateHz > MaximumMonitorRateHz)
+            {
+                error = $"--monitor-rate must be greater than zero and at most " +
+                    $"{MaximumMonitorRateHz:F0} Hz.";
+                return false;
+            }
+
+            if (!double.IsFinite(dailyReconnectDelaySeconds) ||
+                dailyReconnectDelaySeconds <= 0d ||
+                dailyReconnectDelaySeconds > MaximumReconnectDelaySeconds)
+            {
+                error = "--reconnect-delay must be greater than zero and at most " +
+                    $"{MaximumReconnectDelaySeconds:F0} seconds.";
+                return false;
+            }
+
+            options = Empty with
+            {
+                Command = command,
+                SteamVrSettingsPath = steamVrSettingsPath,
+                DurationSeconds = durationSeconds,
+                SampleRateHz = sampleRateHz,
+                MonitorRateHz = monitorRateHz,
+                WizardProfileStorePath = wizardProfileStorePath,
+                WizardLogPath = wizardLogPath,
+                WizardLeftVmtSlot = dailyLeftVmtSlot,
+                WizardRightVmtSlot = dailyRightVmtSlot,
+                WizardReconnectDelaySeconds = dailyReconnectDelaySeconds,
+            };
+            return true;
+        }
+
+        if (command == AppCommand.WizardDemo)
+        {
+            if (recorderOptionSpecified || bridgeOptionSpecified ||
+                wizardLiveOptionSpecified || dailyOptionSpecified)
             {
                 error = "The wizard-demo command does not accept record or bridge options.";
                 return false;
@@ -922,7 +1207,8 @@ internal sealed record AppCommandLineOptions(
             return true;
         }
 
-        if (bridgeOptionSpecified || wizardOptionSpecified || dailyOptionSpecified)
+        if (bridgeOptionSpecified || wizardOptionSpecified ||
+            wizardLiveOptionSpecified || dailyOptionSpecified)
         {
             error = "The record command does not accept bridge or wizard options.";
             return false;
@@ -993,6 +1279,7 @@ internal sealed record AppCommandLineOptions(
         writer.WriteLine("  dotnet run --project src/Ltb.App -- record --tracker <stable-serial> [--tracker <stable-serial> ...] --controller <stable-serial> [--controller <stable-serial> ...] --output <recording.json> --override-released [--duration <seconds>] [--rate <hz>]");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]");
         writer.WriteLine();
         writer.WriteLine("Defaults: record --duration 10 --rate 90; bridge --stale-after 0.5 --monitor-rate 20; daily --monitor-rate 20 --reconnect-delay 0.25.");
@@ -1002,6 +1289,7 @@ internal sealed record AppCommandLineOptions(
         writer.WriteLine("--monitor-rate is a requested minimum rate; safety bounds automatically make the effective watchdog faster when required.");
         writer.WriteLine("Bridge exit codes: 0 cancelled+disabled, 2 startup/run failure, 3 health-triggered SafeDisable, 4 incomplete SafeDisable cleanup.");
         writer.WriteLine("Daily exit codes: 0 clean cancellation, 2 startup/profile/application failure, 3 SteamVR/runtime health termination, 4 any incomplete cleanup or rollback.");
+        writer.WriteLine("Wizard exit codes: 0 clean cancellation after SafeDisable, 2 dependency/device/capture/calibration/application failure, 3 post-Active health termination, 4 any incomplete cleanup or rollback.");
         writer.WriteLine("--override-released explicitly acknowledges that VMT and SteamVR pose overrides are inactive, so the original controller pose is sampled.");
         writer.WriteLine("The record command does not inspect or modify SteamVR settings.");
         writer.WriteLine("wizard-demo uses deterministic fake devices and never opens SteamVR, VMT, or host settings; rerun with the same store to exercise profile reuse.");
@@ -1031,6 +1319,7 @@ internal sealed record AppCommandLineOptions(
             "record" => AppCommand.Record,
             "bridge" => AppCommand.Bridge,
             "daily" => AppCommand.Daily,
+            "wizard" => AppCommand.Wizard,
             "wizard-demo" => AppCommand.WizardDemo,
             _ => (AppCommand)(-1),
         };
@@ -1113,5 +1402,6 @@ internal enum AppCommand
     Record,
     Bridge,
     Daily,
+    Wizard,
     WizardDemo,
 }

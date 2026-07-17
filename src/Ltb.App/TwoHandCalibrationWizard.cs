@@ -248,7 +248,13 @@ internal sealed record CalibrationWizardResult(
     CalibrationWizardState FinalState,
     IReadOnlyList<CalibrationWizardState> StateHistory,
     IReadOnlyList<CalibrationWizardProfileView> Profiles,
-    string Diagnostic);
+    string Diagnostic)
+{
+    public bool Cancelled { get; init; }
+
+    public IReadOnlyList<Exception> CleanupFailures { get; init; } =
+        Array.Empty<Exception>();
+}
 
 internal sealed class CalibrationWizardRunException : InvalidOperationException
 {
@@ -276,6 +282,7 @@ internal sealed class TwoHandCalibrationWizard
     private readonly ILtbLogSink _logSink;
     private readonly TimeProvider _timeProvider;
     private readonly List<CalibrationWizardState> _history = [];
+    private bool _captureSafetyRequired;
 
     public TwoHandCalibrationWizard(
         ICalibrationWizardRuntime runtime,
@@ -295,6 +302,60 @@ internal sealed class TwoHandCalibrationWizard
         CancellationToken cancellationToken = default)
     {
         _history.Clear();
+        _captureSafetyRequired = false;
+        try
+        {
+            var result = await RunCoreAsync(cancellationToken).ConfigureAwait(false);
+            return !result.Success && RequiresProductionCleanup
+                ? await CompleteAbortCleanupAsync(result).ConfigureAwait(false)
+                : result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            var cancelled = new CalibrationWizardResult(
+                false,
+                false,
+                _history.Count == 0 ? CalibrationWizardState.Stopped : _history[^1],
+                _history.AsReadOnly(),
+                Array.Empty<CalibrationWizardProfileView>(),
+                "Wizard cancellation was requested.")
+            {
+                Cancelled = true,
+            };
+            if (RequiresProductionCleanup)
+            {
+                return await CompleteAbortCleanupAsync(cancelled).ConfigureAwait(false);
+            }
+
+            Transition(
+                CalibrationWizardState.Ready,
+                "wizard cancellation completed before capture-path override release");
+            return cancelled with
+            {
+                FinalState = CalibrationWizardState.Ready,
+                StateHistory = _history.AsReadOnly(),
+            };
+        }
+        catch (Exception exception) when (RequiresProductionCleanup)
+        {
+            var failedState = _history.Count == 0
+                ? CalibrationWizardState.Stopped
+                : _history[^1];
+            var unexpected = new CalibrationWizardResult(
+                false,
+                false,
+                failedState,
+                _history.AsReadOnly(),
+                Array.Empty<CalibrationWizardProfileView>(),
+                $"An unexpected production-wizard operation failed in " +
+                $"{failedState}: {exception.Message}");
+            return await CompleteAbortCleanupAsync(unexpected).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<CalibrationWizardResult> RunCoreAsync(
+        CancellationToken cancellationToken)
+    {
         Transition(CalibrationWizardState.DependencyCheck,
             "checking ALVR, VMT, and active Lighthouse HMD dependencies");
         CalibrationWizardDependencyStatus dependencyStatus;
@@ -387,6 +448,7 @@ internal sealed class TwoHandCalibrationWizard
             return Complete(true, reusable.Profiles, reusable.Diagnostic);
         }
 
+        _captureSafetyRequired = true;
         Transition(CalibrationWizardState.OverrideRelease,
             "releasing active hand overrides before original Touch pose capture");
         try
@@ -614,6 +676,17 @@ internal sealed class TwoHandCalibrationWizard
 
         _output.WriteLine(
             $"diagnostic: state={failedState} message={diagnostic}");
+        if (RequiresProductionCleanup)
+        {
+            return new CalibrationWizardResult(
+                false,
+                false,
+                failedState,
+                _history.AsReadOnly(),
+                Array.Empty<CalibrationWizardProfileView>(),
+                diagnostic);
+        }
+
         Transition(CalibrationWizardState.Ready,
             "calibration stopped safely; correct the diagnostic and retry");
         return new CalibrationWizardResult(
@@ -625,10 +698,86 @@ internal sealed class TwoHandCalibrationWizard
             diagnostic);
     }
 
+    private bool RequiresProductionCleanup =>
+        _captureSafetyRequired && _runtime is ICalibrationWizardCleanupRuntime;
+
+    private async Task<CalibrationWizardResult> CompleteAbortCleanupAsync(
+        CalibrationWizardResult result)
+    {
+        TransitionForCleanup(
+            CalibrationWizardState.SafeDisable,
+            "disabling both capture and profile override surfaces after wizard abort");
+        IReadOnlyList<Exception> cleanupFailures;
+        try
+        {
+            cleanupFailures = await ((ICalibrationWizardCleanupRuntime)_runtime)
+                .SafeDisableAsync()
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            cleanupFailures = [exception];
+        }
+
+        if (cleanupFailures.Count == 0)
+        {
+            TransitionForCleanup(
+                CalibrationWizardState.Ready,
+                "wizard abort cleanup completed for both hands");
+            return result with
+            {
+                FinalState = CalibrationWizardState.Ready,
+                StateHistory = _history.AsReadOnly(),
+                CleanupFailures = cleanupFailures,
+            };
+        }
+
+        var cleanupDiagnostic =
+            $"{result.Diagnostic} SafeDisable attempted both hands but reported " +
+            $"{cleanupFailures.Count} cleanup failure(s); manual state inspection is required.";
+        try
+        {
+            _output.WriteLine($"diagnostic: state=SafeDisable message={cleanupDiagnostic}");
+        }
+        catch
+        {
+            // Console/UI output failure must not erase the completed cleanup result.
+        }
+        return result with
+        {
+            FinalState = CalibrationWizardState.SafeDisable,
+            StateHistory = _history.AsReadOnly(),
+            Diagnostic = cleanupDiagnostic,
+            CleanupFailures = cleanupFailures,
+        };
+    }
+
     private void Transition(CalibrationWizardState state, string diagnostic)
     {
         _history.Add(state);
         _output.OnStateChanged(state, diagnostic);
+        Log(
+            LtbLogLevel.Information,
+            LtbDiagnosticCode.StateTransition,
+            diagnostic,
+            new Dictionary<string, string>
+            {
+                ["wizardState"] = state.ToString(),
+            });
+    }
+
+    private void TransitionForCleanup(CalibrationWizardState state, string diagnostic)
+    {
+        _history.Add(state);
+        try
+        {
+            _output.OnStateChanged(state, diagnostic);
+        }
+        catch
+        {
+            // Cleanup is authoritative even if its UI observer is unavailable.
+        }
+
         Log(
             LtbLogLevel.Information,
             LtbDiagnosticCode.StateTransition,
