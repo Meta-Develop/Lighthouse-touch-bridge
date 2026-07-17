@@ -165,9 +165,85 @@ mounts, errors and residuals, observability and degeneracy verdicts, and sample
 and injection counts. A failed calibration returns a nonzero process exit
 code; an Auto rotation-only fallback is a successful reported outcome.
 
+## Two-hand guided calibration
+
+Milestone 3 composes the existing portable stages without forking their
+numeric logic. For each hand, guided capture reports:
+
+- orientation/tracking-valid and position-valid sample fractions;
+- accumulated rotation and coordinate-invariant motion-axis coverage;
+- separate rotation-ready and position-ready progress; and
+- whether the rotation capture gate is accepted.
+
+The left and right gestures are recorded separately while both candidate
+tracker streams remain visible. `TrackerHandAssociator` compares angular-speed
+magnitude, estimates lag for every viable hand/tracker candidate, and solves a
+one-to-one serial assignment. It rejects disconnected or repeatedly invalid
+candidates, weak correlation, ambiguous assignments, and inconsistent
+left/right lag. Runtime device order and world-space direction never enter the
+decision; a corrected swapped input order is reported explicitly.
+
+After association, `PerHandCalibrationPipeline` runs the assigned raw streams
+through `StreamLagEstimator`, `PoseStreamAligner`, and
+`HandEyeCalibrationSolver` with `CalibrationPolicy.Auto`. The solver still
+validates rotation first and holds it fixed while attempting translation.
+Consequently:
+
+- a bad rotation solve is a failed calibration and asks for another capture;
+- missing controller position is a successful rotation-only fallback;
+- insufficient translation observability or validation improvement is also a
+  successful rotation-only fallback; and
+- full 6DoF is selected only when all existing translation gates pass.
+
+The quality report is per hand and retains lag, motion-axis coverage, rotation
+RMS and percentile, position RMS and percentile where available, the
+rotation-only position RMS comparison, translation condition, separate
+rotation and translation inlier ratios, translation magnitude, split
+disagreement, rotation/translation observability and degeneracy, and the exact
+selection reason. These complete fields are emitted directly from the genuine
+first-run `CalibrationResult`; the application does not recalculate quality or
+select a model. Schema 1 retains a smaller quality subset. Later-run profile
+reuse therefore reports only persisted schema fields and never copies RMS or
+the one persisted inlier ratio into missing percentile or separate-inlier
+fields.
+
+Profiles are keyed by tracker serial and semantic hand. A rotation-only profile
+stores zero translation plus its fallback reason. A later run loads a complete
+left/right pair by exact serial-and-hand match and applies it without capture;
+a missing or mismatched side keeps the wizard on the first-run path. The
+runtime also passes explicit-request, observed hand association, remount,
+validation-threshold, controller runtime/model, expected-schema, and transform-
+convention observations to `RecalibrationEvaluator`; the application does not
+reimplement those trigger rules. A recognized older/newer stored schema routes
+to capture and replacement, while structurally malformed profile JSON stops
+safely. Profile schema validation, deterministic JSON, and atomic save are
+owned by `Ltb.Configuration`.
+
+## Scripted wizard command
+
+Run the Linux-safe deterministic two-hand flow from the repository root:
+
+```bash
+dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>
+```
+
+The fake session uses `CTRL-TEST-L`, `CTRL-TEST-R`, `LHR-TEST0001`, and
+`LHR-TEST0002`. Tracker enumeration is reversed deliberately. The left stream
+has valid controller position and selects full 6DoF; the right stream has valid
+orientation but no controller position and selects normal rotation-only Auto
+fallback. Run the command again against the same store to exercise serial-and-
+hand reload and the no-capture apply path. Each hand emits deterministic
+progressive coverage snapshots from growing sample prefixes, all evaluated by
+the portable analyzer.
+
 ## Current limitations
 
-Milestone 0 consumes synchronized pairs. It does not estimate lag, interpolate
-or associate live streams, acquire poses from runtime APIs, or perform joint
-nonlinear refinement. No OpenVR, ALVR, VMT, SteamVR override, recording, or UI
-operation is part of the offline solver or synthetic command.
+The portable pipeline does not perform optional joint nonlinear refinement.
+The implemented `wizard-demo` command's deterministic fake path proves orchestration,
+association, selection, reporting, persistence, and reload on Linux. Real
+OpenVR acquisition, live coverage timing, ALVR visibility behavior, and two-
+hand VMT/SteamVR application require a production runtime adapter that is not
+implemented in Milestone 3. The Windows checklist documents future acceptance
+work, not live checks currently runnable through this CLI. A future live apply
+must be all-or-cleanup across both hands; persistent rollback and watchdog
+recovery remain Milestone 4. No GUI framework has been selected.

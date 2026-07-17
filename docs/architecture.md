@@ -408,17 +408,103 @@ SteamVR session retains Touch inputs while accepting the VMT pose. That
 provenance and restart behavior remain explicit acceptance items in
 [windows-verification.md](windows-verification.md).
 
-Milestone 2 adds no GUI framework, two-hand calibration wizard, automatic
-association workflow, or Milestone 4 reconnect, installer, and daily-use
-expansion beyond the explicitly required safety and settings recovery. Those
-boundaries remain unchanged.
+Milestone 2 adds no GUI framework or Milestone 4 reconnect, installer, and
+daily-use expansion beyond the explicitly required safety and settings
+recovery. Those boundaries remain unchanged.
 
 ## Application boundary and open UI decision
 
 `Ltb.App` remains a console composition and command-wiring boundary. No Windows
-UI framework has been selected, and Milestones 1-2 introduce no WinUI, WPF, or
+UI framework has been selected, and Milestones 1-3 introduce no WinUI, WPF, or
 Avalonia dependency. A future framework choice must be recorded here before a
 UI dependency is added.
+
+## Milestone 3 two-hand wizard boundary
+
+Milestone 3 adds a UI-neutral `TwoHandCalibrationWizard` state machine in
+`Ltb.App`. It emits state, capture-progress, diagnostic, quality, and profile
+events through `ICalibrationWizardOutput`; the console renderer is one consumer
+of those events. A future desktop UI can implement the same output and runtime
+ports without moving device, calibration, or persistence policy into view
+callbacks. The Windows UI framework decision therefore remains deliberately
+open.
+
+```text
+ICalibrationWizardRuntime (dependencies, devices, capture, apply)
+                         |
+                         v
+              TwoHandCalibrationWizard
+                 |                 |
+                 v                 v
+ ICalibrationWizardBackend   ICalibrationWizardOutput
+       |           |           console / future GUI
+       v           v
+Ltb.Calibration  Ltb.Configuration
+```
+
+The application owns sequencing only. `TrackerHandAssociator` owns
+coordinate-invariant angular-motion correlation and ambiguity rejection;
+`MotionCoverageAnalyzer` owns tracking-validity and excitation coverage;
+`PerHandCalibrationPipeline` owns the existing lag, alignment, staged solver,
+Auto selection, fallback, and quality gates. `Ltb.Configuration` owns schema-1
+validation, JSON, exact serial-and-hand matching, and atomic file persistence.
+No association, lag, transform solve, quality threshold, or JSON rule is
+duplicated in the application layer.
+
+The first-run flow is:
+
+```text
+DependencyCheck -> WaitingForSteamVR -> WaitingForDevices -> Ready
+ -> OverrideRelease -> Recording(left, right) -> Association
+ -> TimeAlignment -> RotationSolve -> TranslationAttempt -> Validation
+ -> persist both profiles -> ApplyProfile -> Active
+```
+
+Each guided capture contains one original Touch stream and both candidate
+tracker streams. The two captures ask the user to move one hand at a time, so
+serial assignment is based on motion correlation and remains correct when
+tracker enumeration order is reversed. A capture runtime can emit repeated
+prefix snapshots; every snapshot obtains total rotation, axis coverage,
+validity, progress, and separate rotation/position readiness directly from
+`MotionCoverageAnalyzer`. Per-hand pipeline results are then
+reported through the named analysis states. A rejected rotation returns to
+`Ready` with a retry diagnostic. Missing controller position or poor
+translation observability is instead a successful Auto result with a stored
+zero translation and an explicit `rotation_only_fallback` reason.
+
+On later runs, the backend loads the profile store, matches one schema-1
+profile for each detected tracker serial and semantic hand, and takes the
+short path `Ready -> ApplyProfile -> Active`. Capture and calibration are
+skipped only when the pair is complete and `RecalibrationEvaluator` accepts the
+runtime observations: explicit request, observed hand association, mount-moved
+flag, validation threshold, controller runtime/model, expected schema, and
+transform convention. A recognized stored-schema mismatch takes the capture
+path and atomically replaces the incompatible store after both new profiles
+validate; malformed JSON remains a fail-safe diagnostic. Apply remains behind
+the runtime port. `ScriptedCalibrationWizardRuntime` is the only Milestone 3
+runtime composition implemented here: it records deterministic fake capture
+and apply operations without opening SteamVR, OpenVR, VMT, or host settings.
+There is no production SteamVR two-hand wizard adapter yet, so live guided
+capture and two-hand application remain future Windows integration and
+verification work rather than currently runnable checks.
+
+Any future live `ApplyProfilesAsync` implementation must treat the two hands as
+one all-or-cleanup operation: it may report `Active` only after both apply, and
+must remove newly applied state if either hand fails. Persistent rollback,
+watchdog recovery, and crash recovery remain Milestone 4 scope and are not
+implemented by the Milestone 3 scripted runtime.
+
+The repository-root scripted command is:
+
+```bash
+dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>
+```
+
+It uses deterministic fake controllers and fake tracker serials, intentionally
+reverses tracker enumeration, selects full 6DoF for the left hand and normal
+rotation-only fallback for the position-unavailable right hand, writes two
+profiles, and reloads them on the next invocation without native runtime calls.
+This is the implemented Milestone 3 CLI; it is not a live hardware command.
 
 The complete product requirements remain in the [project
 specification](specification.md); the implemented calibration details are in

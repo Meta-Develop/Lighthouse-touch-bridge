@@ -227,6 +227,93 @@ heading, environment summary, result, redacted evidence location, and any
 follow-up issue. If a runtime or binding update changes enumeration, pose, or
 timestamp semantics, reopen the affected checks.
 
+## Milestone 3 two-hand calibration wizard
+
+Milestone 3 adds deterministic Linux coverage for the UI-neutral wizard state
+machine, reversed-order serial association, guided coverage metrics, the real
+lag/alignment/Auto solver pipeline, mixed per-hand model selection, schema-1
+profile persistence, and serial-and-hand reload. The scripted command uses
+only fake pose streams and fake serials:
+
+```bash
+dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json>
+```
+
+This evidence is not a live SteamVR result. In particular, scripted dependency
+and apply messages do not show that ALVR exposes original Touch poses, that VMT
+accepts both transforms, or that SteamVR activates both overrides. Do not mark
+any item below complete from Linux tests alone. Milestone 3 does not yet include
+a production `ICalibrationWizardRuntime` implementation for SteamVR capture and
+two-hand VMT/override application. The items below are acceptance requirements
+for that future Windows composition, not checks currently runnable through
+`wizard-demo`.
+
+### Guided capture and association
+
+- [ ] **Run the full two-hand guided gesture.** With both original Touch poses
+  visible and overrides released, complete the left-only then right-only
+  pitch, yaw, roll, and moderate-translation prompts. Confirm coverage updates
+  remain responsive, distinguish orientation/tracking validity from position
+  validity, and do not accept elapsed time alone as adequate excitation.
+
+- [ ] **Associate by motion rather than device order.** Start SteamVR with the
+  trackers enumerated in each order, repeat the two isolated gestures, and
+  confirm the same stable serial remains assigned to each physical hand.
+  Record redacted per-candidate correlation, lag, rejection, and selected
+  serial evidence. Move both trackers together and induce weak motion in
+  separate runs; both cases must stop at `Ready` with an ambiguity or weak-
+  correlation diagnostic instead of guessing.
+
+- [ ] **Exercise validity loss during capture.** Occlude one Touch controller,
+  occlude one tracker, and disconnect a candidate in separate runs. Confirm
+  orientation and position validity fall independently, invalid samples do not
+  inflate coverage, and disconnected or repeatedly invalid trackers cannot be
+  assigned.
+
+### Per-hand solve, selection, and quality
+
+- [ ] **Validate a full 6DoF hand.** Capture observable multi-axis motion with
+  reliable Touch position. Confirm the reported lag and accepted rotation,
+  translation observability, physically plausible translation, held-out
+  position improvement, full-6DoF selection reason, and quality block. Compare
+  the applied lever arm with the measured mount at varied orientations.
+
+- [ ] **Validate normal rotation-only fallback.** Hide or invalidate Touch
+  position while retaining tracked orientation, then repeat with deliberately
+  translation-degenerate motion. Confirm both runs accept rotation, report
+  distinct missing-position or poor-observability reasons, save exactly zero
+  translation, and continue to apply rather than label the fallback a failure.
+
+- [ ] **Reject bad rotation separately.** Use static, single-axis, and
+  deliberately corrupted orientation captures. Confirm each fails before
+  translation/apply, returns to `Ready`, preserves the prior active profiles,
+  and gives a direct retry diagnostic.
+
+### Persistence, apply, and reuse
+
+- [ ] **Persist and apply both hands.** Complete one valid first run and inspect
+  a redacted profile store. Confirm schema version 1, exact semantic hand and
+  tracker serial keys, Auto policy, selected mode and reason, `T_T_C` in meters
+  and normalized `XYZW`, lag, quality, and UTC creation time for each hand.
+  Confirm both VMT transforms and intended hand overrides become active only
+  after both profiles validate and save.
+
+- [ ] **Reuse profiles after enumeration churn and restart.** Restart LTB and
+  then SteamVR, reconnect trackers in the opposite order, and confirm exact
+  serial-and-hand matching takes the no-capture apply path. A transient OpenVR
+  index change must not affect selection. Swap the physical hand association
+  or remove one stored side and confirm reuse is refused and recalibration is
+  requested.
+
+- [ ] **Exercise profile and apply failures safely.** Test an unsupported
+  schema, malformed/truncated store, denied save, one rejected profile, and a
+  two-hand apply failure. Confirm bounded diagnostics, no partial store is
+  accepted, the prior file remains recoverable, and neither hand is left with
+  a newly active stale override. The future live `ApplyProfilesAsync` must be
+  all-or-cleanup when either hand fails. Persistent rollback, process-crash
+  recovery, and watchdog recovery remain Milestone 4 rather than requirements
+  implemented by the scripted Milestone 3 runtime.
+
 ## Milestone 2 one-hand live bridge
 
 Milestone 2 adds deterministic Linux coverage for OSC encoding, the
