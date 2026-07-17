@@ -15,6 +15,15 @@ public interface RecordingCaptureClock
     void Restart();
 
     void WaitUntil(double targetElapsedSeconds);
+
+    void WaitUntil(
+        double targetElapsedSeconds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        WaitUntil(targetElapsedSeconds);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
 }
 
 /// <summary>Stopwatch-backed capture scheduler for live recording.</summary>
@@ -26,7 +35,12 @@ public sealed class StopwatchRecordingCaptureClock : RecordingCaptureClock
 
     public void Restart() => _stopwatch.Restart();
 
-    public void WaitUntil(double targetElapsedSeconds)
+    public void WaitUntil(double targetElapsedSeconds) =>
+        WaitUntil(targetElapsedSeconds, CancellationToken.None);
+
+    public void WaitUntil(
+        double targetElapsedSeconds,
+        CancellationToken cancellationToken)
     {
         if (!double.IsFinite(targetElapsedSeconds) || targetElapsedSeconds < 0d)
         {
@@ -37,6 +51,7 @@ public sealed class StopwatchRecordingCaptureClock : RecordingCaptureClock
 
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var remainingSeconds = targetElapsedSeconds - ElapsedSeconds;
             if (remainingSeconds <= 0d)
             {
@@ -45,7 +60,11 @@ public sealed class StopwatchRecordingCaptureClock : RecordingCaptureClock
 
             if (remainingSeconds > 0.002d)
             {
-                Thread.Sleep(TimeSpan.FromSeconds(remainingSeconds - 0.001d));
+                if (cancellationToken.WaitHandle.WaitOne(
+                        TimeSpan.FromSeconds(remainingSeconds - 0.001d)))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
             }
             else
             {
@@ -60,6 +79,70 @@ public sealed record PoseRecordingCaptureResult(
     PoseRecording Recording,
     int SamplingTicks,
     double CaptureElapsedSeconds);
+
+/// <summary>One recorded source sample observed after a complete capture tick.</summary>
+public readonly record struct PoseRecordingCaptureSample
+{
+    public PoseRecordingCaptureSample(
+        PoseStreamIdentity identity,
+        RecordedPoseSample sample)
+    {
+        Identity = identity ?? throw new ArgumentNullException(nameof(identity));
+        Sample = sample;
+    }
+
+    public PoseStreamIdentity Identity { get; }
+
+    public RecordedPoseSample Sample { get; }
+}
+
+/// <summary>
+/// Immutable observation emitted after every source has been sampled and
+/// appended for one capture tick. <see cref="SamplingTick"/> is one-based.
+/// </summary>
+public sealed record PoseRecordingCaptureTick
+{
+    private readonly IReadOnlyList<PoseRecordingCaptureSample> _samples;
+
+    public PoseRecordingCaptureTick(
+        int samplingTick,
+        double captureElapsedSeconds,
+        IEnumerable<PoseRecordingCaptureSample> samples)
+    {
+        if (samplingTick <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(samplingTick),
+                "Capture sampling tick must be greater than zero.");
+        }
+
+        if (!double.IsFinite(captureElapsedSeconds) || captureElapsedSeconds < 0d)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(captureElapsedSeconds),
+                "Capture elapsed time must be finite and non-negative.");
+        }
+
+        ArgumentNullException.ThrowIfNull(samples);
+        var snapshot = samples.ToArray();
+        if (snapshot.Length == 0)
+        {
+            throw new ArgumentException(
+                "A capture tick observation must contain at least one sample.",
+                nameof(samples));
+        }
+
+        SamplingTick = samplingTick;
+        CaptureElapsedSeconds = captureElapsedSeconds;
+        _samples = Array.AsReadOnly(snapshot);
+    }
+
+    public int SamplingTick { get; }
+
+    public double CaptureElapsedSeconds { get; }
+
+    public IReadOnlyList<PoseRecordingCaptureSample> Samples => _samples;
+}
 
 /// <summary>
 /// Runtime-neutral synchronized recorder over the narrow controller and
@@ -81,7 +164,29 @@ public static class PoseRecordingCapture
         IEnumerable<InputControllerPoseSource> controllerPoseSources,
         double durationSeconds,
         double sampleRateHz,
-        RecordingCaptureClock clock)
+        RecordingCaptureClock clock) =>
+        Capture(
+            trackedPoseSources,
+            controllerPoseSources,
+            durationSeconds,
+            sampleRateHz,
+            clock,
+            CancellationToken.None);
+
+    /// <summary>
+    /// Captures with cooperative cancellation and an optional completed-tick
+    /// observer. Cancellation is checked before a tick begins and before and
+    /// after scheduler waits, so an observed cancellation never starts another
+    /// sampling pass.
+    /// </summary>
+    public static PoseRecordingCaptureResult Capture(
+        IEnumerable<TrackedPoseSource> trackedPoseSources,
+        IEnumerable<InputControllerPoseSource> controllerPoseSources,
+        double durationSeconds,
+        double sampleRateHz,
+        RecordingCaptureClock clock,
+        CancellationToken cancellationToken,
+        Action<PoseRecordingCaptureTick>? observeTick = null)
     {
         ArgumentNullException.ThrowIfNull(trackedPoseSources);
         ArgumentNullException.ThrowIfNull(controllerPoseSources);
@@ -115,30 +220,40 @@ public static class PoseRecordingCapture
             .Concat(controllers.Select(source => CaptureStream.ForController(source, controllers.Length)))
             .ToArray();
 
+        cancellationToken.ThrowIfCancellationRequested();
         clock.Restart();
         var samplingTicks = 0;
         for (long tick = 0; ;)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var targetSeconds = tick / sampleRateHz;
             if (targetSeconds >= durationSeconds)
             {
                 break;
             }
 
-            clock.WaitUntil(targetSeconds);
+            clock.WaitUntil(targetSeconds, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             var elapsedSeconds = clock.ElapsedSeconds;
             if (elapsedSeconds >= durationSeconds)
             {
                 break;
             }
 
-            foreach (var stream in streams)
+            cancellationToken.ThrowIfCancellationRequested();
+            var observedSamples = new PoseRecordingCaptureSample[streams.Length];
+            for (var streamIndex = 0; streamIndex < streams.Length; streamIndex++)
             {
-                stream.ReadAndAppend();
+                observedSamples[streamIndex] = streams[streamIndex].ReadAndAppend();
             }
 
             samplingTicks = checked(samplingTicks + 1);
             elapsedSeconds = clock.ElapsedSeconds;
+            observeTick?.Invoke(new PoseRecordingCaptureTick(
+                samplingTicks,
+                elapsedSeconds,
+                observedSamples));
+            cancellationToken.ThrowIfCancellationRequested();
             do
             {
                 tick = checked(tick + 1);
@@ -146,7 +261,9 @@ public static class PoseRecordingCapture
             while (tick / sampleRateHz <= elapsedSeconds);
         }
 
-        clock.WaitUntil(durationSeconds);
+        cancellationToken.ThrowIfCancellationRequested();
+        clock.WaitUntil(durationSeconds, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         return new PoseRecordingCaptureResult(
             new PoseRecording(streams.Select(stream => stream.Buffer.Snapshot())),
             samplingTicks,
@@ -215,8 +332,12 @@ public static class PoseRecordingCapture
                     $"SteamVR {source.Device.ControllerRole} controller"),
                 source.ReadPose);
 
-        public void ReadAndAppend() =>
-            Buffer.Append(_readPose().ToRecordedPoseSample());
+        public PoseRecordingCaptureSample ReadAndAppend()
+        {
+            var sample = _readPose().ToRecordedPoseSample();
+            Buffer.Append(sample);
+            return new PoseRecordingCaptureSample(Buffer.Identity, sample);
+        }
 
         private static string StreamId(string prefix, string stableDeviceId, int sourceCount) =>
             sourceCount == 1 ? prefix : $"{prefix}:{stableDeviceId}";

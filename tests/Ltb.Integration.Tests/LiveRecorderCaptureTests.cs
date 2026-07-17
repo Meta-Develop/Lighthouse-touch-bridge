@@ -175,6 +175,83 @@ public sealed class LiveRecorderCaptureTests
     }
 
     [Fact]
+    public void CompletedTickObservationsAreDeterministicAndContainEveryRecordedSample()
+    {
+        var trackerSamples = Samples(10d);
+        var controllerSamples = Samples(20d);
+        var clock = new FakeRecordingCaptureClock();
+        var observations = new List<PoseRecordingCaptureTick>();
+
+        var capture = PoseRecordingCapture.Capture(
+            [new SimulatedTrackedPoseSource(Tracker("tracker-one", 1), trackerSamples)],
+            [
+                new SimulatedInputControllerPoseSource(
+                    Controller("controller-one", 2, SteamVrControllerRole.LeftHand),
+                    controllerSamples),
+            ],
+            durationSeconds: 1d,
+            sampleRateHz: 3d,
+            clock,
+            CancellationToken.None,
+            observations.Add);
+
+        Assert.Equal(3, capture.SamplingTicks);
+        Assert.Equal([1, 2, 3], observations.Select(observation => observation.SamplingTick));
+        Assert.Equal(
+            [0d, 1d / 3d, 2d / 3d],
+            observations.Select(observation => observation.CaptureElapsedSeconds));
+
+        for (var tickIndex = 0; tickIndex < observations.Count; tickIndex++)
+        {
+            var observation = observations[tickIndex];
+            Assert.Equal(["tracker", "controller"],
+                observation.Samples.Select(sample => sample.Identity.StreamId));
+            Assert.Equal(
+                trackerSamples[tickIndex].ToRecordedPoseSample(),
+                observation.Samples[0].Sample);
+            Assert.Equal(
+                controllerSamples[tickIndex].ToRecordedPoseSample(),
+                observation.Samples[1].Sample);
+            Assert.Equal(
+                capture.Recording.Streams.Select(stream => stream.Identity),
+                observation.Samples.Select(sample => sample.Identity));
+        }
+    }
+
+    [Fact]
+    public void CancellationAfterCompletedTickStopsBeforeAnyAdditionalSamples()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var clock = new FakeRecordingCaptureClock();
+        var observations = new List<PoseRecordingCaptureTick>();
+
+        var exception = Assert.Throws<OperationCanceledException>(() =>
+            PoseRecordingCapture.Capture(
+                [new SimulatedTrackedPoseSource(Tracker("tracker-one", 1), [Sample(1d)])],
+                [
+                    new SimulatedInputControllerPoseSource(
+                        Controller("controller-one", 2, SteamVrControllerRole.LeftHand),
+                        [Sample(2d)]),
+                ],
+                durationSeconds: 1d,
+                sampleRateHz: 3d,
+                clock,
+                cancellation.Token,
+                observation =>
+                {
+                    observations.Add(observation);
+                    cancellation.Cancel();
+                }));
+
+        Assert.Equal(cancellation.Token, exception.CancellationToken);
+        var completedTick = Assert.Single(observations);
+        Assert.Equal(1, completedTick.SamplingTick);
+        Assert.Equal(["tracker", "controller"],
+            completedTick.Samples.Select(sample => sample.Identity.StreamId));
+        Assert.Equal([0d], clock.WaitTargets);
+    }
+
+    [Fact]
     public void OnePairCaptureKeepsLegacyStreamIds()
     {
         var clock = new FakeRecordingCaptureClock();
