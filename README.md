@@ -40,4 +40,4 @@ See the [complete specification](docs/specification.md) for product requirements
 
 ## License
 
-Lighthouse Touch Bridge is licensed under the [MIT License](LICENSE).
+Lighthouse Touch Bridge is licensed under the [GNU General Public License v3.0 or later](LICENSE).

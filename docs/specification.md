@@ -7,7 +7,7 @@
 **Short name:** LTB
 **Target platform:** Windows 10/11, SteamVR
 **Initial target setup:** Bigscreen Beyond 2/2e, Meta Quest 2 with Quest 2 Touch controllers, two Lighthouse-tracked devices, ALVR, and Virtual Motion Tracker (VMT)
-**Recommended license:** MIT
+**Recommended license:** GPL-3.0-or-later
 
 ---
 
