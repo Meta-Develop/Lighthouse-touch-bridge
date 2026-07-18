@@ -1,8 +1,8 @@
-namespace Ltb.App;
+namespace Ltb.Alvr;
 
-internal sealed record AlvrAvailabilitySnapshot(bool IsAvailable, string Diagnostic);
+public sealed record AlvrAvailabilitySnapshot(bool IsAvailable, string Diagnostic);
 
-internal interface IAlvrAvailabilityProbe
+public interface IAlvrAvailabilityProbe
 {
     Task<AlvrAvailabilitySnapshot> ProbeAsync(CancellationToken cancellationToken);
 }
@@ -11,7 +11,7 @@ internal interface IAlvrAvailabilityProbe
 /// Proves that the local ALVR dashboard API is serving a version response. The
 /// default URI uses ALVR's default web-server port and is loopback-only.
 /// </summary>
-internal sealed class AlvrLocalDashboardProbe : IAlvrAvailabilityProbe, IDisposable
+public sealed class AlvrLocalDashboardProbe : IAlvrAvailabilityProbe, IDisposable
 {
     internal static readonly Uri DefaultBaseAddress = new("http://127.0.0.1:8082/");
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromMilliseconds(500);
