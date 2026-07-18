@@ -413,22 +413,31 @@ provenance and restart behavior remain explicit acceptance items in
 Milestone 2 adds no GUI framework. Milestone 4 retains the same platform
 boundaries and composes them through the daily-use coordinator described below.
 
-## Application boundary and open UI decision
+## Application boundary and desktop UI decision
 
-`Ltb.App` remains a console composition and command-wiring boundary. No Windows
-UI framework has been selected, and Milestones 1-3 introduce no WinUI, WPF, or
-Avalonia dependency. A future framework choice must be recorded here before a
-UI dependency is added.
+`Ltb.App` remains a console composition and command-wiring boundary, and
+Milestones 1-3 introduced no UI dependency there. Avalonia 11 is the selected
+desktop UI framework, recorded here before any UI dependency is added. The
+owner directed the choice to minimize OS dependency: Avalonia is
+cross-platform, so the GUI is developed and headless-tested on Linux and
+cross-published to win-x64, and specification section 22 lists it among the
+candidate frameworks.
+
+The GUI lives in a separate `Ltb.Gui` project as a thin view over the existing
+UI-neutral ports: the `TwoHandCalibrationWizard` state machine, its
+`ICalibrationWizardOutput` events, and `ILtbLogSink` structured logs. View
+code contains rendering and binding only; sequencing, device, calibration, and
+persistence policy stay in the existing wizard, runtime, and backend types.
+`Ltb.Calibration` and `Ltb.Configuration` remain free of UI dependencies.
 
 ## Milestone 3 two-hand wizard boundary
 
 Milestone 3 adds a UI-neutral `TwoHandCalibrationWizard` state machine in
 `Ltb.App`. It emits state, capture-progress, diagnostic, quality, and profile
 events through `ICalibrationWizardOutput`; the console renderer is one consumer
-of those events. A future desktop UI can implement the same output and runtime
-ports without moving device, calibration, or persistence policy into view
-callbacks. The Windows UI framework decision therefore remains deliberately
-open.
+of those events. A desktop UI can implement the same output and runtime ports
+without moving device, calibration, or persistence policy into view callbacks;
+the Avalonia decision above binds the GUI to exactly these ports.
 
 ```text
 ScriptedCalibrationWizardRuntime     production OpenVR/VMT/settings adapters
