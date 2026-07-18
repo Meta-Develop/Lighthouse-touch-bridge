@@ -184,7 +184,7 @@ if [[ "$actual_openvr_hash" != "$expected_openvr_hash" ]]; then
 fi
 
 install -m 0644 "$repo_root/LICENSE" "$package_root/LICENSE.txt"
-for document_name in setup troubleshooting architecture calibration windows-verification specification; do
+for document_name in setup troubleshooting architecture calibration driver-evaluation windows-verification specification; do
   install -m 0644 \
     "$repo_root/docs/$document_name.md" \
     "$package_root/docs/$document_name.md"
@@ -292,6 +292,7 @@ required = {
     root + "docs/troubleshooting.md",
     root + "docs/architecture.md",
     root + "docs/calibration.md",
+    root + "docs/driver-evaluation.md",
     root + "docs/windows-verification.md",
     root + "docs/specification.md",
 }
