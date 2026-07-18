@@ -140,10 +140,6 @@ internal sealed class OneHandBridgeCoordinator
     private static readonly PoseValidity RequiredTrackerValidity =
         PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid;
 
-    private const double MaximumPoseComparisonSkewSeconds = 0.05d;
-    private const float MaximumVmtPositionErrorMeters = 0.15f;
-    private const float MaximumVmtRotationErrorRadians = MathF.PI / 9f;
-
     private readonly IOneHandBridgeRuntime _runtime;
     private readonly IOneHandBridgeVmtController _vmt;
     private readonly IOneHandBridgeOverrideController _overrides;
@@ -255,10 +251,11 @@ internal sealed class OneHandBridgeCoordinator
             EnsureHealthyPoseSample(enableTrackerSample, staleAfter, "Tracker");
             var enableVmtSample = vmtPoseSource.ReadPose();
             EnsureHealthyPoseSample(enableVmtSample, staleAfter, "VMT pose source");
-            EnsureVmtPoseMatchesMount(
+            VmtPoseMatchSafety.EnsureVmtPoseMatchesMount(
                 enableTrackerSample,
                 enableVmtSample,
-                profile.TrackerToController);
+                profile.TrackerToController,
+                static message => new OneHandBridgeHealthException(message));
             EnsureActiveDeviceIdentities(
                 tracker,
                 trackerSource,
@@ -404,7 +401,11 @@ internal sealed class OneHandBridgeCoordinator
                 $"VMT pose monitor failed: {exception.Message}", exception);
         }
 
-        EnsureVmtPoseMatchesMount(trackerSample, vmtSample, mount);
+        VmtPoseMatchSafety.EnsureVmtPoseMatchesMount(
+            trackerSample,
+            vmtSample,
+            mount,
+            static message => new OneHandBridgeHealthException(message));
         EnsureActiveDeviceIdentities(
             tracker,
             trackerSource,
@@ -784,41 +785,6 @@ internal sealed class OneHandBridgeCoordinator
         expected.ControllerRole == actual.ControllerRole &&
         expected.Metadata == actual.Metadata &&
         expected.Capabilities == actual.Capabilities;
-
-    private static void EnsureVmtPoseMatchesMount(
-        PoseSourceSample trackerSample,
-        PoseSourceSample vmtSample,
-        RigidTransform mount)
-    {
-        var skewSeconds = Math.Abs(
-            trackerSample.MonotonicHostTimeSeconds -
-            vmtSample.MonotonicHostTimeSeconds);
-        if (!double.IsFinite(skewSeconds) ||
-            skewSeconds > MaximumPoseComparisonSkewSeconds)
-        {
-            throw new OneHandBridgeHealthException(
-                $"Tracker/VMT pose samples are not comparable in time (skew {skewSeconds:R}s).");
-        }
-
-        var expected = CoordinateConventions.ComposeRuntimeOutput(
-            trackerSample.Pose,
-            mount);
-        var positionError = Vector3.Distance(
-            expected.TranslationMeters,
-            vmtSample.Pose.TranslationMeters);
-        var quaternionDot = Math.Clamp(
-            MathF.Abs(Quaternion.Dot(expected.Rotation, vmtSample.Pose.Rotation)),
-            0f,
-            1f);
-        var rotationError = 2f * MathF.Acos(quaternionDot);
-        if (positionError > MaximumVmtPositionErrorMeters ||
-            rotationError > MaximumVmtRotationErrorRadians)
-        {
-            throw new OneHandBridgeHealthException(
-                "VMT output pose does not match tracker * mount " +
-                $"(position error {positionError:R}m, rotation error {rotationError:R}rad).");
-        }
-    }
 
     private static SteamVrDeviceDescriptor SelectTracker(
         IReadOnlyList<SteamVrDeviceDescriptor> devices,

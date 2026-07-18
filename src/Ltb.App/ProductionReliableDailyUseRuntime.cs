@@ -14,6 +14,11 @@ namespace Ltb.App;
 /// owns one OpenVR session lifecycle and one VMT response pump for both hands.
 /// Every profile-application handle captures the current transient descriptors;
 /// reconnect creates new handles after stable-serial matching succeeds again.
+/// Mutable state (_applications, _currentDevices, _session, _lastAlvrSnapshot,
+/// _lastAlvrProbeTimestamp, _vmtStarted) is unsynchronized: an instance must
+/// only be driven from one logical async flow at a time. The wizard path shares
+/// one instance between the wizard run and the subsequent monitor lease, but
+/// strictly sequentially, never concurrently.
 /// </summary>
 internal sealed class ProductionReliableDailyUseRuntime :
     IReliableDailyUseRuntime,
@@ -27,10 +32,6 @@ internal sealed class ProductionReliableDailyUseRuntime :
 
     private static readonly PoseValidity RequiredPoseValidity =
         PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid;
-
-    private const double MaximumPoseComparisonSkewSeconds = 0.05d;
-    private const float MaximumVmtPositionErrorMeters = 0.15f;
-    private const float MaximumVmtRotationErrorRadians = MathF.PI / 9f;
 
     private readonly string _profileStorePath;
     private readonly IAlvrAvailabilityProbe _alvr;
@@ -481,10 +482,11 @@ internal sealed class ProductionReliableDailyUseRuntime :
         var vmtSample = vmtSource.ReadPose();
         EnsureHealthyPoseSample(trackerSample, "Physical tracker");
         EnsureHealthyPoseSample(vmtSample, "VMT pose source");
-        EnsureVmtPoseMatchesMount(
+        VmtPoseMatchSafety.EnsureVmtPoseMatchesMount(
             trackerSample,
             vmtSample,
-            application.Profile.TrackerToController);
+            application.Profile.TrackerToController,
+            static message => new InvalidOperationException(message));
         var postActivationDevices = session.EnumerateDevices();
         EnsureCurrentDescriptor(postActivationDevices, state.Tracker, "physical tracker");
         EnsureCurrentDescriptor(postActivationDevices, state.Controller, "Touch input controller");
@@ -699,10 +701,11 @@ internal sealed class ProductionReliableDailyUseRuntime :
                 EnsureHealthyPoseSample(trackerSample, "Physical tracker");
                 var vmtSample = state.VmtSource.ReadPose();
                 EnsureHealthyPoseSample(vmtSample, "VMT pose source");
-                EnsureVmtPoseMatchesMount(
+                VmtPoseMatchSafety.EnsureVmtPoseMatchesMount(
                     trackerSample,
                     vmtSample,
-                    application.Profile.TrackerToController);
+                    application.Profile.TrackerToController,
+                    static message => new InvalidOperationException(message));
             }
             catch (Exception exception)
             {
@@ -1098,37 +1101,6 @@ internal sealed class ProductionReliableDailyUseRuntime :
         catch
         {
             return false;
-        }
-    }
-
-    private static void EnsureVmtPoseMatchesMount(
-        PoseSourceSample trackerSample,
-        PoseSourceSample vmtSample,
-        RigidTransform mount)
-    {
-        var skew = Math.Abs(
-            trackerSample.MonotonicHostTimeSeconds - vmtSample.MonotonicHostTimeSeconds);
-        if (!double.IsFinite(skew) || skew > MaximumPoseComparisonSkewSeconds)
-        {
-            throw new InvalidOperationException(
-                $"Tracker/VMT pose samples are not comparable in time (skew {skew:R}s).");
-        }
-
-        var expected = CoordinateConventions.ComposeRuntimeOutput(trackerSample.Pose, mount);
-        var positionError = Vector3.Distance(
-            expected.TranslationMeters,
-            vmtSample.Pose.TranslationMeters);
-        var quaternionDot = Math.Clamp(
-            MathF.Abs(Quaternion.Dot(expected.Rotation, vmtSample.Pose.Rotation)),
-            0f,
-            1f);
-        var rotationError = 2f * MathF.Acos(quaternionDot);
-        if (positionError > MaximumVmtPositionErrorMeters ||
-            rotationError > MaximumVmtRotationErrorRadians)
-        {
-            throw new InvalidOperationException(
-                "VMT output pose does not match tracker * mount " +
-                $"(position error {positionError:R}m, rotation error {rotationError:R}rad).");
         }
     }
 
