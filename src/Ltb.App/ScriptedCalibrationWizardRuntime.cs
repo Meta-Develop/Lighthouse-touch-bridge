@@ -8,7 +8,7 @@ namespace Ltb.App;
 /// Deterministic Linux-safe fake device session used by the documented wizard
 /// demo and integration tests. It makes no OpenVR, VMT, or settings calls.
 /// </summary>
-internal sealed class ScriptedCalibrationWizardRuntime : ICalibrationWizardRuntime
+public sealed class ScriptedCalibrationWizardRuntime : ICalibrationWizardRuntime
 {
     public const string LeftControllerSerial = "CTRL-TEST-L";
     public const string RightControllerSerial = "CTRL-TEST-R";
