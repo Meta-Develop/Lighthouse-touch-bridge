@@ -47,7 +47,7 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
         var createdUtc = new DateTimeOffset(2026, 7, 18, 4, 5, 6, TimeSpan.Zero);
         try
         {
-            var firstOutput = new TranscriptWizardOutput();
+            using var firstOutput = new TranscriptWizardOutput();
             var firstRuntime = new ScriptedCalibrationWizardRuntime(firstOutput);
             var backend = new FileCalibrationWizardBackend(
                 profilePath,
@@ -284,7 +284,7 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
     }
 }
 
-internal sealed class TranscriptWizardOutput : ICalibrationWizardOutput
+internal sealed class TranscriptWizardOutput : ICalibrationWizardOutput, IDisposable
 {
     private readonly StringWriter _writer = new(System.Globalization.CultureInfo.InvariantCulture);
     private readonly ConsoleCalibrationWizardOutput _console;
@@ -308,4 +308,6 @@ internal sealed class TranscriptWizardOutput : ICalibrationWizardOutput
     }
 
     public void WriteLine(string message) => _console.WriteLine(message);
+
+    public void Dispose() => _writer.Dispose();
 }

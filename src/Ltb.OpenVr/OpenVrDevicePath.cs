@@ -37,7 +37,7 @@ internal static class OpenVrDevicePath
         }
         else
         {
-            if (registeredDeviceType.StartsWith("/", StringComparison.Ordinal))
+            if (registeredDeviceType.StartsWith('/'))
             {
                 return false;
             }

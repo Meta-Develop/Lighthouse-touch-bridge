@@ -17,6 +17,12 @@ csharp_style_var_for_built_in_types = false:suggestion
 csharp_style_var_when_type_is_apparent = true:suggestion
 csharp_style_var_elsewhere = false:suggestion
 
+# CA1859: concrete-return-type perf hint conflicts with the deliberate IReadOnly* API shapes.
+dotnet_diagnostic.CA1859.severity = suggestion
+# CA1715: docs/specification.md section 22 deliberately requires generic non-prefixed internal
+# interface names such as InputControllerPoseSource/TrackedPoseSource to avoid hardware lock-in.
+dotnet_diagnostic.CA1715.severity = suggestion
+
 [*.{json,yml,yaml}]
 indent_size = 2
 

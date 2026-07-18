@@ -210,36 +210,38 @@ public sealed record CalibrationReport(CalibrationResult Result)
         var motion = Result.Motion;
         var builder = new StringBuilder();
         builder.AppendLine("Lighthouse Touch Bridge - Offline Calibration Report");
-        builder.AppendLine($"Requested policy: {Result.RequestedPolicy}");
-        builder.AppendLine($"Selected model: {Result.SelectedModel}");
-        builder.AppendLine($"Selection reason: {Result.SelectionReason}");
-        builder.AppendLine($"Samples: {Result.SampleCount} total, {Result.RotationValidSampleCount} orientation-valid, {Result.PositionValidSampleCount} position-valid");
-        builder.AppendLine($"Relative motions: {Result.MotionPairCount} solve, {Result.ValidationMotionPairCount} validation");
-        builder.AppendLine($"Rotation observable: {motion.RotationObservable} ({motion.RotationDegeneracy})");
-        builder.AppendLine($"Motion-axis coverage: {motion.RotationAxisCoverage.ToString("F4", culture)}");
-        builder.AppendLine($"Rotation RMS / p95: {quality.RotationRmsDegrees.ToString("F4", culture)} deg / {quality.RotationPercentileDegrees.ToString("F4", culture)} deg");
-        builder.AppendLine($"Rotation validation inliers: {FormatRatio(quality.RotationInlierRatio, culture)}");
-        builder.AppendLine($"Translation observable: {motion.TranslationObservable} ({motion.TranslationDegeneracy})");
-        builder.AppendLine($"Translation condition: {FormatFinite(motion.TranslationConditionNumber, "F3", culture)}");
-        builder.AppendLine($"Translation magnitude: {(quality.TranslationMagnitudeMeters * 1000d).ToString("F3", culture)} mm");
-        builder.AppendLine($"Translation validation inliers: {FormatRatio(quality.TranslationInlierRatio, culture)}");
-        builder.AppendLine($"Translation split disagreement: {FormatFinite(quality.TranslationSplitDisagreementMillimeters, "F3", culture)} mm");
+        builder.AppendLine(culture, $"Requested policy: {Result.RequestedPolicy}");
+        builder.AppendLine(culture, $"Selected model: {Result.SelectedModel}");
+        builder.AppendLine(culture, $"Selection reason: {Result.SelectionReason}");
+        builder.AppendLine(culture, $"Samples: {Result.SampleCount} total, {Result.RotationValidSampleCount} orientation-valid, {Result.PositionValidSampleCount} position-valid");
+        builder.AppendLine(culture, $"Relative motions: {Result.MotionPairCount} solve, {Result.ValidationMotionPairCount} validation");
+        builder.AppendLine(culture, $"Rotation observable: {motion.RotationObservable} ({motion.RotationDegeneracy})");
+        builder.AppendLine(culture, $"Motion-axis coverage: {motion.RotationAxisCoverage.ToString("F4", culture)}");
+        builder.AppendLine(culture, $"Rotation RMS / p95: {quality.RotationRmsDegrees.ToString("F4", culture)} deg / {quality.RotationPercentileDegrees.ToString("F4", culture)} deg");
+        builder.AppendLine(culture, $"Rotation validation inliers: {FormatRatio(quality.RotationInlierRatio, culture)}");
+        builder.AppendLine(culture, $"Translation observable: {motion.TranslationObservable} ({motion.TranslationDegeneracy})");
+        builder.AppendLine(culture, $"Translation condition: {FormatFinite(motion.TranslationConditionNumber, "F3", culture)}");
+        builder.AppendLine(culture, $"Translation magnitude: {(quality.TranslationMagnitudeMeters * 1000d).ToString("F3", culture)} mm");
+        builder.AppendLine(culture, $"Translation validation inliers: {FormatRatio(quality.TranslationInlierRatio, culture)}");
+        builder.AppendLine(culture, $"Translation split disagreement: {FormatFinite(quality.TranslationSplitDisagreementMillimeters, "F3", culture)} mm");
 
         if (quality.PositionRmsMillimeters is { } positionRms &&
             quality.PositionPercentileMillimeters is { } positionPercentile)
         {
-            builder.AppendLine($"Full-model position RMS / p95: {positionRms.ToString("F3", culture)} mm / {positionPercentile.ToString("F3", culture)} mm");
+            builder.AppendLine(culture, $"Full-model position RMS / p95: {positionRms.ToString("F3", culture)} mm / {positionPercentile.ToString("F3", culture)} mm");
         }
 
         if (quality.RotationOnlyPositionRmsMillimeters is { } rotationOnlyRms)
         {
-            builder.AppendLine($"Rotation-only position RMS: {rotationOnlyRms.ToString("F3", culture)} mm");
+            builder.AppendLine(culture, $"Rotation-only position RMS: {rotationOnlyRms.ToString("F3", culture)} mm");
         }
 
         var transform = Result.TrackerToController;
         builder.AppendLine(
+            culture,
             $"X_mount translation m: [{transform.TranslationMeters.X.ToString("F6", culture)}, {transform.TranslationMeters.Y.ToString("F6", culture)}, {transform.TranslationMeters.Z.ToString("F6", culture)}]");
         builder.Append(
+            culture,
             $"X_mount rotation XYZW: [{transform.Rotation.X.ToString("F8", culture)}, {transform.Rotation.Y.ToString("F8", culture)}, {transform.Rotation.Z.ToString("F8", culture)}, {transform.Rotation.W.ToString("F8", culture)}]");
         return builder.ToString();
     }

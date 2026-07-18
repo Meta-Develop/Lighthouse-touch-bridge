@@ -15,10 +15,7 @@ internal sealed class TwoHandProfileApplicationTransaction
         TimeSpan cleanupTimeout)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
-        if (cleanupTimeout <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(cleanupTimeout));
-        }
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(cleanupTimeout, TimeSpan.Zero);
 
         _cleanupTimeout = cleanupTimeout;
     }

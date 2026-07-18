@@ -47,7 +47,7 @@ public static class RecordingCalibrationReplay
         ArgumentNullException.ThrowIfNull(options);
         if (!Enum.IsDefined(options.CalibrationPolicy))
         {
-            throw new ArgumentOutOfRangeException(nameof(options.CalibrationPolicy));
+            throw new ArgumentOutOfRangeException(nameof(options));
         }
 
         var trackerStream = recording.GetStream(options.TrackerStreamId);

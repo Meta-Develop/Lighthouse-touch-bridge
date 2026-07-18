@@ -301,7 +301,7 @@ internal sealed class ReliableWizardBackend : ICalibrationWizardBackend
             new DateTimeOffset(2026, 7, 18, 0, 0, 0, TimeSpan.Zero))).ToArray();
     }
 
-    private CalibrationWizardHandAnalysis Analysis(
+    private static CalibrationWizardHandAnalysis Analysis(
         CalibrationWizardHand hand,
         string controllerSerial,
         string trackerSerial,

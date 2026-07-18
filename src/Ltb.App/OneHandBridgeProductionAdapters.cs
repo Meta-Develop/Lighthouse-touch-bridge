@@ -72,10 +72,7 @@ internal sealed class VmtClientOneHandBridgeController :
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        if (timeout <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(timeout));
-        }
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
 
         using var timeoutStop = new CancellationTokenSource(timeout);
         using var waitStop = CancellationTokenSource.CreateLinkedTokenSource(

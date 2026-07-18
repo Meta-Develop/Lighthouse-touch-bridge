@@ -71,15 +71,8 @@ internal sealed class ProductionReliableDailyUseRuntime :
             throw new ArgumentException("Left and right hands require distinct VMT slots.");
         }
 
-        if (staleAfter <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(staleAfter));
-        }
-
-        if (retryDelay <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(retryDelay));
-        }
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(staleAfter, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retryDelay, TimeSpan.Zero);
 
         _profileStorePath = Path.GetFullPath(profileStorePath);
         _settings = new SteamVrSettingsManager(steamVrSettingsPath);
