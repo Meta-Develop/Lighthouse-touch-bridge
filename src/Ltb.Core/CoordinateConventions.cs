@@ -25,7 +25,13 @@ public static class CoordinateConventions
     /// <summary>Unknown calibration-world transform: Y = T_Q_L.</summary>
     public const string CalibrationWorldTransformNotation = "Y = T_Q_L";
 
-    /// <summary>Fixed tracker-to-controller mount transform: X_mount = T_T_C.</summary>
+    /// <summary>
+    /// Fixed tracker-to-controller mount transform: <c>X_mount = T_T_C</c>.
+    /// Per the <c>T_parent_child</c> convention (parent = tracker frame
+    /// <c>T</c>, child = controller frame <c>C</c>) it maps controller-frame
+    /// coordinates into the tracker frame and composes at runtime as
+    /// <c>T_L_tracker * T_T_C</c>.
+    /// </summary>
     public const string MountTransformNotation = "X_mount = T_T_C";
 
     /// <summary>The synchronized calibration-pose equation.</summary>
