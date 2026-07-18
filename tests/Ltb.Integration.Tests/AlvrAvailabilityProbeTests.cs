@@ -1,5 +1,5 @@
 using System.Net;
-using Ltb.App;
+using Ltb.Alvr;
 
 namespace Ltb.Integration.Tests;
 

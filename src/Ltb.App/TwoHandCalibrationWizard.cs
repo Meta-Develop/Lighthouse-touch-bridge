@@ -4,7 +4,7 @@ using Ltb.Core;
 
 namespace Ltb.App;
 
-internal enum CalibrationWizardState
+public enum CalibrationWizardState
 {
     Stopped,
     DependencyCheck,
@@ -23,13 +23,13 @@ internal enum CalibrationWizardState
     SafeDisable,
 }
 
-internal enum CalibrationWizardHand
+public enum CalibrationWizardHand
 {
     Left,
     Right,
 }
 
-internal sealed record CalibrationWizardDependencyStatus(
+public sealed record CalibrationWizardDependencyStatus(
     bool AlvrAvailable,
     bool VmtAvailable,
     string Diagnostic,
@@ -38,7 +38,7 @@ internal sealed record CalibrationWizardDependencyStatus(
     public bool IsReady => AlvrAvailable && VmtAvailable && ActiveHmdReady;
 }
 
-internal sealed record CalibrationWizardDeviceSet(
+public sealed record CalibrationWizardDeviceSet(
     string LeftControllerSerial,
     string RightControllerSerial,
     IReadOnlyList<string> TrackerSerials)
@@ -68,7 +68,7 @@ internal sealed record CalibrationWizardDeviceSet(
     }
 }
 
-internal sealed record CalibrationWizardRecalibrationObservations
+public sealed record CalibrationWizardRecalibrationObservations
 {
     public bool ExplicitRequest { get; init; }
 
@@ -124,11 +124,11 @@ internal sealed record CalibrationWizardRecalibrationObservations
     }
 }
 
-internal sealed record CalibrationWizardCapture(
+public sealed record CalibrationWizardCapture(
     CalibrationWizardHand Hand,
     PoseRecording Recording);
 
-internal sealed record CalibrationWizardCaptureProgress(
+public sealed record CalibrationWizardCaptureProgress(
     CalibrationWizardHand Hand,
     int SampleCount,
     double OrientationTrackingValidFraction,
@@ -144,7 +144,7 @@ internal sealed record CalibrationWizardCaptureProgress(
     public bool CoverageAccepted => RotationReady;
 }
 
-internal sealed record CalibrationWizardAssociation(
+public sealed record CalibrationWizardAssociation(
     string LeftTrackerSerial,
     string RightTrackerSerial,
     double LeftCorrelation,
@@ -152,14 +152,14 @@ internal sealed record CalibrationWizardAssociation(
     bool TrackerEnumerationWasSwapped,
     string Diagnostic);
 
-internal sealed record CalibrationWizardHandAnalysis(
+public sealed record CalibrationWizardHandAnalysis(
     CalibrationWizardHand Hand,
     string ControllerSerial,
     string TrackerSerial,
     LagEstimate Lag,
     CalibrationResult Calibration);
 
-internal sealed record CalibrationWizardAnalysis(
+public sealed record CalibrationWizardAnalysis(
     CalibrationWizardAssociation Association,
     CalibrationWizardHandAnalysis Left,
     CalibrationWizardHandAnalysis Right)
@@ -169,7 +169,7 @@ internal sealed record CalibrationWizardAnalysis(
     public CalibrationWizardRecalibrationObservations Recalibration { get; init; } = new();
 }
 
-internal sealed record CalibrationWizardProfileView(
+public sealed record CalibrationWizardProfileView(
     string ProfileName,
     CalibrationWizardHand Hand,
     string ControllerSerial,
@@ -181,7 +181,7 @@ internal sealed record CalibrationWizardProfileView(
     CalibrationQualityMetrics Quality,
     DateTimeOffset CreatedUtc);
 
-internal sealed record CalibrationWizardProfileLookup(
+public sealed record CalibrationWizardProfileLookup(
     IReadOnlyList<CalibrationWizardProfileView> Profiles,
     string Diagnostic)
 {
@@ -190,7 +190,7 @@ internal sealed record CalibrationWizardProfileLookup(
         Profiles.Select(profile => profile.Hand).Distinct().Count() == 2;
 }
 
-internal interface ICalibrationWizardRuntime
+public interface ICalibrationWizardRuntime
 {
     Task<CalibrationWizardDependencyStatus> CheckDependenciesAsync(
         CancellationToken cancellationToken);
@@ -219,7 +219,7 @@ internal interface ICalibrationWizardRuntime
 /// Portable-calibration and profile-persistence adapter. The application state
 /// machine deliberately knows no association, coverage, solver, or JSON rules.
 /// </summary>
-internal interface ICalibrationWizardBackend
+public interface ICalibrationWizardBackend
 {
     CalibrationWizardProfileLookup FindReusableProfiles(
         CalibrationWizardDeviceSet devices);
@@ -233,7 +233,7 @@ internal interface ICalibrationWizardBackend
         CalibrationWizardAnalysis analysis);
 }
 
-internal interface ICalibrationWizardOutput
+public interface ICalibrationWizardOutput
 {
     void OnStateChanged(CalibrationWizardState state, string diagnostic);
 
@@ -242,7 +242,7 @@ internal interface ICalibrationWizardOutput
     void WriteLine(string message);
 }
 
-internal sealed record CalibrationWizardResult(
+public sealed record CalibrationWizardResult(
     bool Success,
     bool ReusedProfiles,
     CalibrationWizardState FinalState,
@@ -274,7 +274,7 @@ internal sealed class CalibrationWizardRunException : InvalidOperationException
 /// UI-neutral Milestone 3 orchestration. A console and a future desktop UI can
 /// consume the same deterministic state and progress events.
 /// </summary>
-internal sealed class TwoHandCalibrationWizard
+public sealed class TwoHandCalibrationWizard
 {
     private readonly ICalibrationWizardRuntime _runtime;
     private readonly ICalibrationWizardBackend _backend;

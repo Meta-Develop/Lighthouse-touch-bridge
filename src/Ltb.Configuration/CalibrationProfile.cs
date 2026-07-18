@@ -38,10 +38,13 @@ public static class CalibrationProfileSchema
 }
 
 /// <summary>
-/// A schema-independent representation of <c>T_T_C</c>, the transform from
-/// controller frame to physical tracker frame: it maps controller-frame
-/// coordinates into the physical tracker frame. Translation is in meters and
-/// <see cref="RotationXyzw"/> is a normalized quaternion.
+/// A schema-independent representation of <c>T_T_C</c>, the
+/// tracker-to-controller mount transform. Per the <c>T_parent_child</c>
+/// convention (parent = physical tracker frame <c>T</c>, child = controller
+/// frame <c>C</c>) it maps controller-frame coordinates into the physical
+/// tracker frame and composes at runtime as <c>T_L_tracker * T_T_C</c>.
+/// Translation is in meters and <see cref="RotationXyzw"/> is a normalized
+/// quaternion.
 /// </summary>
 public sealed record TrackerToControllerTransform
 {

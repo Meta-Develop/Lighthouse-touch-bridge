@@ -27,7 +27,7 @@ public sealed record TrackingOverrideBinding
         const string devicePrefix = "/devices/";
         var devicePathSegments = poseSourceDevicePath.Split('/');
         if (!poseSourceDevicePath.StartsWith(devicePrefix, StringComparison.Ordinal) ||
-            poseSourceDevicePath.EndsWith("/", StringComparison.Ordinal) ||
+            poseSourceDevicePath.EndsWith('/') ||
             devicePathSegments.Length < 4 ||
             devicePathSegments.Skip(1).Any(segment =>
                 string.IsNullOrEmpty(segment) || segment is "." or ".."))

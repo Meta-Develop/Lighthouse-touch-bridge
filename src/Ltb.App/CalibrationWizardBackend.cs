@@ -8,7 +8,7 @@ namespace Ltb.App;
 /// Thin composition adapter over the portable calibration and configuration
 /// libraries. Numeric gates and schema rules remain owned by those libraries.
 /// </summary>
-internal sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
+public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
 {
     private readonly string _profileStorePath;
     private readonly Func<DateTimeOffset> _utcNow;
