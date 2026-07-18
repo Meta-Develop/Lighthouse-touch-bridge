@@ -292,11 +292,13 @@ inspection; it is not a reason to accept a lower-quality calibration.
 ## Current limitations
 
 The portable pipeline does not perform optional joint nonlinear refinement.
-The implemented `wizard-demo` command's deterministic fake path proves
-orchestration, association, selection, reporting, persistence, and reload on
-Linux. Real OpenVR capture and live coverage timing during a guided calibration
-still require a production wizard runtime adapter; therefore `wizard-demo` is
-not a live SteamVR command. The production `daily` command can
+The `wizard-demo` command remains the deterministic fake demonstration path;
+it proves orchestration, association, selection, reporting, persistence, and
+reload on Linux without a live SteamVR runtime. The production `wizard` command
+composes the live pipeline (override release -> Touch capture -> association ->
+solve -> persist -> transactional apply -> Active) and is proven end-to-end
+through injected fake production backends; its live execution still awaits
+Windows hardware verification. The production `daily` command can
 load an already complete two-hand store and apply it transactionally through
 live OpenVR, VMT, and SteamVR-settings adapters, including watchdog,
 SafeDisable, reconnect, and rollback policy. Automated transition tests use
