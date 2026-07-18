@@ -4,7 +4,7 @@ using Avalonia.Markup.Xaml;
 namespace Ltb.Gui;
 
 /// <summary>
-/// Rendering-and-binding-only shell over <c>WizardDemoViewModel</c>.
+/// Rendering-and-binding-only shell over <c>CalibrationWizardViewModel</c>.
 /// </summary>
 public partial class MainWindow : Window
 {

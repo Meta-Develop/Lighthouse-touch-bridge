@@ -303,4 +303,8 @@ load an already complete two-hand store and apply it transactionally through
 live OpenVR, VMT, and SteamVR-settings adapters, including watchdog,
 SafeDisable, reconnect, and rollback policy. Automated transition tests use
 fakes, so the Windows checklist remains required hardware acceptance for that
-live later-run composition. No GUI framework has been selected.
+live later-run composition. Avalonia 11 is the selected desktop framework. The
+GUI keeps the deterministic scripted demonstration available and invokes the
+production wizard through the shared `Ltb.App` composition seam; native launch,
+visual behavior, and live SteamVR hardware operation still require the Windows
+verification checklist.

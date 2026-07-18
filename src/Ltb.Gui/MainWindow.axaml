@@ -2,13 +2,71 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:Ltb.Gui.ViewModels"
         x:Class="Ltb.Gui.MainWindow"
-        x:DataType="vm:WizardDemoViewModel"
+        x:DataType="vm:CalibrationWizardViewModel"
         Title="Lighthouse Touch Bridge - Two-Hand Calibration Wizard"
-        Width="820"
-        Height="620">
+        Width="900"
+        Height="820">
   <DockPanel Margin="12">
 
-    <StackPanel DockPanel.Dock="Top" Spacing="4">
+    <StackPanel DockPanel.Dock="Top" Spacing="8">
+      <Border BorderBrush="Gray"
+              BorderThickness="1"
+              CornerRadius="4"
+              Padding="10"
+              IsEnabled="{Binding CanEditConfiguration}">
+        <StackPanel Spacing="6">
+          <TextBlock FontSize="16" FontWeight="Bold" Text="Session configuration" />
+          <StackPanel Orientation="Horizontal" Spacing="16">
+            <RadioButton x:Name="ScriptedModeButton"
+                         Content="Scripted demo"
+                         GroupName="WizardMode"
+                         IsChecked="{Binding IsScriptedDemoMode, Mode=TwoWay}" />
+            <RadioButton x:Name="ProductionModeButton"
+                         Content="Production"
+                         GroupName="WizardMode"
+                         IsChecked="{Binding IsProductionMode, Mode=TwoWay}" />
+          </StackPanel>
+          <Grid ColumnDefinitions="170,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="6">
+            <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Text="Profile store (--profiles)" />
+            <TextBox x:Name="ProfilesTextBox"
+                     Grid.Row="0"
+                     Grid.Column="1"
+                     Text="{Binding ProfileStorePath, Mode=TwoWay}" />
+            <TextBlock Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Text="Structured log (--log)" />
+            <TextBox Grid.Row="1"
+                     Grid.Column="1"
+                     Watermark="optional"
+                     Text="{Binding LogPath, Mode=TwoWay}" />
+          </Grid>
+          <StackPanel x:Name="ProductionOptionsPanel"
+                      Spacing="6"
+                      IsVisible="{Binding IsProductionMode}">
+            <Grid ColumnDefinitions="170,*,170,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6">
+              <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Text="Left slot (--left-vmt-slot)" />
+              <TextBox x:Name="LeftSlotTextBox" Grid.Row="0" Grid.Column="1" Text="{Binding LeftVmtSlot, Mode=TwoWay}" />
+              <TextBlock Grid.Row="0" Grid.Column="2" VerticalAlignment="Center" Text="Right slot (--right-vmt-slot)" />
+              <TextBox x:Name="RightSlotTextBox" Grid.Row="0" Grid.Column="3" Text="{Binding RightVmtSlot, Mode=TwoWay}" />
+
+              <TextBlock Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Text="SteamVR settings" />
+              <TextBox Grid.Row="1"
+                       Grid.Column="1"
+                       Grid.ColumnSpan="3"
+                       Watermark="--steamvr-settings"
+                       Text="{Binding SteamVrSettingsPath, Mode=TwoWay}" />
+
+              <TextBlock Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Text="Duration seconds" />
+              <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CaptureDurationSeconds, Mode=TwoWay}" />
+              <TextBlock Grid.Row="2" Grid.Column="2" VerticalAlignment="Center" Text="Capture rate Hz" />
+              <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding CaptureRateHz, Mode=TwoWay}" />
+
+              <TextBlock Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Text="Monitor rate Hz" />
+              <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding MonitorRateHz, Mode=TwoWay}" />
+              <TextBlock Grid.Row="3" Grid.Column="2" VerticalAlignment="Center" Text="Reconnect delay seconds" />
+              <TextBox Grid.Row="3" Grid.Column="3" Text="{Binding ReconnectDelaySeconds, Mode=TwoWay}" />
+            </Grid>
+          </StackPanel>
+        </StackPanel>
+      </Border>
       <TextBlock x:Name="StateText"
                  FontSize="22"
                  FontWeight="Bold"

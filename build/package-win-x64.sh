@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: build/package-win-x64.sh [version]
 
-Publishes the self-contained win-x64 application and creates a portable ZIP.
+Publishes the self-contained win-x64 console and GUI applications and creates a portable ZIP.
 If version is omitted, the Version property from Ltb.App.csproj is used.
 EOF
 }
@@ -29,12 +29,13 @@ done
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
-project_path="$repo_root/src/Ltb.App/Ltb.App.csproj"
+app_project_path="$repo_root/src/Ltb.App/Ltb.App.csproj"
+gui_project_path="$repo_root/src/Ltb.Gui/Ltb.Gui.csproj"
 artifact_root="$repo_root/artifacts/package"
 
 version="${1:-}"
 if [[ -z "$version" ]]; then
-  version="$(dotnet msbuild "$project_path" -nologo -getProperty:Version | tr -d '\r' | tail -n 1)"
+  version="$(dotnet msbuild "$app_project_path" -nologo -getProperty:Version | tr -d '\r' | tail -n 1)"
 fi
 
 if ! python3 - "$version" <<'PY'
@@ -96,8 +97,15 @@ if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=normal -- \
   ':(exclude)artifacts/**')" ]]; then
   source_tree_dirty="true"
 fi
-printf 'Publishing Lighthouse Touch Bridge %s for win-x64...\n' "$version"
-dotnet publish "$project_path" \
+printf 'Publishing Lighthouse Touch Bridge CLI %s for win-x64...\n' "$version"
+dotnet publish "$app_project_path" \
+  -p:PublishProfile=win-x64 \
+  -p:PublishDir="$package_root/" \
+  -p:Version="$version" \
+  -p:InformationalVersion="$version"
+
+printf 'Publishing Lighthouse Touch Bridge GUI %s for win-x64...\n' "$version"
+dotnet publish "$gui_project_path" \
   -p:PublishProfile=win-x64 \
   -p:PublishDir="$package_root/" \
   -p:Version="$version" \
@@ -109,21 +117,34 @@ read -r zlib_build_version zlib_runtime_version < <(
   python3 -c 'import zlib; print(zlib.ZLIB_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
 )
 expected_runtime_pack_version="8.0.28"
-runtime_pack_version="$(python3 - "$package_root/Ltb.App.deps.json" <<'PY'
+runtime_pack_version="$(python3 - \
+  "$package_root/Ltb.App.deps.json" \
+  "$package_root/Ltb.Gui.deps.json" <<'PY'
 import json
 import pathlib
 import sys
 
-deps_path = pathlib.Path(sys.argv[1])
-with deps_path.open("r", encoding="utf-8-sig") as stream:
-    document = json.load(stream)
 prefix = "runtimepack.Microsoft.NETCore.App.Runtime.win-x64/"
-matches = sorted(key for key in document.get("libraries", {}) if key.startswith(prefix))
-if len(matches) != 1:
-    raise SystemExit(
-        f"Expected one win-x64 .NET runtime pack in {deps_path}, found {matches!r}"
+runtime_versions = {}
+for deps_value in sys.argv[1:]:
+    deps_path = pathlib.Path(deps_value)
+    with deps_path.open("r", encoding="utf-8-sig") as stream:
+        document = json.load(stream)
+    matches = sorted(
+        key for key in document.get("libraries", {}) if key.startswith(prefix)
     )
-print(matches[0][len(prefix):])
+    if len(matches) != 1:
+        raise SystemExit(
+            f"Expected one win-x64 .NET runtime pack in {deps_path}, found {matches!r}"
+        )
+    runtime_versions[deps_path.name] = matches[0][len(prefix):]
+
+versions = set(runtime_versions.values())
+if len(versions) != 1:
+    raise SystemExit(
+        f"Published applications use different .NET runtime packs: {runtime_versions!r}"
+    )
+print(versions.pop())
 PY
 )"
 if [[ "$runtime_pack_version" != "$expected_runtime_pack_version" ]]; then
@@ -138,6 +159,7 @@ done < <(find "$package_root" -type f -name '*.pdb' -print0)
 
 required_publish_files=(
   "$package_root/Ltb.App.exe"
+  "$package_root/Ltb.Gui.exe"
   "$package_root/openvr_api.dll"
   "$package_root/licenses/Valve.OpenVR.LICENSE.txt"
 )
@@ -195,6 +217,8 @@ done
   printf 'version=%s\n' "$version"
   printf 'source_commit=%s\n' "$commit_id"
   printf 'source_tree_dirty=%s\n' "$source_tree_dirty"
+  printf 'console_entry_point=Ltb.App.exe\n'
+  printf 'gui_entry_point=Ltb.Gui.exe\n'
   printf 'target_framework=net8.0\n'
   printf 'runtime_identifier=win-x64\n'
   printf 'runtime_framework_version=%s\n' "$expected_runtime_pack_version"
@@ -233,7 +257,7 @@ with zipfile.ZipFile(
             continue
         relative_path = pathlib.PurePosixPath(package_name) / path.relative_to(package_root)
         info = zipfile.ZipInfo(str(relative_path), date_time=(1980, 1, 1, 0, 0, 0))
-        mode = 0o755 if path.name == "Ltb.App.exe" else 0o644
+        mode = 0o755 if path.name in {"Ltb.App.exe", "Ltb.Gui.exe"} else 0o644
         info.external_attr = (stat.S_IFREG | mode) << 16
         info.compress_type = zipfile.ZIP_DEFLATED
         with path.open("rb") as stream:
@@ -282,6 +306,10 @@ required = {
     root + "Ltb.App.dll",
     root + "Ltb.App.deps.json",
     root + "Ltb.App.runtimeconfig.json",
+    root + "Ltb.Gui.exe",
+    root + "Ltb.Gui.dll",
+    root + "Ltb.Gui.deps.json",
+    root + "Ltb.Gui.runtimeconfig.json",
     root + "coreclr.dll",
     root + "hostfxr.dll",
     root + "openvr_api.dll",
@@ -301,6 +329,8 @@ expected_manifest = {
     "version": version,
     "source_commit": commit_id,
     "source_tree_dirty": source_tree_dirty,
+    "console_entry_point": "Ltb.App.exe",
+    "gui_entry_point": "Ltb.Gui.exe",
     "target_framework": "net8.0",
     "runtime_identifier": "win-x64",
     "runtime_framework_version": "8.0.28",
@@ -422,5 +452,5 @@ fi
 
 printf 'Package: %s\n' "$archive_path"
 printf 'SHA-256: %s\n' "$checksum_path"
-printf 'Build-host verification complete: publish, runtime-pack, license, manifest, ZIP contents, links, timestamps, and checksum checks passed.\n'
-printf 'Runtime verification remainder requires Windows: launch Ltb.App.exe, exercise SteamVR/ALVR/VMT and hardware checks, and evaluate signing/SmartScreen.\n'
+printf 'Build-host verification complete: CLI/GUI publish, runtime-pack, license, manifest, ZIP contents, links, timestamps, and checksum checks passed.\n'
+printf 'Runtime verification remainder requires Windows: launch Ltb.App.exe and Ltb.Gui.exe, exercise SteamVR/ALVR/VMT, GUI visual, and hardware checks, and evaluate signing/SmartScreen.\n'

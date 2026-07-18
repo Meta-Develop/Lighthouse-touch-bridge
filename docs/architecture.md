@@ -131,10 +131,10 @@ enumeration, capture, serialization, replay, and lag estimation without native
 calls, while live initialization, enumeration, and sampling remain deferred to
 the [Windows verification checklist](windows-verification.md).
 
-`Ltb.App` owns console command wiring and composition only. No GUI framework
-has been selected: Milestones 1-2 add no WinUI 3, WPF, or Avalonia dependency.
-A future desktop framework choice must be recorded in this document before the
-dependency is introduced.
+`Ltb.App` owns console command wiring and production composition only.
+Milestones 1-2 were completed before the desktop project was introduced.
+Avalonia 11 is now the selected desktop framework, with its dependency isolated
+in `Ltb.Gui`; the decision and current composition boundary are recorded below.
 
 ## Recording and replay contract
 
@@ -410,15 +410,17 @@ SteamVR session retains Touch inputs while accepting the VMT pose. That
 provenance and restart behavior remain explicit acceptance items in
 [windows-verification.md](windows-verification.md).
 
-Milestone 2 adds no GUI framework. Milestone 4 retains the same platform
-boundaries and composes them through the daily-use coordinator described below.
+Milestone 2 was delivered without a GUI dependency. The later Avalonia shell
+retains the same platform boundaries, as does the Milestone 4 daily-use
+coordinator described below.
 
 ## Application boundary and desktop UI decision
 
 `Ltb.App` remains a console composition and command-wiring boundary, and
 Milestones 1-3 introduced no UI dependency there. Avalonia 11 is the selected
-desktop UI framework, recorded here before any UI dependency is added. The
-owner directed the choice to minimize OS dependency: Avalonia is
+desktop UI framework; that decision was recorded here before the dependency was
+introduced in the separate `Ltb.Gui` project. The owner directed the choice to
+minimize OS dependency: Avalonia is
 cross-platform, so the GUI is developed and headless-tested on Linux and
 cross-published to win-x64, and specification section 22 lists it among the
 candidate frameworks.
@@ -430,14 +432,62 @@ code contains rendering and binding only; sequencing, device, calibration, and
 persistence policy stay in the existing wizard, runtime, and backend types.
 `Ltb.Calibration` and `Ltb.Configuration` remain free of UI dependencies.
 
+The desktop shell defaults to the deterministic scripted-demo mode, so it can
+be opened without SteamVR, OpenVR, VMT, or host-settings access. The user can
+select production mode with the in-window radio buttons or start the executable
+with the `wizard` verb; `wizard-demo` explicitly selects the scripted path.
+The same launch values remain editable in the window. Both modes expose
+`--profiles` and optional `--log`; production additionally exposes
+`--left-vmt-slot`, `--right-vmt-slot`, `--steamvr-settings`, `--duration`,
+`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration is locked
+while a session runs, and Abort or a window close requests cancellation and
+waits for the session's cleanup path.
+
+`CalibrationWizardViewModel` parses the editable values using invariant numeric
+formats and rejects invalid configuration before creating a session. The public
+`ProductionCalibrationWizardSessionOptions` contract in `Ltb.App` performs the
+authoritative range and cross-field validation, including distinct VMT slots in
+the supported `0..57` range. `ProductionCalibrationWizardSessionFactory` is the
+shared composition seam used by both the console `wizard` command and the GUI:
+it owns the live runtime, file-backed profile store, UI-neutral wizard,
+post-activation watchdog, structured log, SafeDisable behavior, and native
+resource lifetime. `Ltb.Gui` adapts the completed lifecycle result to
+`ICalibrationWizardSession`; neither its view nor its view model sequences
+devices, solves calibration, applies profiles, or defines cleanup policy.
+
+```text
+Ltb.Gui arguments + editable fields
+                 |
+                 v
+      CalibrationWizardViewModel
+       | scripted          | production
+       v                   v
+ScriptedCalibration  ProductionCalibrationWizardSessionFactory (Ltb.App)
+WizardSession              |
+                           v
+             production runtime + profile store
+                           |
+                           v
+              TwoHandCalibrationWizard
+                           |
+                           v
+              watchdog -> SafeDisable
+```
+
+Production validation and native-runtime failures are reported through bounded
+wizard diagnostics rather than escaping into view callbacks. Linux GUI tests
+select both modes, validate every production parameter boundary, exercise the
+shared production composition through injected fake backends, and use the
+headless Avalonia test host. They do not open live runtime resources or replace
+the Windows launch, visual, SteamVR, ALVR, VMT, and hardware checks.
+
 ## Milestone 3 two-hand wizard boundary
 
 Milestone 3 adds a UI-neutral `TwoHandCalibrationWizard` state machine in
 `Ltb.App`. It emits state, capture-progress, diagnostic, quality, and profile
 events through `ICalibrationWizardOutput`; the console renderer is one consumer
-of those events. A desktop UI can implement the same output and runtime ports
-without moving device, calibration, or persistence policy into view callbacks;
-the Avalonia decision above binds the GUI to exactly these ports.
+of those events. The Avalonia UI implements the same output and runtime ports
+without moving device, calibration, or persistence policy into view callbacks.
 
 ```text
 ScriptedCalibrationWizardRuntime     production OpenVR/VMT/settings adapters
@@ -449,7 +499,7 @@ ScriptedCalibrationWizardRuntime     production OpenVR/VMT/settings adapters
                  |                 |
                  v                 v
  ICalibrationWizardBackend   ICalibrationWizardOutput
-       |           |           console / future GUI
+       |           |           console / Avalonia GUI
        v           v
 Ltb.Calibration  Ltb.Configuration
 ```

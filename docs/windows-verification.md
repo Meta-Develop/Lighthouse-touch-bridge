@@ -43,8 +43,9 @@ rejection; synthetic lag recovery; offline replay; native deployment hashes;
 production-wizard release, capture, association, solve, persist, apply, Active,
 abort cleanup, and rollback through fakes; stable-serial reacquisition;
 SafeDisable; structured events; and the existing calibration regressions.
-The inspector remains a separate synthetic CLI acceptance check;
-its textual summary does not currently have an automated regression assertion.
+The inspector remains a separate synthetic CLI acceptance check, and its
+textual summary rendering now has a deterministic automated regression
+assertion in `tests/Ltb.RecordingInspector.Tests`.
 Passing the automated checks is the Linux acceptance gate for portable
 behavior. Each unchecked item below needs only its stated environment. Offline
 inspector and replay checks can run without SteamVR, ALVR, or connected
@@ -61,11 +62,12 @@ Windows x64 layout from the repository root with:
 
 ```bash
 dotnet publish src/Ltb.App/Ltb.App.csproj -p:PublishProfile=win-x64
+dotnet publish src/Ltb.Gui/Ltb.Gui.csproj -p:PublishProfile=win-x64
 ```
 
-The publish profile is Release, `net8.0`, `win-x64`, self-contained, pins
-`RuntimeFrameworkVersion` to `8.0.28`, and is non-single-file, untrimmed, and
-not ReadyToRun. It writes generated output to
+Both publish profiles are Release, `net8.0`, `win-x64`, self-contained, pin
+`RuntimeFrameworkVersion` to `8.0.28`, and are non-single-file, untrimmed, and
+not ReadyToRun. They write generated output to
 `artifacts/publish/win-x64/`. Produce the portable release ZIP, version
 manifest, and checksum with:
 
@@ -75,23 +77,26 @@ bash build/package-win-x64.sh 0.1.0
 
 The packaging script requires .NET 8, Git, Bash, and Python 3 on the build
 machine. End users need none of those tools or a separate .NET installation;
-they run `Ltb.App.exe` from the extracted self-contained package. The script
-refuses to overwrite an existing same-version archive.
+they run `Ltb.Gui.exe` for the desktop wizard or `Ltb.App.exe` for the console
+commands from the extracted self-contained package. The script refuses to
+overwrite an existing same-version archive.
 
 The `Ltb.OpenVr` project copies `openvr_api.dll` into the application publish
-root beside `Ltb.App.exe` and `Ltb.OpenVr.Interop.dll`. The generated binding
-imports `openvr_api`, so .NET resolves the app-local `openvr_api.dll` without a
-manual SDK copy or `PATH` change. The Valve BSD notice is copied to
+root beside `Ltb.App.exe`, `Ltb.Gui.exe`, and `Ltb.OpenVr.Interop.dll`. The
+generated binding imports `openvr_api`, so .NET resolves the app-local
+`openvr_api.dll` without a manual SDK copy or `PATH` change. The Valve BSD notice is copied to
 `licenses/Valve.OpenVR.LICENSE.txt`. The expected native DLL SHA-256 is
 `bab8ac6ef64e68a9ca53315b0014d131088584b2efdfa6db511d67ec03cfcb4a`.
 This deployment supplies the OpenVR client library; SteamVR must still be
 installed and running for live initialization.
 
-The portable ZIP must contain `release-manifest.txt`, `LICENSE.txt`, the full
-packaged documentation set including `specification.md`, and the publish layout. Its adjacent
+The portable ZIP must contain both `Ltb.App.exe` and `Ltb.Gui.exe`,
+`release-manifest.txt`, `LICENSE.txt`, the full packaged documentation set
+including `specification.md`, and the shared publish layout. Its adjacent
 `.sha256` file covers the complete ZIP. The package is unsigned; signing,
-SmartScreen, native launch, and hardware behavior are Windows-only release
-checks rather than properties established by Linux publish.
+SmartScreen, native launch, GUI visual behavior, and hardware behavior are
+Windows-only release checks rather than properties established by Linux
+publish.
 
 For a live-runtime or hardware verification session, record the applicable
 details below. For an offline inspector or replay session, record only the OS,
@@ -637,7 +642,8 @@ transition-matrix tests or a successful cross-publish alone.
 - [ ] **Inspect the self-contained package.** Build with
   `bash build/package-win-x64.sh <version>`. Verify the ZIP checksum, extract it
   on Windows x64, and compare `release-manifest.txt` with the requested version,
-  source commit, `source_tree_dirty=false`, `net8.0`, `win-x64`,
+  source commit, `source_tree_dirty=false`, `console_entry_point=Ltb.App.exe`,
+  `gui_entry_point=Ltb.Gui.exe`, `net8.0`, `win-x64`,
   `runtime_framework_version=8.0.28`, the actual runtime pack, .NET SDK,
   Python and zlib versions, `self_contained=true`,
   `publish_single_file=false`, and `publish_trimmed=false`. Confirm
@@ -648,9 +654,11 @@ transition-matrix tests or a successful cross-publish alone.
 
 - [ ] **Launch without a machine-wide .NET runtime or SDK.** On a representative
   clean Windows x64 account, run `Ltb.App.exe --help` and `Ltb.App.exe devices`
-  from the complete extracted directory. Confirm no .NET installation prompt,
-  native-library search-path workaround, installer action, or administrator
-  elevation is required. Repeat from a directory containing spaces.
+  and launch `Ltb.Gui.exe wizard-demo` from the complete extracted directory.
+  Confirm the GUI opens and renders its scripted wizard without a .NET
+  installation prompt, native-library search-path workaround, installer action,
+  or administrator elevation. Repeat both entry points from a directory
+  containing spaces.
 
 - [ ] **Verify package boundaries.** Confirm the ZIP contains no build cache,
   symbols, source tree, settings, backups, logs, recordings, device identities,

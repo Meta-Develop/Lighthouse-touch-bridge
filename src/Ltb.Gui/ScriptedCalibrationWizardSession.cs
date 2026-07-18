@@ -1,4 +1,5 @@
 using Ltb.App;
+using Ltb.Core;
 
 namespace Ltb.Gui;
 
@@ -22,21 +23,29 @@ public interface ICalibrationWizardSession
 public sealed class ScriptedCalibrationWizardSession : ICalibrationWizardSession
 {
     private readonly string _profileStorePath;
+    private readonly string? _logPath;
 
-    public ScriptedCalibrationWizardSession(string profileStorePath)
+    public ScriptedCalibrationWizardSession(string profileStorePath, string? logPath = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileStorePath);
+        if (logPath is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(logPath);
+        }
+
         _profileStorePath = profileStorePath;
+        _logPath = logPath;
     }
 
-    public Task<CalibrationWizardResult> RunAsync(
+    public async Task<CalibrationWizardResult> RunAsync(
         ICalibrationWizardOutput output,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(output);
+        using var jsonLog = _logPath is null ? null : new JsonLinesLtbLogSink(_logPath);
         var runtime = new ScriptedCalibrationWizardRuntime(output);
         var backend = new FileCalibrationWizardBackend(_profileStorePath);
-        var wizard = new TwoHandCalibrationWizard(runtime, backend, output);
-        return wizard.RunAsync(cancellationToken);
+        var wizard = new TwoHandCalibrationWizard(runtime, backend, output, jsonLog);
+        return await wizard.RunAsync(cancellationToken).ConfigureAwait(false);
     }
 }

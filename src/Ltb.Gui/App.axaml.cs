@@ -7,8 +7,8 @@ using Ltb.Gui.ViewModels;
 namespace Ltb.Gui;
 
 /// <summary>
-/// Composition root for the desktop shell. It wires the scripted wizard-demo
-/// session to the view model; it contains no wizard policy.
+/// Composition root for the desktop shell. It parses editable launch defaults
+/// and wires the shared session factory; it contains no wizard policy.
 /// </summary>
 public partial class App : Application
 {
@@ -22,13 +22,33 @@ public partial class App : Application
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "LighthouseTouchBridge",
                 "wizard-demo-profiles.json");
-            var viewModel = new WizardDemoViewModel(
-                new ScriptedCalibrationWizardSession(profileStorePath),
+            var options = GuiCommandLineOptions.Parse(
+                desktop.Args ?? Array.Empty<string>(),
+                profileStorePath,
+                out var startupDiagnostic);
+            var viewModel = new CalibrationWizardViewModel(
+                new CalibrationWizardSessionFactory(),
+                options,
+                startupDiagnostic,
                 action => Dispatcher.UIThread.Post(action));
-            desktop.MainWindow = new MainWindow
+            var window = new MainWindow
             {
                 DataContext = viewModel,
             };
+            var cleanupCompletedClose = false;
+            window.Closing += async (_, eventArgs) =>
+            {
+                if (cleanupCompletedClose || !viewModel.IsRunning)
+                {
+                    return;
+                }
+
+                eventArgs.Cancel = true;
+                await viewModel.StopAsync();
+                cleanupCompletedClose = true;
+                window.Close();
+            };
+            desktop.MainWindow = window;
             desktop.Exit += (_, _) => viewModel.Dispose();
         }
 

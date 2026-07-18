@@ -3,7 +3,7 @@ using Ltb.Gui.ViewModels;
 
 namespace Ltb.Gui.Tests;
 
-public sealed class WizardDemoViewModelTests : IDisposable
+public sealed class CalibrationWizardViewModelTests : IDisposable
 {
     private readonly string _tempDirectory =
         Directory.CreateTempSubdirectory("ltb-gui-tests-").FullName;
@@ -86,8 +86,8 @@ public sealed class WizardDemoViewModelTests : IDisposable
 
         Assert.Equal(CalibrationWizardState.Recording, viewModel.CurrentState);
         Assert.Equal("left-hand capture", viewModel.CurrentDiagnostic);
-        Assert.Contains(nameof(WizardDemoViewModel.CurrentState), changed);
-        Assert.Contains(nameof(WizardDemoViewModel.CurrentDiagnostic), changed);
+        Assert.Contains(nameof(CalibrationWizardViewModel.CurrentState), changed);
+        Assert.Contains(nameof(CalibrationWizardViewModel.CurrentDiagnostic), changed);
         Assert.Equal(
             "state: Recording (left-hand capture)",
             Assert.Single(viewModel.Events));
@@ -125,7 +125,7 @@ public sealed class WizardDemoViewModelTests : IDisposable
     public async Task CommandsGateOnRunState()
     {
         var session = new BlockingSession();
-        using var viewModel = new WizardDemoViewModel(session);
+        using var viewModel = NewViewModel(session);
         Assert.True(viewModel.StartCommand.CanExecute(null));
         Assert.False(viewModel.AbortCommand.CanExecute(null));
 
@@ -135,7 +135,7 @@ public sealed class WizardDemoViewModelTests : IDisposable
         Assert.False(viewModel.StartCommand.CanExecute(null));
         Assert.True(viewModel.AbortCommand.CanExecute(null));
 
-        viewModel.Abort();
+        await viewModel.StopAsync();
         await runTask;
         Assert.False(viewModel.IsRunning);
         Assert.True(viewModel.StartCommand.CanExecute(null));
@@ -148,7 +148,7 @@ public sealed class WizardDemoViewModelTests : IDisposable
     [Fact]
     public async Task FailedSessionSurfacesErrorWithoutThrowing()
     {
-        using var viewModel = new WizardDemoViewModel(new ThrowingSession());
+        using var viewModel = NewViewModel(new ThrowingSession());
 
         await viewModel.StartAsync();
 
@@ -157,8 +157,32 @@ public sealed class WizardDemoViewModelTests : IDisposable
         Assert.Contains("wizard_error: session exploded", viewModel.Events);
     }
 
-    private WizardDemoViewModel NewScriptedViewModel() =>
-        new(new ScriptedCalibrationWizardSession(ProfileStorePath));
+    private CalibrationWizardViewModel NewScriptedViewModel() =>
+        new(
+            new CalibrationWizardSessionFactory(),
+            new GuiCommandLineOptions { ProfileStorePath = ProfileStorePath });
+
+    private CalibrationWizardViewModel NewViewModel(ICalibrationWizardSession session) =>
+        new(
+            new FixedSessionFactory(session),
+            new GuiCommandLineOptions { ProfileStorePath = ProfileStorePath });
+
+    private sealed class FixedSessionFactory : ICalibrationWizardSessionFactory
+    {
+        private readonly ICalibrationWizardSession _session;
+
+        public FixedSessionFactory(ICalibrationWizardSession session)
+        {
+            _session = session;
+        }
+
+        public ICalibrationWizardSession CreateScripted(
+            string profileStorePath,
+            string? logPath) => _session;
+
+        public ICalibrationWizardSession CreateProduction(
+            ProductionCalibrationWizardSessionOptions options) => _session;
+    }
 
     private sealed class BlockingSession : ICalibrationWizardSession
     {

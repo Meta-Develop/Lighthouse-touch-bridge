@@ -180,33 +180,21 @@ internal static class Program
 
     private static async Task<int> WizardAsync(AppCommandLineOptions options)
     {
-        using var jsonLog = options.WizardLogPath is null
-            ? null
-            : new JsonLinesLtbLogSink(options.WizardLogPath);
-        var logSink = (ILtbLogSink?)jsonLog ?? NullLtbLogSink.Instance;
-        var reconnectDelay = TimeSpan.FromSeconds(options.WizardReconnectDelaySeconds);
-        await using var liveRuntime = new ProductionReliableDailyUseRuntime(
-            options.WizardProfileStorePath!,
-            options.SteamVrSettingsPath!,
-            new VmtDeviceAddress(options.WizardLeftVmtSlot),
-            new VmtDeviceAddress(options.WizardRightVmtSlot),
-            staleAfter: TimeSpan.FromSeconds(0.5d),
-            reconnectDelay);
-        var productionRuntime = new ProductionCalibrationWizardRuntime(
-            liveRuntime,
-            new ProductionCalibrationWizardOptions
-            {
-                CaptureDurationSeconds = options.DurationSeconds,
-                CaptureRateHz = options.SampleRateHz,
-                DeviceRetryDelay = reconnectDelay,
-            });
-        var backend = new FileCalibrationWizardBackend(options.WizardProfileStorePath!);
         var output = new ConsoleCalibrationWizardOutput(Console.Out);
-        var wizard = new TwoHandCalibrationWizard(
-            productionRuntime,
-            backend,
-            output,
-            logSink);
+        var sessionOptions = new ProductionCalibrationWizardSessionOptions
+        {
+            ProfileStorePath = options.WizardProfileStorePath!,
+            LeftVmtSlot = options.WizardLeftVmtSlot,
+            RightVmtSlot = options.WizardRightVmtSlot,
+            SteamVrSettingsPath = options.SteamVrSettingsPath!,
+            CaptureDurationSeconds = options.DurationSeconds,
+            CaptureRateHz = options.SampleRateHz,
+            LogPath = options.WizardLogPath,
+            MonitorRateHz = options.MonitorRateHz,
+            ReconnectDelaySeconds = options.WizardReconnectDelaySeconds,
+        };
+        await using var session = ProductionCalibrationWizardSessionFactory.Create(
+            sessionOptions);
 
         using var stop = new CancellationTokenSource();
         ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
@@ -229,56 +217,22 @@ internal static class Program
             Console.WriteLine($"structured_log: {(options.WizardLogPath is null ? "disabled" : Path.GetFullPath(options.WizardLogPath))}");
             Console.WriteLine("state: starting");
 
-            return await RunProductionWizardActiveLifecycleAsync(
-                    wizard,
-                    productionRuntime,
-                    async (activeLease, cancellationToken) =>
-                    {
-                        var watchdog = new ReliableDailyUseCoordinator(
-                            liveRuntime,
-                            backend,
-                            logSink,
-                            new ReliableDailyUseOptions
-                            {
-                                MonitorInterval = TimeSpan.FromSeconds(
-                                    1d / options.MonitorRateHz),
-                                ReconnectRetryDelay = reconnectDelay,
-                            });
-                        return await watchdog.MonitorActiveLeaseAsync(
-                                activeLease,
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                    },
-                    result =>
-                    {
-                        Console.WriteLine(
-                            $"wizard_result: {(result.Success ? "success" : result.Cancelled ? "cancelled" : "failed")}");
-                        Console.WriteLine(
-                            $"profile_path: {(result.ReusedProfiles ? "later-run-reuse" : "first-run-capture")}");
-                        Console.WriteLine($"final_state: {result.FinalState}");
-                        Console.WriteLine($"cleanup_failures: {result.CleanupFailures.Count}");
-                        Console.WriteLine($"diagnostic: {result.Diagnostic}");
-                        foreach (var failure in result.CleanupFailures)
-                        {
-                            Console.Error.WriteLine($"Cleanup failure: {failure.Message}");
-                        }
-                    },
-                    monitored =>
-                    {
-                        Console.WriteLine($"state: {monitored.FinalState}");
-                        Console.WriteLine($"stop_reason: {monitored.StopReason}");
-                        Console.WriteLine(
-                            $"safe_disable_failures: {monitored.SafeDisableFailures.Count}");
-                        Console.WriteLine($"message: {monitored.Diagnostic}");
-                        foreach (var failure in monitored.SafeDisableFailures)
-                        {
-                            Console.Error.WriteLine(
-                                $"SafeDisable failure: {failure.Message}");
-                        }
-                    },
-                    message => Console.Error.WriteLine(message),
-                    stop.Token)
-                .ConfigureAwait(false);
+            var result = await session.RunAsync(output, stop.Token).ConfigureAwait(false);
+            var wizard = result.WizardResult;
+            Console.WriteLine(
+                $"wizard_result: {(wizard.Success ? "success" : wizard.Cancelled ? "cancelled" : "failed")}");
+            Console.WriteLine(
+                $"profile_path: {(wizard.ReusedProfiles ? "later-run-reuse" : "first-run-capture")}");
+            Console.WriteLine($"final_state: {wizard.FinalState}");
+            Console.WriteLine($"stop_reason: {result.StopReason}");
+            Console.WriteLine($"cleanup_failures: {result.CleanupFailures.Count}");
+            Console.WriteLine($"diagnostic: {result.Diagnostic}");
+            foreach (var failure in result.CleanupFailures)
+            {
+                Console.Error.WriteLine($"Cleanup failure: {failure.Message}");
+            }
+
+            return result.ExitCode;
         }
         finally
         {

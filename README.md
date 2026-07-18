@@ -8,7 +8,12 @@ LTB automatically associates controllers and trackers, aligns their pose streams
 
 ## Status
 
-The v0.1 implementation is complete. The calibration core, live recorder, VMT and TrackingOverrides integration, two-hand calibration wizard, reliability runtime, and win-x64 packaging are implemented, and the full test suite passes on Linux. Live Windows/SteamVR hardware verification is the remaining step, tracked in the [Windows verification checklist](docs/windows-verification.md).
+The v0.1 implementation is complete. The calibration core, live recorder, VMT
+and TrackingOverrides integration, two-hand calibration wizard, Avalonia
+desktop GUI, reliability runtime, and win-x64 packaging are implemented, and
+the full test suite passes on Linux. Live Windows/SteamVR hardware verification,
+including native GUI launch and visual checks, is the remaining step, tracked
+in the [Windows verification checklist](docs/windows-verification.md).
 
 ## How It Works
 
