@@ -9,7 +9,8 @@ public interface IAlvrAvailabilityProbe
 
 /// <summary>
 /// Proves that the local ALVR dashboard API is serving a version response. The
-/// default URI uses ALVR's default web-server port and is loopback-only.
+/// default URI uses ALVR's default web-server port and is loopback-only. Every
+/// request carries the <c>X-ALVR</c> header that ALVR 20.14+ requires.
 /// </summary>
 public sealed class AlvrLocalDashboardProbe : IAlvrAvailabilityProbe, IDisposable
 {
@@ -32,6 +33,11 @@ public sealed class AlvrLocalDashboardProbe : IAlvrAvailabilityProbe, IDisposabl
         _client = client ?? new HttpClient();
         _ownsClient = client is null;
         _client.BaseAddress = address;
+
+        // ALVR 20.14+ rejects HTTP API requests without the X-ALVR header
+        // (400 "missing X-ALVR header"); older versions ignore the extra header.
+        _client.DefaultRequestHeaders.Remove("X-ALVR");
+        _client.DefaultRequestHeaders.Add("X-ALVR", "true");
     }
 
     public async Task<AlvrAvailabilitySnapshot> ProbeAsync(

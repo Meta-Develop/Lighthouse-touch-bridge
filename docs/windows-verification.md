@@ -156,7 +156,9 @@ details below. For an offline inspector or replay session, record only the OS,
 - [ ] **Prove current ALVR availability independently of OpenVR emulation.**
   With the ALVR dashboard web server on its default port, confirm
   `http://127.0.0.1:8082/api/version` returns a successful, nonempty local
-  response. Stop ALVR, return an empty/error response if safely reproducible,
+  response. The probe sends the `X-ALVR` request header required by ALVR
+  20.14+, which rejects header-less HTTP API requests with HTTP 400. Stop
+  ALVR, return an empty/error response if safely reproducible,
   and change the dashboard port in separate startup runs; confirm `wizard` and
   `daily` remain fail-closed with `DependencyUnavailable`. Restore port `8082`
   afterward. Confirm the production probe issues no more than one request per
