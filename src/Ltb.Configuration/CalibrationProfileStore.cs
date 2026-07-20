@@ -36,10 +36,11 @@ public sealed class CalibrationProfileStore
     public IReadOnlyList<CalibrationProfile> Profiles => Array.AsReadOnly(profiles);
 
     /// <summary>
-    /// Finds a profile by exact, ordinal tracker serial and controller hand.
-    /// Device enumeration order and controller identity are deliberately ignored.
+    /// Finds a candidate by exact, ordinal tracker serial and controller hand.
+    /// A candidate is not authorized for reuse until its runtime identity is
+    /// evaluated with the identity-aware <see cref="FindMatchingProfile(string, ControllerHand, string, string, string, string?)"/>.
     /// </summary>
-    public CalibrationProfile? FindMatchingProfile(string trackerSerial, ControllerHand hand)
+    public CalibrationProfile? FindCandidateProfile(string trackerSerial, ControllerHand hand)
     {
         var serial = ProfileValidation.RequireIdentity(trackerSerial, nameof(trackerSerial));
         ProfileValidation.RequireDefined(hand, nameof(hand));
@@ -47,6 +48,37 @@ public sealed class CalibrationProfileStore
         return profiles.FirstOrDefault(profile =>
             profile.Hand == hand &&
             string.Equals(profile.TrackerSerial, serial, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Compatibility alias for candidate lookup. This overload does not assert
+    /// profile reuse compatibility and must be followed by recalibration evaluation.
+    /// </summary>
+    [Obsolete("Use FindCandidateProfile for lookup or the identity-aware FindMatchingProfile overload for reuse.")]
+    public CalibrationProfile? FindMatchingProfile(string trackerSerial, ControllerHand hand) =>
+        FindCandidateProfile(trackerSerial, hand);
+
+    /// <summary>
+    /// Finds a reusable schema-2 profile only when tracker, hand, driver
+    /// profile, controller runtime/model, and exact runtime identity match.
+    /// An unchanged schema-1 legacy profile can never match this overload.
+    /// </summary>
+    public CalibrationProfile? FindMatchingProfile(
+        string trackerSerial,
+        ControllerHand hand,
+        string driverProfile,
+        string controllerRuntime,
+        string controllerModel,
+        string? controllerIdentity = null)
+    {
+        var candidate = FindCandidateProfile(trackerSerial, hand);
+        return candidate?.MatchesController(
+            driverProfile,
+            controllerRuntime,
+            controllerModel,
+            controllerIdentity) == true
+            ? candidate
+            : null;
     }
 
     /// <summary>Returns a new store with the profile for the same serial and hand replaced.</summary>

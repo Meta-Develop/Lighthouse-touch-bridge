@@ -139,14 +139,14 @@ public sealed class SteamVrInputDeviceClassifierTests
         var profile = ReliableProfileBackend.CreateProfiles()
             .Single(candidate => candidate.Hand == CalibrationWizardHand.Left);
 
-        var withoutStoredSerial = profile with { ControllerSerial = string.Empty };
+        var withoutStoredSerial = profile with { ControllerIdentity = string.Empty };
         Assert.Same(
             observed,
             ProductionReliableDailyUseRuntime.SelectCurrentController(
                 [observed],
                 withoutStoredSerial));
 
-        var staleStoredSerial = profile with { ControllerSerial = "STALE-SERIAL" };
+        var staleStoredSerial = profile with { ControllerIdentity = "STALE-SERIAL" };
         Assert.Throws<InvalidOperationException>(() =>
             ProductionReliableDailyUseRuntime.SelectCurrentController(
                 [observed],

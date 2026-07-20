@@ -61,7 +61,7 @@ public sealed record CalibrationWizardDeviceSet(
         if (string.Equals(LeftControllerSerial, RightControllerSerial, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "The two-hand wizard requires distinct left and right controller identities.");
+                "The two-hand wizard requires distinct left and right controller capture stream identifiers.");
         }
 
         Recalibration.Validate(TrackerSerials);
@@ -80,8 +80,25 @@ public sealed record CalibrationWizardRecalibrationObservations
 
     public string ControllerModel { get; init; } = "Meta Touch";
 
+    /// <summary>
+    /// Current first-party driver profile identity. The deprecated ALVR/VMT
+    /// path leaves this null and persists schema version 1.
+    /// </summary>
+    public string? DriverProfile { get; init; }
+
+    /// <summary>
+    /// Optional stable identity reported by the controller source. Public
+    /// LibOVR does not provide one, so the internal Meta Link path normally
+    /// leaves these null. Capture stream identifiers remain on
+    /// <see cref="CalibrationWizardDeviceSet"/> and are not persisted as
+    /// hardware identities.
+    /// </summary>
+    public string? LeftControllerIdentity { get; init; }
+
+    public string? RightControllerIdentity { get; init; }
+
     public int ExpectedSchemaVersion { get; init; } =
-        CalibrationProfileSchema.CurrentVersion;
+        CalibrationProfileSchema.LegacyVersion;
 
     public string ExpectedTransformConvention { get; init; } =
         CalibrationProfileSchema.TransformConvention;
@@ -97,11 +114,51 @@ public sealed record CalibrationWizardRecalibrationObservations
         _ => throw new ArgumentOutOfRangeException(nameof(hand)),
     };
 
+    public string? ControllerIdentity(CalibrationWizardHand hand) => hand switch
+    {
+        CalibrationWizardHand.Left => LeftControllerIdentity,
+        CalibrationWizardHand.Right => RightControllerIdentity,
+        _ => throw new ArgumentOutOfRangeException(nameof(hand)),
+    };
+
     public void Validate(IReadOnlyList<string> trackerSerials)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ControllerRuntime);
         ArgumentException.ThrowIfNullOrWhiteSpace(ControllerModel);
         ArgumentException.ThrowIfNullOrWhiteSpace(ExpectedTransformConvention);
+        if (DriverProfile is not null && string.IsNullOrWhiteSpace(DriverProfile))
+        {
+            throw new InvalidOperationException(
+                "The observed driver profile must be null or a non-empty identity.");
+        }
+
+        if ((LeftControllerIdentity is not null &&
+             string.IsNullOrWhiteSpace(LeftControllerIdentity)) ||
+            (RightControllerIdentity is not null &&
+             string.IsNullOrWhiteSpace(RightControllerIdentity)))
+        {
+            throw new InvalidOperationException(
+                "A controller identity must be null or non-empty when the source exposes one.");
+        }
+
+        if (ExpectedSchemaVersion == CalibrationProfileSchema.LegacyVersion &&
+            DriverProfile is not null)
+        {
+            throw new InvalidOperationException(
+                "Legacy schema-version-1 ALVR/VMT observations cannot specify a driver profile.");
+        }
+
+        if (ExpectedSchemaVersion == CalibrationProfileSchema.CurrentVersion &&
+            !string.Equals(
+                DriverProfile,
+                CalibrationDriverProfiles.LtbTouch,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Schema-version-2 observations require driver profile " +
+                $"'{CalibrationDriverProfiles.LtbTouch}'.");
+        }
+
         if (ExpectedSchemaVersion <= 0)
         {
             throw new InvalidOperationException(
@@ -172,14 +229,25 @@ public sealed record CalibrationWizardAnalysis(
 public sealed record CalibrationWizardProfileView(
     string ProfileName,
     CalibrationWizardHand Hand,
-    string ControllerSerial,
+    string? ControllerIdentity,
     string TrackerSerial,
     CalibrationModel SelectedModel,
     string SelectionReason,
     RigidTransform TrackerToController,
     double EstimatedLagMilliseconds,
     CalibrationQualityMetrics Quality,
-    DateTimeOffset CreatedUtc);
+    DateTimeOffset CreatedUtc)
+{
+    /// <summary>
+    /// Legacy application alias retained while ALVR/VMT support remains a
+    /// deprecated compile-time and runtime fallback.
+    /// </summary>
+    public string? ControllerSerial => ControllerIdentity;
+
+    public int SchemaVersion { get; init; } = CalibrationProfileSchema.LegacyVersion;
+
+    public string? DriverProfile { get; init; }
+}
 
 public sealed record CalibrationWizardProfileLookup(
     IReadOnlyList<CalibrationWizardProfileView> Profiles,

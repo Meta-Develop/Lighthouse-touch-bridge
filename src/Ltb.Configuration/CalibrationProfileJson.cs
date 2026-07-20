@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 
 namespace Ltb.Configuration;
 
-/// <summary>Deterministic UTF-8 JSON serialization for schema-version-1 profiles and stores.</summary>
+/// <summary>Deterministic UTF-8 JSON serialization for schema-versioned profiles and stores.</summary>
 public static class CalibrationProfileJson
 {
     private static readonly string[] CreatedUtcFormats =
@@ -113,7 +113,7 @@ public static class CalibrationProfileJson
         {
             throw Format(
                 CalibrationProfileFormatReason.MalformedJson,
-                $"{subject} is not valid schema-version-1 JSON.",
+                $"{subject} is not valid schema-versioned JSON.",
                 exception);
         }
     }
@@ -122,12 +122,16 @@ public static class CalibrationProfileJson
     {
         try
         {
-            if (dto.SchemaVersion != CalibrationProfileSchema.CurrentVersion)
+            if (dto.SchemaVersion is not CalibrationProfileSchema.LegacyVersion and
+                not CalibrationProfileSchema.CurrentVersion)
             {
                 throw Format(
                     CalibrationProfileFormatReason.UnsupportedSchemaVersion,
-                    $"Unsupported 'schema_version' {dto.SchemaVersion}; expected {CalibrationProfileSchema.CurrentVersion}.");
+                    $"Unsupported 'schema_version' {dto.SchemaVersion}; expected " +
+                    $"{CalibrationProfileSchema.LegacyVersion} or {CalibrationProfileSchema.CurrentVersion}.");
             }
+
+            ValidateIdentityShape(dto);
 
             var translation = RequireArray(dto.TrackerToController?.TranslationMeters, 3, "tracker_to_controller.translation_m");
             var rotation = RequireArray(dto.TrackerToController?.RotationXyzw, 4, "tracker_to_controller.rotation_xyzw");
@@ -144,27 +148,47 @@ public static class CalibrationProfileJson
                     "'created_utc' must be an ISO 8601 UTC timestamp ending in 'Z', with optional fractional seconds.");
             }
 
-            return new CalibrationProfile(
-                dto.SchemaVersion,
-                dto.ProfileName,
-                ParseHand(dto.Hand),
-                dto.ControllerRuntime,
-                dto.ControllerModel,
-                dto.ControllerSerial,
-                dto.TrackerSerial,
-                ParsePolicy(dto.CalibrationPolicy),
-                ParseMode(dto.SelectedMode),
-                dto.SelectionReason,
-                new TrackerToControllerTransform(
-                    new Vector3((float)translation[0], (float)translation[1], (float)translation[2]),
-                    new Quaternion((float)rotation[0], (float)rotation[1], (float)rotation[2], (float)rotation[3])),
-                dto.EstimatedLagMilliseconds,
-                new CalibrationProfileQuality(
-                    quality.RotationRmsDegrees,
-                    quality.PositionRmsMillimeters,
-                    quality.TranslationCondition,
-                    quality.InlierRatio),
-                createdUtc);
+            var transform = new TrackerToControllerTransform(
+                new Vector3((float)translation[0], (float)translation[1], (float)translation[2]),
+                new Quaternion((float)rotation[0], (float)rotation[1], (float)rotation[2], (float)rotation[3]));
+            var profileQuality = new CalibrationProfileQuality(
+                quality.RotationRmsDegrees,
+                quality.PositionRmsMillimeters,
+                quality.TranslationCondition,
+                quality.InlierRatio);
+
+            return dto.SchemaVersion == CalibrationProfileSchema.LegacyVersion
+                ? new CalibrationProfile(
+                    dto.SchemaVersion,
+                    dto.ProfileName,
+                    ParseHand(dto.Hand),
+                    dto.ControllerRuntime,
+                    dto.ControllerModel,
+                    dto.ControllerSerial,
+                    dto.TrackerSerial,
+                    ParsePolicy(dto.CalibrationPolicy),
+                    ParseMode(dto.SelectedMode),
+                    dto.SelectionReason,
+                    transform,
+                    dto.EstimatedLagMilliseconds,
+                    profileQuality,
+                    createdUtc)
+                : new CalibrationProfile(
+                    dto.SchemaVersion,
+                    dto.ProfileName,
+                    ParseHand(dto.Hand),
+                    dto.ControllerRuntime,
+                    dto.ControllerModel,
+                    dto.ControllerIdentity,
+                    dto.TrackerSerial,
+                    dto.DriverProfile!,
+                    ParsePolicy(dto.CalibrationPolicy),
+                    ParseMode(dto.SelectedMode),
+                    dto.SelectionReason,
+                    transform,
+                    dto.EstimatedLagMilliseconds,
+                    profileQuality,
+                    createdUtc);
         }
         catch (CalibrationProfileFormatException)
         {
@@ -172,8 +196,36 @@ public static class CalibrationProfileJson
         }
         catch (Exception exception) when (exception is ArgumentException or OverflowException)
         {
-            throw Invalid("Calibration profile contains invalid schema-version-1 data.", exception);
+            throw Invalid($"Calibration profile contains invalid schema-version-{dto.SchemaVersion} data.", exception);
         }
+    }
+
+    private static void ValidateIdentityShape(ProfileDto dto)
+    {
+        if (dto.SchemaVersion == CalibrationProfileSchema.LegacyVersion)
+        {
+            if (dto.HasControllerIdentity || dto.HasDriverProfile)
+            {
+                throw Invalid(
+                    "Schema-version-1 profiles must not contain 'controller_identity' or 'driver_profile'.");
+            }
+
+            return;
+        }
+
+        if (dto.HasControllerSerial)
+        {
+            throw Invalid("Schema-version-2 profiles must not contain legacy 'controller_serial'.");
+        }
+
+        if (!dto.HasDriverProfile || dto.DriverProfile is null)
+        {
+            throw Invalid("Schema-version-2 profiles require a non-null 'driver_profile'.");
+        }
+
+        // controller_identity is optional for schema 2 because the public
+        // LibOVR ABI does not expose a stable per-controller identity. When it
+        // is present, CalibrationProfile validates and matches it exactly.
     }
 
     private static double[] RequireArray(double[]? values, int length, string field)
@@ -258,6 +310,13 @@ public static class CalibrationProfileJson
 
     private sealed class ProfileDto
     {
+        private string? controllerSerial;
+        private string? controllerIdentity;
+        private string? driverProfile;
+        private bool hasControllerSerial;
+        private bool hasControllerIdentity;
+        private bool hasDriverProfile;
+
         [JsonPropertyName("schema_version")]
         [JsonPropertyOrder(0)]
         public required int SchemaVersion { get; init; }
@@ -281,38 +340,81 @@ public static class CalibrationProfileJson
         [JsonPropertyName("controller_serial")]
         [JsonPropertyOrder(5)]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        public string? ControllerSerial { get; init; }
+        public string? ControllerSerial
+        {
+            get => controllerSerial;
+            init
+            {
+                controllerSerial = value;
+                hasControllerSerial = true;
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasControllerSerial => hasControllerSerial;
+
+        [JsonPropertyName("controller_identity")]
+        [JsonPropertyOrder(5)]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? ControllerIdentity
+        {
+            get => controllerIdentity;
+            init
+            {
+                controllerIdentity = value;
+                hasControllerIdentity = true;
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasControllerIdentity => hasControllerIdentity;
 
         [JsonPropertyName("tracker_serial")]
         [JsonPropertyOrder(6)]
         public required string TrackerSerial { get; init; }
 
-        [JsonPropertyName("calibration_policy")]
+        [JsonPropertyName("driver_profile")]
         [JsonPropertyOrder(7)]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? DriverProfile
+        {
+            get => driverProfile;
+            init
+            {
+                driverProfile = value;
+                hasDriverProfile = true;
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasDriverProfile => hasDriverProfile;
+
+        [JsonPropertyName("calibration_policy")]
+        [JsonPropertyOrder(8)]
         public required string CalibrationPolicy { get; init; }
 
         [JsonPropertyName("selected_mode")]
-        [JsonPropertyOrder(8)]
+        [JsonPropertyOrder(9)]
         public required string SelectedMode { get; init; }
 
         [JsonPropertyName("selection_reason")]
-        [JsonPropertyOrder(9)]
+        [JsonPropertyOrder(10)]
         public required string SelectionReason { get; init; }
 
         [JsonPropertyName("tracker_to_controller")]
-        [JsonPropertyOrder(10)]
+        [JsonPropertyOrder(11)]
         public required TransformDto TrackerToController { get; init; }
 
         [JsonPropertyName("estimated_lag_ms")]
-        [JsonPropertyOrder(11)]
+        [JsonPropertyOrder(12)]
         public required double EstimatedLagMilliseconds { get; init; }
 
         [JsonPropertyName("quality")]
-        [JsonPropertyOrder(12)]
+        [JsonPropertyOrder(13)]
         public required QualityDto Quality { get; init; }
 
         [JsonPropertyName("created_utc")]
-        [JsonPropertyOrder(13)]
+        [JsonPropertyOrder(14)]
         public required string CreatedUtc { get; init; }
 
         public static ProfileDto FromProfile(CalibrationProfile profile)
@@ -327,8 +429,10 @@ public static class CalibrationProfileJson
                 Hand = FormatHand(profile.Hand),
                 ControllerRuntime = profile.ControllerRuntime,
                 ControllerModel = profile.ControllerModel,
-                ControllerSerial = profile.ControllerSerial,
+                ControllerSerial = profile.IsLegacy ? profile.ControllerIdentity : null,
+                ControllerIdentity = profile.IsLegacy ? null : profile.ControllerIdentity,
                 TrackerSerial = profile.TrackerSerial,
+                DriverProfile = profile.DriverProfile,
                 CalibrationPolicy = FormatPolicy(profile.CalibrationPolicy),
                 SelectedMode = FormatMode(profile.SelectedMode),
                 SelectionReason = profile.SelectionReason,
