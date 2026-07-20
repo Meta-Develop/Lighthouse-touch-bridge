@@ -9,8 +9,8 @@ namespace Ltb.MetaLink.Interop;
 /// </summary>
 internal static class OvrConstants
 {
-    internal const uint InitInvisible = 0x00000004;
-    internal const uint InitRequestVersion = 0x00000010;
+    internal const uint InitRequestVersion = 0x00000004;
+    internal const uint InitInvisible = 0x00000010;
     internal const uint RequestedMinorVersion = 64;
     internal const uint InitializationFlags = InitInvisible | InitRequestVersion;
 
