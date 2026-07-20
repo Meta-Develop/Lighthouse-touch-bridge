@@ -74,6 +74,7 @@ internal sealed record InternalDriverResolvedPaths(
 internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSessionRuntime
 {
     private const string ControllerModel = "Quest 2 Touch";
+    private static readonly TimeSpan CaptureProgressInterval = TimeSpan.FromMilliseconds(250);
     private readonly InternalDriverSessionOptions _options;
     private readonly InternalDriverResolvedPaths _paths;
     private readonly ISteamVrDriverLifecycle _driverLifecycle;
@@ -81,6 +82,8 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         new(StringComparer.Ordinal);
     private MetaLinkRuntime? _meta;
     private OpenVrSession? _openVr;
+    private InternalDriverCaptureEvidence? _leftCaptureEvidence;
+    private InternalDriverCaptureEvidence? _rightCaptureEvidence;
     private bool _disposed;
 
     public ProductionInternalDriverSessionRuntime(
@@ -193,6 +196,9 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             throw new InvalidOperationException(
                 "Profile resolution requires exactly two distinct observed tracker serials.");
         }
+
+        _leftCaptureEvidence = null;
+        _rightCaptureEvidence = null;
 
         var calibration = new InternalDriverCalibration(_paths.CalibrationProfileStorePath);
         var reusable = FindReusablePair(calibration, serials);
@@ -385,50 +391,143 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         InternalDriverProgress progress,
         CancellationToken cancellationToken)
     {
-        progress(
-            InternalDriverSessionState.Recording,
-            $"Move only the {hand.ToString().ToLowerInvariant()} mounted Touch controller through pitch, yaw, roll, and moderate translation.",
-            "Keep the other mounted controller still until this capture completes.");
-        var metaSamples = new List<MetaLinkControllerSnapshot>();
+        var mappedMetaSamples = new InternalDriverMappedMetaSampleFilter(hand);
+        var captureEvidence = new InternalDriverCaptureEvidenceTracker(hand);
         var trackerSamples = trackerSerials.ToDictionary(
             serial => serial,
             _ => new List<PoseSourceSample>(),
             StringComparer.Ordinal);
-        var started = Stopwatch.GetTimestamp();
-        while (Stopwatch.GetElapsedTime(started) < _options.GuidedCaptureDurationPerHand)
+        var lastTrackerTimes = trackerSerials.ToDictionary(
+            serial => serial,
+            _ => double.NegativeInfinity,
+            StringComparer.Ordinal);
+        var startedNanoseconds = GetMonotonicNanoseconds();
+        var durationNanoseconds = ToNanoseconds(_options.GuidedCaptureDurationPerHand);
+        var reportCadence = new InternalDriverCaptureReportCadence(
+            CaptureProgressInterval,
+            startedNanoseconds);
+        InternalDriverRuntimeObservation? latestObservation = null;
+        UpdateCaptureEvidence(hand, captureEvidence.Evaluate());
+        ReportCaptureEvidence(hand, progress, observation: null);
+        while (ElapsedNanoseconds(GetMonotonicNanoseconds(), startedNanoseconds) < durationNanoseconds)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var observation = Observe();
+            latestObservation = observation;
             if (!observation.SteamVrRunning)
             {
                 throw new InvalidOperationException(observation.SteamVrDiagnostic);
             }
 
             var meta = observation.Meta.ForHand(hand);
+            if (captureEvidence.TryAppend(observation.Meta))
+            {
+                UpdateCaptureEvidence(hand, captureEvidence.Evaluate());
+            }
+
             if (meta.Readiness == MetaLinkReadiness.Ready && meta.Controller is { } controller)
             {
-                metaSamples.Add(controller);
+                _ = mappedMetaSamples.TryAppend(controller);
             }
 
             foreach (var serial in trackerSerials)
             {
                 if (observation.TrackerSamples.TryGetValue(serial, out var sample))
                 {
-                    trackerSamples[serial].Add(sample);
+                    if (sample.MonotonicHostTimeSeconds > lastTrackerTimes[serial])
+                    {
+                        trackerSamples[serial].Add(sample);
+                        lastTrackerTimes[serial] = sample.MonotonicHostTimeSeconds;
+                    }
                 }
+            }
+
+            if (reportCadence.ShouldReport(GetMonotonicNanoseconds()))
+            {
+                ReportCaptureEvidence(hand, progress, latestObservation);
             }
 
             await DelayAsync(_options.PollInterval, cancellationToken).ConfigureAwait(false);
         }
 
-        if (metaSamples.Count == 0 || trackerSamples.Values.Any(samples => samples.Count == 0))
+        var finalEvidence = captureEvidence.Evaluate();
+        UpdateCaptureEvidence(hand, finalEvidence);
+        ReportCaptureEvidence(hand, progress, latestObservation);
+
+        EnsureRotationReady(hand, finalEvidence);
+
+        if (mappedMetaSamples.Samples.Count == 0 ||
+            trackerSamples.Values.Any(samples => samples.Count == 0))
         {
             throw new InvalidOperationException(
                 $"The {hand} guided capture did not retain Meta and both raw tracker streams.");
         }
 
-        return new GuidedHandCapture(hand, metaSamples, trackerSamples);
+        return new GuidedHandCapture(
+            hand,
+            mappedMetaSamples.Samples.ToArray(),
+            trackerSamples);
     }
+
+    private static ulong ToNanoseconds(TimeSpan duration)
+    {
+        var nanoseconds = duration.TotalMilliseconds * 1_000_000d;
+        return nanoseconds >= ulong.MaxValue
+            ? ulong.MaxValue
+            : checked((ulong)Math.Ceiling(nanoseconds));
+    }
+
+    private static ulong ElapsedNanoseconds(ulong now, ulong started) =>
+        now >= started ? now - started : 0UL;
+
+    internal static void EnsureRotationReady(
+        MetaLinkHand hand,
+        InternalDriverCaptureEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        if (evidence.RotationReady)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"The {hand} guided capture lacks rotation coverage: " +
+            $"samples={evidence.SampleCount}, " +
+            $"valid_orientation={evidence.OrientationValidityFraction:P0}, " +
+            $"axis_coverage={evidence.MotionAxisCoverage:F3}, " +
+            $"total_rotation={evidence.TotalRotationDegrees:F1} deg. " +
+            "Repeat capture with continuous pitch, yaw, and roll while keeping Meta tracking visible.");
+    }
+
+    private void UpdateCaptureEvidence(
+        MetaLinkHand hand,
+        InternalDriverCaptureEvidence evidence)
+    {
+        if (hand == MetaLinkHand.Left)
+        {
+            _leftCaptureEvidence = evidence;
+        }
+        else if (hand == MetaLinkHand.Right)
+        {
+            _rightCaptureEvidence = evidence;
+        }
+        else
+        {
+            throw new ArgumentOutOfRangeException(nameof(hand));
+        }
+    }
+
+    private void ReportCaptureEvidence(
+        MetaLinkHand hand,
+        InternalDriverProgress progress,
+        InternalDriverRuntimeObservation? observation) => progress(
+        InternalDriverSessionState.Recording,
+        $"Capturing strictly monotonic real Meta pose samples for the " +
+        $"{hand.ToString().ToLowerInvariant()} hand.",
+        "Move only the requested mounted controller through pitch, yaw, roll, and moderate translation.",
+        _leftCaptureEvidence,
+        _rightCaptureEvidence,
+        observation);
 
     private static HandMotionCapture ToAssociationCapture(GuidedHandCapture capture)
     {
@@ -511,7 +610,42 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         profile.TrackerSerial,
         profile.TrackerToController.ToRigidTransform(),
         readiness,
-        diagnostic);
+        diagnostic)
+    {
+        Calibration = ToCalibrationEvidence(profile),
+    };
+
+    internal static InternalDriverCalibrationEvidence ToCalibrationEvidence(
+        CalibrationProfile profile)
+    {
+        if (profile.SchemaVersion != CalibrationProfileSchema.CurrentVersion ||
+            !string.Equals(
+                profile.DriverProfile,
+                CalibrationDriverProfiles.LtbTouch,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "First-party session evidence requires an exact schema-2 ltb_touch profile.");
+        }
+
+        var selectedMode = profile.SelectedMode switch
+        {
+            ProfileCalibrationMode.RotationOnly => InternalDriverCalibrationMode.RotationOnly,
+            ProfileCalibrationMode.FullSixDof => InternalDriverCalibrationMode.FullSixDof,
+            _ => throw new ArgumentOutOfRangeException(nameof(profile)),
+        };
+        return new InternalDriverCalibrationEvidence(
+            profile.SchemaVersion,
+            selectedMode,
+            profile.SelectionReason,
+            profile.EstimatedLagMilliseconds,
+            new InternalDriverCalibrationQualityEvidence(
+                profile.Quality.RotationRmsDegrees,
+                profile.Quality.PositionRmsMillimeters,
+                profile.Quality.TranslationCondition,
+                profile.Quality.InlierRatio),
+            profile.CreatedUtc);
+    }
 
     private void EnsureDefaultSettings()
     {
@@ -546,6 +680,33 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         MetaLinkHand Hand,
         IReadOnlyList<MetaLinkControllerSnapshot> MetaSamples,
         IReadOnlyDictionary<string, List<PoseSourceSample>> TrackerSamples);
+}
+
+/// <summary>Monotonic, fixed-rate gate for bounded capture progress callbacks.</summary>
+internal sealed class InternalDriverCaptureReportCadence
+{
+    private readonly ulong _intervalNanoseconds;
+    private ulong _lastReportNanoseconds;
+
+    public InternalDriverCaptureReportCadence(TimeSpan interval, ulong startedNanoseconds)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(interval, TimeSpan.Zero);
+
+        _intervalNanoseconds = checked((ulong)interval.Ticks * 100UL);
+        _lastReportNanoseconds = startedNanoseconds;
+    }
+
+    public bool ShouldReport(ulong nowNanoseconds)
+    {
+        if (nowNanoseconds < _lastReportNanoseconds ||
+            nowNanoseconds - _lastReportNanoseconds < _intervalNanoseconds)
+        {
+            return false;
+        }
+
+        _lastReportNanoseconds = nowNanoseconds;
+        return true;
+    }
 }
 
 internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSessionOutput
@@ -699,7 +860,9 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
         InternalDriverProfileReadiness ProfileReadiness,
         bool IsPublishing,
         InternalDriverNeutralReason NeutralReason,
-        string Diagnostic)
+        string Diagnostic,
+        InternalDriverCalibrationEvidence? Calibration,
+        InternalDriverCaptureEvidence? Capture)
     {
         public static HandTransition From(InternalDriverHandSnapshot hand) => new(
             hand.Hand,
@@ -711,7 +874,9 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
             hand.ProfileReadiness,
             hand.IsPublishing,
             hand.NeutralReason,
-            hand.Diagnostic);
+            hand.Diagnostic,
+            hand.Calibration,
+            hand.Capture);
     }
 
     private readonly record struct FeedTransition(
@@ -733,6 +898,8 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
         HandTransition Left,
         HandTransition Right,
         FeedTransition Feed,
+        InternalDriverDriverEvidence? Driver,
+        InternalDriverLighthouseHmdEvidence? LighthouseHmd,
         bool RestartRequired,
         string Diagnostic,
         string Remediation)
@@ -743,6 +910,8 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
             HandTransition.From(snapshot.Left),
             HandTransition.From(snapshot.Right),
             FeedTransition.From(snapshot.Feed),
+            snapshot.Driver,
+            snapshot.LighthouseHmd,
             snapshot.RestartRequired,
             snapshot.Diagnostic,
             snapshot.Remediation);

@@ -115,7 +115,7 @@ internal sealed class MetaLinkCalibrationCapture
         TrackerPoseSamples,
         ControllerPoseSamples);
 
-    private static TimestampedPoseSample ToControllerPoseSample(
+    internal static TimestampedPoseSample ToControllerPoseSample(
         MetaLinkControllerSnapshot sample)
     {
         var pose = sample.Pose;
@@ -156,4 +156,115 @@ internal sealed class MetaLinkCalibrationCapture
         MetaLinkHand.Right => CalibrationHand.Right,
         _ => throw new ArgumentOutOfRangeException(nameof(hand)),
     };
+}
+
+/// <summary>
+/// Retains only real, strictly increasing Meta pose observations and derives
+/// portable motion coverage without inventing timestamps for repeated polls.
+/// </summary>
+internal sealed class InternalDriverCaptureEvidenceTracker
+{
+    private readonly MetaLinkHand _hand;
+    private readonly List<TimestampedPoseSample> _samples = [];
+
+    public InternalDriverCaptureEvidenceTracker(MetaLinkHand hand)
+    {
+        if (!Enum.IsDefined(hand))
+        {
+            throw new ArgumentOutOfRangeException(nameof(hand));
+        }
+
+        _hand = hand;
+    }
+
+    public bool TryAppend(MetaLinkRuntimeSnapshot observation)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+        var timestamp = observation.ObservedAtMonotonicSeconds;
+        if (_samples.Count > 0 && timestamp <= _samples[^1].MonotonicTimeSeconds)
+        {
+            return false;
+        }
+
+        var hand = observation.ForHand(_hand);
+        TimestampedPoseSample sample;
+        if (hand.Readiness == MetaLinkReadiness.Ready && hand.Controller is { } controller)
+        {
+            var pose = MetaLinkCalibrationCapture.ToControllerPoseSample(controller);
+            sample = new TimestampedPoseSample(timestamp, pose.Pose, pose.Validity);
+        }
+        else
+        {
+            sample = new TimestampedPoseSample(
+                timestamp,
+                RigidTransform.Identity,
+                PoseValidity.None);
+        }
+
+        _samples.Add(sample);
+        return true;
+    }
+
+    public InternalDriverCaptureEvidence Evaluate()
+    {
+        var coverage = MotionCoverageAnalyzer.Evaluate(_samples);
+        return new InternalDriverCaptureEvidence(
+            coverage.SampleCount,
+            coverage.TrackingValidityFraction,
+            coverage.OrientationValidityFraction,
+            coverage.PositionValidityFraction,
+            coverage.RotationAxisCoverage,
+            coverage.TotalRotationDegrees,
+            coverage.RotationProgress,
+            coverage.PositionProgress,
+            coverage.IsRotationSufficient,
+            coverage.IsPositionSufficient);
+    }
+}
+
+/// <summary>
+/// Keeps solver input on real mapped per-hand pose timestamps while explicitly
+/// discarding duplicate or regressing source/app timestamp pairs.
+/// </summary>
+internal sealed class InternalDriverMappedMetaSampleFilter
+{
+    private readonly MetaLinkHand _hand;
+    private readonly List<MetaLinkControllerSnapshot> _samples = [];
+    private double? _lastRawMetaTimeSeconds;
+
+    public InternalDriverMappedMetaSampleFilter(MetaLinkHand hand)
+    {
+        if (!Enum.IsDefined(hand))
+        {
+            throw new ArgumentOutOfRangeException(nameof(hand));
+        }
+
+        _hand = hand;
+    }
+
+    public IReadOnlyList<MetaLinkControllerSnapshot> Samples => _samples;
+
+    public bool TryAppend(MetaLinkControllerSnapshot sample)
+    {
+        ArgumentNullException.ThrowIfNull(sample);
+        if (sample.Hand != _hand)
+        {
+            throw new ArgumentException(
+                $"Mapped samples for {_hand} cannot accept a {sample.Hand} sample.",
+                nameof(sample));
+        }
+
+        var rawTime = sample.Pose.RawMetaTimeSeconds;
+        var appTime = sample.Pose.AppMonotonicTimeSeconds;
+        if (!double.IsFinite(rawTime) || !double.IsFinite(appTime) ||
+            _lastRawMetaTimeSeconds is { } lastRaw && rawTime <= lastRaw ||
+            _samples.Count > 0 && appTime <= _samples[^1].Pose.AppMonotonicTimeSeconds)
+        {
+            return false;
+        }
+
+        _samples.Add(sample);
+        _lastRawMetaTimeSeconds = rawTime;
+        return true;
+    }
 }

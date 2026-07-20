@@ -27,6 +27,8 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private InternalDriverPlatformProbe? _platformProbe;
     private InternalDriverProfilePair? _profiles;
     private InternalDriverRuntimeObservation? _lastObservation;
+    private InternalDriverCaptureEvidence? _leftCapture;
+    private InternalDriverCaptureEvidence? _rightCapture;
     private ulong _lastLeftTimestamp;
     private ulong _lastRightTimestamp;
     private long _publicationGeneration;
@@ -232,6 +234,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             faultSnapshot ??= CurrentSnapshot.State == InternalDriverSessionState.Faulted
                 ? CurrentSnapshot
                 : null;
+            ClearRunEvidence();
             var finalSnapshot = faultSnapshot is { } fault
                 ? CreateFinalFaultSnapshot(fault)
                 : CreateStateSnapshot(
@@ -239,7 +242,8 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                     "Internal-driver session stopped; both hands are neutral and runtime resources are retired.",
                     "Run the session again to start a new feed session.",
                     leftReason: InternalDriverNeutralReason.SessionStopped,
-                    rightReason: InternalDriverNeutralReason.SessionStopped);
+                    rightReason: InternalDriverNeutralReason.SessionStopped,
+                    retainRunEvidence: false);
             PublishFinalSnapshot(finalSnapshot);
         }
     }
@@ -253,7 +257,8 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             faultSnapshot.Remediation,
             restartRequired: faultSnapshot.RestartRequired,
             leftReason: faultSnapshot.Left.NeutralReason,
-            rightReason: faultSnapshot.Right.NeutralReason);
+            rightReason: faultSnapshot.Right.NeutralReason,
+            retainRunEvidence: false);
         return rebuilt with
         {
             Left = rebuilt.Left with { Diagnostic = faultSnapshot.Left.Diagnostic },
@@ -480,7 +485,11 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                     : health.LastError ?? "The driver feed is reconnecting.",
                 state == InternalDriverSessionState.Active
                     ? "No remediation is required."
-                    : "Keep SteamVR running while DriverFeed establishes a fresh IPC session."));
+                    : "Keep SteamVR running while DriverFeed establishes a fresh IPC session.")
+            {
+                Driver = DriverEvidence(observation),
+                LighthouseHmd = LighthouseHmdEvidence(observation),
+            });
 
             await _runtime.DelayAsync(_options.PollInterval, cancellationToken).ConfigureAwait(false);
         }
@@ -905,11 +914,29 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private void ReportCalibrationProgress(
         InternalDriverSessionState state,
         string diagnostic,
-        string remediation)
+        string remediation,
+        InternalDriverCaptureEvidence? leftCapture = null,
+        InternalDriverCaptureEvidence? rightCapture = null,
+        InternalDriverRuntimeObservation? observation = null)
     {
         if (state is < InternalDriverSessionState.Recording or > InternalDriverSessionState.SaveProfile)
         {
             throw new ArgumentOutOfRangeException(nameof(state));
+        }
+
+        if (leftCapture is not null)
+        {
+            _leftCapture = leftCapture;
+        }
+
+        if (rightCapture is not null)
+        {
+            _rightCapture = rightCapture;
+        }
+
+        if (observation is not null)
+        {
+            _lastObservation = observation;
         }
 
         PublishState(
@@ -950,22 +977,35 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         InternalDriverRuntimeObservation? observation = null,
         bool restartRequired = false,
         InternalDriverNeutralReason leftReason = InternalDriverNeutralReason.ProfileUnavailable,
-        InternalDriverNeutralReason rightReason = InternalDriverNeutralReason.ProfileUnavailable)
+        InternalDriverNeutralReason rightReason = InternalDriverNeutralReason.ProfileUnavailable,
+        bool retainRunEvidence = true)
     {
-        var left = StateHandSnapshot(ProtocolHand.Left, observation, leftReason);
-        var right = StateHandSnapshot(ProtocolHand.Right, observation, rightReason);
+        var left = retainRunEvidence
+            ? StateHandSnapshot(ProtocolHand.Left, observation, leftReason)
+            : ClearedHandSnapshot(ProtocolHand.Left, leftReason);
+        var right = retainRunEvidence
+            ? StateHandSnapshot(ProtocolHand.Right, observation, rightReason)
+            : ClearedHandSnapshot(ProtocolHand.Right, rightReason);
         var health = _feed?.Health;
         return new InternalDriverSessionSnapshot(
             state,
-            BuildReadiness(
-                observation,
-                health?.Readiness == DriverFeedReadiness.Ready && health.Value.IsStale == false),
+            retainRunEvidence
+                ? BuildReadiness(
+                    observation,
+                    health?.Readiness == DriverFeedReadiness.Ready && health.Value.IsStale == false)
+                : InternalDriverSessionReadiness.Empty,
             left,
             right,
-            health is { } present ? ToFeedSnapshot(present) : InternalDriverFeedSnapshot.Stopped,
+            retainRunEvidence && health is { } present
+                ? ToFeedSnapshot(present)
+                : InternalDriverFeedSnapshot.Stopped,
             restartRequired,
             diagnostic,
-            remediation);
+            remediation)
+        {
+            Driver = retainRunEvidence ? DriverEvidence(observation) : null,
+            LighthouseHmd = retainRunEvidence ? LighthouseHmdEvidence(observation) : null,
+        };
     }
 
     private InternalDriverHandSnapshot StateHandSnapshot(
@@ -998,8 +1038,27 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             tracker is { } present ? PoseAge(present) : null,
             IsPublishing: false,
             reason,
-            meta?.Diagnostic ?? "No active runtime observation.");
+            meta?.Diagnostic ?? "No active runtime observation.")
+        {
+            Calibration = profile?.Calibration,
+            Capture = hand == ProtocolHand.Left ? _leftCapture : _rightCapture,
+        };
     }
+
+    private static InternalDriverHandSnapshot ClearedHandSnapshot(
+        ProtocolHand hand,
+        InternalDriverNeutralReason reason) => new(
+        hand,
+        TrackerSerial: null,
+        TrackerConnected: false,
+        TrackerTracked: false,
+        MetaLinkReadiness.RuntimeStopped,
+        MetaInputsValid: false,
+        InternalDriverProfileReadiness.Missing,
+        PoseAge: null,
+        IsPublishing: false,
+        reason,
+        "No active runtime observation.");
 
     private InternalDriverSessionReadiness BuildReadiness(
         InternalDriverRuntimeObservation? observation,
@@ -1037,7 +1096,11 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         tracker is { } sample ? PoseAge(sample) : null,
         isPublishing,
         reason,
-        diagnostic);
+        diagnostic)
+    {
+        Calibration = profile.Calibration,
+        Capture = profile.Hand == ProtocolHand.Left ? _leftCapture : _rightCapture,
+    };
 
     private TimeSpan? PoseAge(PoseSourceSample sample)
     {
@@ -1156,6 +1219,95 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             observation.Devices,
             _registration?.StagedBuildIdentity);
 
+    private InternalDriverDriverEvidence? DriverEvidence(
+        InternalDriverRuntimeObservation? observation)
+    {
+        if (_registration is not { IsRegistered: true } registration ||
+            string.IsNullOrWhiteSpace(registration.StagedBuildIdentity))
+        {
+            return null;
+        }
+
+        var evidence = new InternalDriverDriverEvidence(registration.StagedBuildIdentity);
+        if (observation is null || !LoadedReadiness(observation).IsReady)
+        {
+            return evidence;
+        }
+
+        return evidence with
+        {
+            LeftController = LoadedControllerEvidence(
+                observation,
+                InternalDriverLoadedReadiness.LeftControllerSerial,
+                SteamVrControllerRole.LeftHand,
+                registration.StagedBuildIdentity),
+            RightController = LoadedControllerEvidence(
+                observation,
+                InternalDriverLoadedReadiness.RightControllerSerial,
+                SteamVrControllerRole.RightHand,
+                registration.StagedBuildIdentity),
+        };
+    }
+
+    private static InternalDriverLoadedControllerEvidence? LoadedControllerEvidence(
+        InternalDriverRuntimeObservation observation,
+        string serial,
+        SteamVrControllerRole role,
+        string stagedBuildIdentity)
+    {
+        var matches = observation.Devices.Where(device =>
+            string.Equals(device.Identity.SerialNumber, serial, StringComparison.Ordinal)).ToArray();
+        if (matches.Length != 1 ||
+            matches[0] is not { IsConnected: true, Category: SteamVrDeviceCategory.InputController } device ||
+            device.ControllerRole != role ||
+            device.Metadata is not { } metadata ||
+            !string.Equals(metadata.DriverId, InternalDriverLoadedReadiness.DriverId, StringComparison.Ordinal) ||
+            !string.Equals(
+                metadata.TrackingSystemName,
+                InternalDriverLoadedReadiness.TrackingSystemName,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                metadata.ControllerType,
+                InternalDriverLoadedReadiness.ControllerType,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                metadata.InputProfilePath,
+                InternalDriverLoadedReadiness.InputProfilePath,
+                StringComparison.Ordinal) ||
+            !string.Equals(metadata.DriverVersion, stagedBuildIdentity, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return new InternalDriverLoadedControllerEvidence(serial, metadata.DriverVersion!);
+    }
+
+    private static InternalDriverLighthouseHmdEvidence? LighthouseHmdEvidence(
+        InternalDriverRuntimeObservation? observation)
+    {
+        if (observation is null || !ActiveHmdReadiness.Evaluate(observation.Devices).IsReady)
+        {
+            return null;
+        }
+
+        var hmds = observation.Devices
+            .Where(device => device.Category == SteamVrDeviceCategory.HeadMountedDisplay)
+            .ToArray();
+        if (hmds.Length != 1 || hmds[0].Metadata is not { } metadata)
+        {
+            return null;
+        }
+
+        var hmd = hmds[0];
+        return new InternalDriverLighthouseHmdEvidence(
+            hmd.StableDeviceId,
+            hmd.Identity.DevicePath,
+            metadata.DriverId,
+            metadata.TrackingSystemName,
+            metadata.ManufacturerName,
+            metadata.ModelNumber);
+    }
+
     private static bool MetaBothReady(MetaLinkRuntimeSnapshot meta) =>
         MetaHandReady(meta.Left) && MetaHandReady(meta.Right);
 
@@ -1267,9 +1419,23 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         _platformProbe = null;
         _profiles = null;
         _lastObservation = null;
+        _leftCapture = null;
+        _rightCapture = null;
         _lastLeftTimestamp = 0;
         _lastRightTimestamp = 0;
         _inputMapper.Reset();
+    }
+
+    private void ClearRunEvidence()
+    {
+        _registration = null;
+        _platformProbe = null;
+        _profiles = null;
+        _lastObservation = null;
+        _leftCapture = null;
+        _rightCapture = null;
+        _lastLeftTimestamp = 0;
+        _lastRightTimestamp = 0;
     }
 
     private static MetaLinkHand ToMetaHand(ProtocolHand hand) => hand switch
