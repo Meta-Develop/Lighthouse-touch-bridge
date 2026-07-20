@@ -1,12 +1,14 @@
 # Valve OpenVR SDK artifacts
 
-The generated binding and Windows x64 native library are unmodified artifacts
-from Valve's official OpenVR repository, pinned together at OpenVR SDK 2.15.6
-commit `0924064316de3effbcd1acf1e309182a2deb1c05`.
+The generated binding, driver API header, and Windows x64 native library are
+unmodified artifacts from Valve's official OpenVR repository, pinned together
+at OpenVR SDK 2.15.6 commit
+`0924064316de3effbcd1acf1e309182a2deb1c05`.
 
 | Artifact | Official source | Git blob | SHA-256 |
 | --- | --- | --- | --- |
 | `headers/openvr_api.cs` | <https://github.com/ValveSoftware/openvr/blob/0924064316de3effbcd1acf1e309182a2deb1c05/headers/openvr_api.cs> | `3050761272a0d4191379700cce47ba2c8c17044b` | `c17e878b7b3b925d1f22ef5382561389c47db8b92019de840705ff5ff28c317a` |
+| `headers/openvr_driver.h` | <https://github.com/ValveSoftware/openvr/blob/0924064316de3effbcd1acf1e309182a2deb1c05/headers/openvr_driver.h> | `fcd675583622df0ea1a54d4f88c2b34c195c199b` | `1036efe998d63e82d1d3db2b32a2f58df4a8eeaf5280f50aaf28220ff60a40ab` |
 | `bin/win64/openvr_api.dll` | <https://github.com/ValveSoftware/openvr/blob/0924064316de3effbcd1acf1e309182a2deb1c05/bin/win64/openvr_api.dll> | `83b201974728158157be0bf6fc3b43caed34ab11` | `bab8ac6ef64e68a9ca53315b0014d131088584b2efdfa6db511d67ec03cfcb4a` |
 | `LICENSE` | <https://github.com/ValveSoftware/openvr/blob/0924064316de3effbcd1acf1e309182a2deb1c05/LICENSE> | `ee83337d7fcb726d14cc10f7dd2fda6799d8a135` | `f56ff606104d4ef18e617921a75c73ad73b5a1a1d70c69590c29de16919e04ad` |
 
@@ -22,3 +24,8 @@ binding's `DllImport("openvr_api")` resolves it without a user-managed `PATH`.
 An explicit non-Windows or non-x64 RID does not receive this Windows binary.
 The same project copies Valve's 3-clause BSD notice to
 `licenses/Valve.OpenVR.LICENSE.txt` for binary distributions.
+
+`native/driver_ltb` includes `openvr_driver.h` directly to implement the thin
+SteamVR server-driver shell. A SteamVR driver consumes the header interfaces
+and does not link the OpenVR client DLL. Source and binary distributions retain
+the same Valve BSD notice.

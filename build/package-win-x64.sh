@@ -7,6 +7,8 @@ Usage: build/package-win-x64.sh [version]
 
 Publishes the self-contained win-x64 console and GUI applications and creates a portable ZIP.
 If version is omitted, the Version property from Ltb.App.csproj is used.
+LTB_DRIVER_ROOT may point at a staged driver_ltb root; otherwise the script uses
+build/native-windows/driver_ltb from the repository root.
 EOF
 }
 
@@ -32,6 +34,23 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
 app_project_path="$repo_root/src/Ltb.App/Ltb.App.csproj"
 gui_project_path="$repo_root/src/Ltb.Gui/Ltb.Gui.csproj"
 artifact_root="$repo_root/artifacts/package"
+driver_source_root="${LTB_DRIVER_ROOT:-$repo_root/build/native-windows/driver_ltb}"
+
+required_driver_source_files=(
+  "$driver_source_root/driver.vrdrivermanifest"
+  "$driver_source_root/bin/win64/driver_ltb.dll"
+  "$driver_source_root/resources/input/ltb_touch_profile.json"
+  "$driver_source_root/resources/settings/default.vrsettings"
+  "$driver_source_root/resources/localization/localization.json"
+  "$driver_source_root/resources/icons/ltb_touch.svg"
+)
+for required_file in "${required_driver_source_files[@]}"; do
+  if [[ ! -f "$required_file" ]]; then
+    printf 'Required staged driver_ltb file is missing: %s\n' "$required_file" >&2
+    printf 'Build the Windows driver first or set LTB_DRIVER_ROOT to the CI artifact root.\n' >&2
+    exit 1
+  fi
+done
 
 version="${1:-}"
 if [[ -z "$version" ]]; then
@@ -111,6 +130,9 @@ dotnet publish "$gui_project_path" \
   -p:Version="$version" \
   -p:InformationalVersion="$version"
 
+mkdir -p -- "$package_root/driver_ltb"
+cp -R -- "$driver_source_root/." "$package_root/driver_ltb/"
+
 dotnet_sdk_version="$(dotnet --version)"
 python_version="$(python3 -c 'import platform; print(platform.python_version())')"
 read -r zlib_build_version zlib_runtime_version < <(
@@ -162,6 +184,10 @@ required_publish_files=(
   "$package_root/Ltb.Gui.exe"
   "$package_root/openvr_api.dll"
   "$package_root/licenses/Valve.OpenVR.LICENSE.txt"
+  "$package_root/driver_ltb/driver.vrdrivermanifest"
+  "$package_root/driver_ltb/bin/win64/driver_ltb.dll"
+  "$package_root/driver_ltb/resources/input/ltb_touch_profile.json"
+  "$package_root/driver_ltb/resources/settings/default.vrsettings"
 )
 for required_file in "${required_publish_files[@]}"; do
   if [[ ! -f "$required_file" ]]; then
@@ -171,8 +197,11 @@ for required_file in "${required_publish_files[@]}"; do
 done
 
 expected_openvr_hash="bab8ac6ef64e68a9ca53315b0014d131088584b2efdfa6db511d67ec03cfcb4a"
+expected_openvr_driver_header_hash="1036efe998d63e82d1d3db2b32a2f58df4a8eeaf5280f50aaf28220ff60a40ab"
 mapfile -t integrity_hashes < <(python3 - \
   "$package_root/openvr_api.dll" \
+  "$package_root/driver_ltb/bin/win64/driver_ltb.dll" \
+  "$repo_root/src/Ltb.OpenVr/ThirdParty/OpenVR/openvr_driver.h" \
   "$repo_root/src/Ltb.OpenVr/ThirdParty/OpenVR/LICENSE" \
   "$package_root/licenses/Valve.OpenVR.LICENSE.txt" <<'PY'
 import hashlib
@@ -187,26 +216,37 @@ def sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 openvr_path = pathlib.Path(sys.argv[1])
-source_license_path = pathlib.Path(sys.argv[2])
-published_license_path = pathlib.Path(sys.argv[3])
+driver_path = pathlib.Path(sys.argv[2])
+openvr_driver_header_path = pathlib.Path(sys.argv[3])
+source_license_path = pathlib.Path(sys.argv[4])
+published_license_path = pathlib.Path(sys.argv[5])
 source_license = source_license_path.read_bytes()
 published_license = published_license_path.read_bytes()
 if published_license != source_license:
     raise SystemExit("Published Valve license differs from the vendored source license.")
 print(sha256(openvr_path))
+print(sha256(driver_path))
+print(sha256(openvr_driver_header_path))
 print(hashlib.sha256(source_license).hexdigest())
 PY
 )
 actual_openvr_hash="${integrity_hashes[0]:-}"
-valve_license_hash="${integrity_hashes[1]:-}"
+driver_ltb_hash="${integrity_hashes[1]:-}"
+openvr_driver_header_hash="${integrity_hashes[2]:-}"
+valve_license_hash="${integrity_hashes[3]:-}"
 if [[ "$actual_openvr_hash" != "$expected_openvr_hash" ]]; then
   printf 'openvr_api.dll SHA-256 mismatch. Expected %s, got %s.\n' \
     "$expected_openvr_hash" "$actual_openvr_hash" >&2
   exit 1
 fi
+if [[ "$openvr_driver_header_hash" != "$expected_openvr_driver_header_hash" ]]; then
+  printf 'openvr_driver.h SHA-256 mismatch. Expected %s, got %s.\n' \
+    "$expected_openvr_driver_header_hash" "$openvr_driver_header_hash" >&2
+  exit 1
+fi
 
 install -m 0644 "$repo_root/LICENSE" "$package_root/LICENSE.txt"
-for document_name in setup troubleshooting architecture calibration driver-evaluation windows-verification specification; do
+for document_name in setup troubleshooting architecture calibration driver-evaluation internal-drivers windows-verification specification; do
   install -m 0644 \
     "$repo_root/docs/$document_name.md" \
     "$package_root/docs/$document_name.md"
@@ -231,6 +271,11 @@ done
   printf 'publish_single_file=false\n'
   printf 'publish_trimmed=false\n'
   printf 'openvr_api_sha256=%s\n' "$actual_openvr_hash"
+  printf 'driver_ltb_sha256=%s\n' "$driver_ltb_hash"
+  printf 'driver_protocol_major=1\n'
+  printf 'driver_protocol_minor=0\n'
+  printf 'openvr_sdk_commit=0924064316de3effbcd1acf1e309182a2deb1c05\n'
+  printf 'openvr_driver_header_sha256=%s\n' "$openvr_driver_header_hash"
   printf 'valve_license_sha256=%s\n' "$valve_license_hash"
 } > "$package_root/release-manifest.txt"
 
@@ -276,6 +321,8 @@ python3 - \
   "$zlib_build_version" \
   "$zlib_runtime_version" \
   "$actual_openvr_hash" \
+  "$driver_ltb_hash" \
+  "$openvr_driver_header_hash" \
   "$valve_license_hash" <<'PY'
 import hashlib
 import pathlib
@@ -297,6 +344,8 @@ import zipfile
     zlib_build_version,
     zlib_runtime_version,
     openvr_hash,
+    driver_ltb_hash,
+    openvr_driver_header_hash,
     valve_license_hash,
 ) = sys.argv[1:]
 archive_path = pathlib.Path(archive_value)
@@ -313,6 +362,12 @@ required = {
     root + "coreclr.dll",
     root + "hostfxr.dll",
     root + "openvr_api.dll",
+    root + "driver_ltb/driver.vrdrivermanifest",
+    root + "driver_ltb/bin/win64/driver_ltb.dll",
+    root + "driver_ltb/resources/input/ltb_touch_profile.json",
+    root + "driver_ltb/resources/settings/default.vrsettings",
+    root + "driver_ltb/resources/localization/localization.json",
+    root + "driver_ltb/resources/icons/ltb_touch.svg",
     root + "licenses/Valve.OpenVR.LICENSE.txt",
     root + "LICENSE.txt",
     root + "release-manifest.txt",
@@ -321,6 +376,7 @@ required = {
     root + "docs/architecture.md",
     root + "docs/calibration.md",
     root + "docs/driver-evaluation.md",
+    root + "docs/internal-drivers.md",
     root + "docs/windows-verification.md",
     root + "docs/specification.md",
 }
@@ -343,6 +399,11 @@ expected_manifest = {
     "publish_single_file": "false",
     "publish_trimmed": "false",
     "openvr_api_sha256": openvr_hash,
+    "driver_ltb_sha256": driver_ltb_hash,
+    "driver_protocol_major": "1",
+    "driver_protocol_minor": "0",
+    "openvr_sdk_commit": "0924064316de3effbcd1acf1e309182a2deb1c05",
+    "openvr_driver_header_sha256": openvr_driver_header_hash,
     "valve_license_sha256": valve_license_hash,
 }
 
@@ -354,6 +415,22 @@ with zipfile.ZipFile(archive_path, "r") as archive:
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"Package is missing required entries: {missing!r}")
+    allowed_driver_entries = {
+        root + "driver_ltb/driver.vrdrivermanifest",
+        root + "driver_ltb/bin/win64/driver_ltb.dll",
+        root + "driver_ltb/resources/input/ltb_touch_profile.json",
+        root + "driver_ltb/resources/settings/default.vrsettings",
+        root + "driver_ltb/resources/localization/localization.json",
+        root + "driver_ltb/resources/icons/ltb_touch.svg",
+    }
+    unexpected_driver_entries = sorted(
+        name for name in names
+        if name.startswith(root + "driver_ltb/") and name not in allowed_driver_entries
+    )
+    if unexpected_driver_entries:
+        raise SystemExit(
+            f"Package contains unexpected driver_ltb entries: {unexpected_driver_entries!r}"
+        )
     if any(info.date_time != (1980, 1, 1, 0, 0, 0) for info in infos):
         raise SystemExit("Package contains a non-deterministic ZIP timestamp.")
     forbidden_tokens = (
@@ -365,10 +442,12 @@ with zipfile.ZipFile(archive_path, "r") as archive:
         "/.agents/",
         "/.maco/",
     )
+    allowed_vrsettings = root + "driver_ltb/resources/settings/default.vrsettings"
     forbidden = sorted(
         name
         for name in names
-        if name.lower().endswith((".pdb", ".log", ".bak", ".backup", ".vrsettings"))
+        if name.lower().endswith((".pdb", ".log", ".bak", ".backup"))
+        or (name.lower().endswith(".vrsettings") and name != allowed_vrsettings)
         or any(token in name.lower() for token in forbidden_tokens)
     )
     if forbidden:
@@ -389,6 +468,10 @@ with zipfile.ZipFile(archive_path, "r") as archive:
         )
     if hashlib.sha256(archive.read(root + "openvr_api.dll")).hexdigest() != openvr_hash:
         raise SystemExit("Archived openvr_api.dll hash does not match the manifest.")
+    if hashlib.sha256(
+        archive.read(root + "driver_ltb/bin/win64/driver_ltb.dll")
+    ).hexdigest() != driver_ltb_hash:
+        raise SystemExit("Archived driver_ltb.dll hash does not match the manifest.")
     if hashlib.sha256(
         archive.read(root + "licenses/Valve.OpenVR.LICENSE.txt")
     ).hexdigest() != valve_license_hash:
@@ -452,5 +535,5 @@ fi
 
 printf 'Package: %s\n' "$archive_path"
 printf 'SHA-256: %s\n' "$checksum_path"
-printf 'Build-host verification complete: CLI/GUI publish, runtime-pack, license, manifest, ZIP contents, links, timestamps, and checksum checks passed.\n'
-printf 'Runtime verification remainder requires Windows: launch Ltb.App.exe and Ltb.Gui.exe, exercise SteamVR/ALVR/VMT, GUI visual, and hardware checks, and evaluate signing/SmartScreen.\n'
+printf 'Build-host verification complete: CLI/GUI publish, driver_ltb staging, runtime-pack, licenses, manifest, ZIP contents, links, timestamps, and checksum checks passed.\n'
+printf 'Runtime verification remainder requires Windows: launch the applications, register driver_ltb, exercise SteamVR and Meta Quest Link, verify GUI/hardware behavior, and evaluate signing/SmartScreen.\n'

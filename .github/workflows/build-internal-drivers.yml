@@ -1,0 +1,81 @@
+name: Build internal drivers
+
+"on":
+  push:
+    branches:
+      - main
+      - feature/internal-drivers
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-validation:
+    name: Linux managed and native-core validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build managed solution
+        run: dotnet build
+
+      - name: Test managed solution
+        run: dotnet test --no-build
+
+      - name: Configure portable driver core
+        run: >-
+          cmake -S native/driver_ltb -B build/native-linux -G Ninja
+          -DLTB_BUILD_OPENVR_DRIVER=OFF
+          -DLTB_BUILD_TESTS=ON
+
+      - name: Build portable driver core
+        run: cmake --build build/native-linux
+
+      - name: Test portable driver core
+        run: ctest --test-dir build/native-linux --output-on-failure
+
+  windows-driver:
+    name: Windows x64 SteamVR driver
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure driver_ltb
+        run: >-
+          cmake -S native/driver_ltb -B build/native-windows -A x64
+          -DLTB_BUILD_OPENVR_DRIVER=ON
+          -DLTB_BUILD_TESTS=ON
+
+      - name: Build driver_ltb
+        run: cmake --build build/native-windows --config Release
+
+      - name: Test portable core on Windows
+        run: ctest --test-dir build/native-windows -C Release --output-on-failure
+
+      - name: Verify staged external-driver root
+        shell: pwsh
+        run: |
+          $required = @(
+            "build/native-windows/driver_ltb/driver.vrdrivermanifest",
+            "build/native-windows/driver_ltb/bin/win64/driver_ltb.dll",
+            "build/native-windows/driver_ltb/resources/input/ltb_touch_profile.json",
+            "build/native-windows/driver_ltb/resources/settings/default.vrsettings"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required staged driver file is missing: $path"
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driver_ltb-win-x64
+          path: build/native-windows/driver_ltb
+          if-no-files-found: error
+          retention-days: 14
