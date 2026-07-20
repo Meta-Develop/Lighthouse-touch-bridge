@@ -1,0 +1,13 @@
+#pragma once
+
+#include <cstdint>
+
+namespace ltb::driver {
+
+inline constexpr char kDriverVersion[] = "@LTB_DRIVER_VERSION@";
+inline constexpr std::uint16_t kProtocolMajor = @LTB_IPC_PROTOCOL_MAJOR@;
+inline constexpr std::uint16_t kProtocolMinor = @LTB_IPC_PROTOCOL_MINOR@;
+inline constexpr char kProtocolVersion[] = "@LTB_IPC_PROTOCOL_VERSION@";
+inline constexpr char kBuildIdentity[] = "@LTB_BUILD_IDENTITY@";
+
+}  // namespace ltb::driver

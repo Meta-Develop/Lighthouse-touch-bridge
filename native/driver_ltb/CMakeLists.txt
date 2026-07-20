@@ -1,15 +1,54 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(driver_ltb LANGUAGES CXX)
+project(driver_ltb VERSION 0.1.0 LANGUAGES CXX)
 
 option(LTB_BUILD_OPENVR_DRIVER "Build the Windows OpenVR driver shell" ${WIN32})
 option(LTB_BUILD_TESTS "Build the portable driver-core tests" ON)
+
+set(LTB_IPC_PROTOCOL_MAJOR 1)
+set(LTB_IPC_PROTOCOL_MINOR 0)
+set(LTB_DRIVER_VERSION "${PROJECT_VERSION}")
+set(LTB_IPC_PROTOCOL_VERSION "${LTB_IPC_PROTOCOL_MAJOR}.${LTB_IPC_PROTOCOL_MINOR}")
+set(LTB_BUILD_IDENTITY
+    "driver_ltb-${LTB_DRIVER_VERSION}-ipc-${LTB_IPC_PROTOCOL_VERSION}")
+
+if(NOT LTB_DRIVER_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "driver_ltb version must use numeric major.minor.patch format")
+endif()
+if(NOT LTB_IPC_PROTOCOL_VERSION MATCHES "^[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "driver_ltb IPC version must use numeric major.minor format")
+endif()
+if(NOT LTB_BUILD_IDENTITY MATCHES
+        "^driver_ltb-[0-9]+\\.[0-9]+\\.[0-9]+-ipc-[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "driver_ltb build identity has an invalid format")
+endif()
+
+set(LTB_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
+set(LTB_DRIVER_STAGE "${CMAKE_BINARY_DIR}/driver_ltb")
+set(LTB_STAGED_BUILD_ID_FILE "${LTB_DRIVER_STAGE}/build-id.txt")
+set(LTB_STAGED_MANIFEST "${LTB_DRIVER_STAGE}/driver.vrdrivermanifest")
+file(MAKE_DIRECTORY "${LTB_GENERATED_INCLUDE_DIR}/ltb_driver" "${LTB_DRIVER_STAGE}")
+configure_file(
+    cmake/build_identity.hpp.in
+    "${LTB_GENERATED_INCLUDE_DIR}/ltb_driver/build_identity.hpp"
+    @ONLY)
+configure_file(cmake/build-id.txt.in "${LTB_STAGED_BUILD_ID_FILE}" @ONLY)
+
+add_custom_target(ltb_driver_stage_assets ALL
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/driver"
+        "${LTB_DRIVER_STAGE}"
+    BYPRODUCTS "${LTB_STAGED_MANIFEST}"
+    COMMENT "Staging driver_ltb SteamVR manifest and resources"
+    VERBATIM)
 
 add_library(ltb_driver_core STATIC
     src/core/peer_session.cpp
     src/core/protocol.cpp
     src/core/state_store.cpp)
-target_include_directories(ltb_driver_core PUBLIC include)
+target_include_directories(ltb_driver_core PUBLIC
+    include
+    "${LTB_GENERATED_INCLUDE_DIR}")
 target_compile_features(ltb_driver_core PUBLIC cxx_std_20)
 
 if(MSVC)
@@ -29,6 +68,23 @@ if(LTB_BUILD_TESTS)
         target_compile_options(ltb_driver_core_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
     add_test(NAME ltb_driver_core_tests COMMAND ltb_driver_core_tests)
+
+    add_executable(ltb_driver_build_identity_tests tests/build_identity_tests.cpp)
+    target_link_libraries(ltb_driver_build_identity_tests PRIVATE ltb_driver_core)
+    target_compile_features(ltb_driver_build_identity_tests PRIVATE cxx_std_20)
+    add_dependencies(ltb_driver_build_identity_tests ltb_driver_stage_assets)
+    if(MSVC)
+        target_compile_options(
+            ltb_driver_build_identity_tests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(
+            ltb_driver_build_identity_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(
+        NAME ltb_driver_build_identity_tests
+        COMMAND ltb_driver_build_identity_tests
+            "${LTB_STAGED_BUILD_ID_FILE}"
+            "${LTB_STAGED_MANIFEST}")
 endif()
 
 if(LTB_BUILD_OPENVR_DRIVER)
@@ -51,7 +107,8 @@ if(LTB_BUILD_OPENVR_DRIVER)
     target_compile_features(driver_ltb PRIVATE cxx_std_20)
     target_include_directories(driver_ltb PRIVATE
         include
-        src/openvr)
+        src/openvr
+        "${LTB_GENERATED_INCLUDE_DIR}")
     target_include_directories(driver_ltb SYSTEM PRIVATE "${LTB_OPENVR_HEADER_DIR}")
     target_link_libraries(driver_ltb PRIVATE ltb_driver_core advapi32)
     target_compile_definitions(driver_ltb PRIVATE
@@ -64,7 +121,6 @@ if(LTB_BUILD_OPENVR_DRIVER)
         target_compile_options(driver_ltb PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
 
-    set(LTB_DRIVER_STAGE "${CMAKE_BINARY_DIR}/driver_ltb")
     set_target_properties(driver_ltb PROPERTIES
         PREFIX ""
         OUTPUT_NAME "driver_ltb"
@@ -73,10 +129,5 @@ if(LTB_BUILD_OPENVR_DRIVER)
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${LTB_DRIVER_STAGE}/bin/win64"
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${LTB_DRIVER_STAGE}/bin/win64"
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${LTB_DRIVER_STAGE}/bin/win64")
-
-    add_custom_command(TARGET driver_ltb POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/driver"
-            "${LTB_DRIVER_STAGE}"
-        COMMENT "Staging driver_ltb SteamVR manifest and resources")
+    add_dependencies(driver_ltb ltb_driver_stage_assets)
 endif()
