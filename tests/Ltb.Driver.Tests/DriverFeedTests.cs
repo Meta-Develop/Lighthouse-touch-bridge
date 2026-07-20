@@ -160,6 +160,38 @@ public sealed class DriverFeedTests
     }
 
     [Fact]
+    public async Task DisconnectedNamedPipeFailureReconnectsWithNewSessionInsteadOfFaulting()
+    {
+        var first = new ScriptedDriverTransport
+        {
+            FailOnWriteNumber = 2,
+            WriteFailure = new DriverTransportDisconnectedException(
+                "The named pipe disconnected during a driver-feed write."),
+        };
+        var second = new ScriptedDriverTransport();
+        var factory = new QueueDriverTransportFactory(first, second);
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(
+            factory,
+            clock,
+            DriverTestData.SessionA,
+            DriverTestData.SessionB);
+        await feed.StartAsync();
+
+        var publish = feed.PublishAsync(DriverTestData.State()).AsTask();
+        await DriverTestData.WaitUntilAsync(() => first.IsDisposed && clock.PendingDelayCount > 0);
+        Assert.Equal(DriverFeedReadiness.Reconnecting, feed.Health.Readiness);
+        clock.Advance(TimeSpan.FromMilliseconds(25));
+        await publish;
+
+        var recoveredState = Assert.IsType<ProtocolHandState>(
+            ProtocolCodec.Decode(Assert.Single(second.Packets)));
+        Assert.Equal(DriverTestData.SessionB, recoveredState.Ordering.SessionId);
+        Assert.Equal(0UL, recoveredState.Ordering.Sequence);
+        Assert.Equal(DriverFeedReadiness.Ready, feed.Health.Readiness);
+    }
+
+    [Fact]
     public async Task HeartbeatContinuesWhenHandStateDoesNotChange()
     {
         var transport = new ScriptedDriverTransport();
