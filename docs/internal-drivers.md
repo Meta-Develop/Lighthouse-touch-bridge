@@ -51,7 +51,10 @@ LTB transactionally registers the staged `driver_ltb` directory beside the
 application. If registration changed, the GUI reports **Restart required**.
 Stop LTB, restart SteamVR once, and press **Start** again so the runtime loads
 the staged build. Readiness does not pass until the loaded left and right
-controllers both report the exact staged build identity.
+controllers both report the exact staged build identity. On the very first
+registration a run started while SteamVR is already up may need a second
+SteamVR restart; see
+[Registration and verification](#registration-and-verification).
 
 On a first run or after a recalibration trigger, LTB captures the hands
 separately. Move only the requested mounted controller continuously through
@@ -83,6 +86,7 @@ fields. From a packaged build, the default paths are:
 | Staged SteamVR driver | `driver_ltb` beside `Ltb.Gui.exe` |
 | Settings | `%LOCALAPPDATA%\LighthouseTouchBridge\settings\internal-driver.json` |
 | Calibration profiles | `%LOCALAPPDATA%\LighthouseTouchBridge\profiles\calibration-profiles.json` |
+| Registration receipts | `%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json` |
 | Structured log | `%LOCALAPPDATA%\LighthouseTouchBridge\logs\internal-driver.jsonl` |
 
 The log appends JSON records, rotates at its configured bound, and may include
@@ -201,8 +205,10 @@ without partially updating device state.
 
 The producer sends heartbeats even when state does not change. After 500 ms
 without a valid state or heartbeat, `driver_ltb` marks both devices untracked
-and neutralizes every input. Reconnect uses a new session; it never resumes a
-stale session or frozen pose. Loss of one associated tracker neutralizes only
+and neutralizes every input. When pipe-server setup fails transiently inside
+`driver_ltb`, the receiver retries with capped exponential backoff from 1 s up
+to 30 s rather than abandoning the transport. Reconnect uses a new session; it
+never resumes a stale session or frozen pose. Loss of one associated tracker neutralizes only
 that hand while exact-serial reacquisition is attempted. Loss of Meta readiness
 or an invalid tracker topology neutralizes both hands.
 
@@ -214,8 +220,54 @@ advertised and LibOVR controller battery state is reported as absent.
 
 Driver registration snapshots the external-driver state, registers the exact
 staged path, enables `activateMultipleDrivers`, verifies the result, and rolls
-back on failure. Removal restores the prior LTB-owned state without deleting
-unrelated drivers and restores the previous `activateMultipleDrivers` value.
+back on failure. When LTB registers `driver_ltb`, it also persists a
+registration receipt at
+`%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json`
+recording the canonical driver path and the prior `activateMultipleDrivers`
+state, so removal keeps its authority across application restarts.
+
+LTB's own writes to `steamvr.vrsettings` and `openvrpaths.vrpath` stage a
+temporary file in the same directory with fsync and read-back verification,
+then commit it with an atomic rename. A crash at any point leaves either the
+complete old or the complete new content, never a truncated file. Two residual
+limits are documented and accepted: the exclusive handle used for the content
+comparison must be released just before the rename, so another process's write
+landing in that small window is overwritten by the commit; and directory-entry
+durability after the rename depends on filesystem journaling, the same
+limitation as `AtomicFileWriter`.
+
+Registration runs at session start and does not check whether SteamVR is
+running. SteamVR rewrites `steamvr.vrsettings` and `openvrpaths.vrpath` from
+memory when it exits, so a registration written while SteamVR runs can be
+reverted by SteamVR's own shutdown; the next LTB run re-registers
+idempotently. A first run started while SteamVR is up may therefore need two
+SteamVR restarts before `driver_ltb` loads. To register in one pass, press
+**Start** once while SteamVR is stopped, then start SteamVR; the session
+performs registration first and waits for the runtime afterwards.
+
+### Driver removal
+
+Removal is a first-class transactional operation, available without SteamVR
+file editing or manual `vrpathreg` use:
+
+- Desktop: the **Remove driver** button in the **Driver registration
+  maintenance** panel (the session must be stopped first).
+- Command line: `dotnet run --project src/Ltb.App -- remove-driver` (or
+  `Ltb.App.exe remove-driver` from a packaged build). Exit codes: `0` removed
+  or nothing to remove, `2` refused or failed with a completed rollback, `4`
+  incomplete rollback.
+
+Removal authority is the registration receipt LTB persists at
+`%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json` when
+it registers `driver_ltb`, so removal works after any application restart.
+Removal deletes only the exact canonical LTB driver path, restores the
+`activateMultipleDrivers` presence and value recorded before LTB's
+registration, verifies the result, and rolls back on failure; unrelated
+drivers and user configuration are never modified. A registration made by an
+older build without a receipt is removed only after the staged driver
+artifacts prove the path is LTB's own driver directory, and the
+`activateMultipleDrivers` setting is then deliberately left unchanged. A
+SteamVR restart completes the removal.
 
 Linux automation and portable C++ tests cover protocol, fake Meta input,
 registration transactions, cross-language decoding, frame/quaternion rules,
@@ -224,12 +276,34 @@ They are not Windows runtime or hardware evidence. Complete and retain the
 [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
 on the target machine.
 
-## Legacy compile-only migration material
+## Known limitations and backlog
 
-The ALVR, VMT, and SteamVR `TrackingOverrides` implementation remains
-compile-only historical migration material. It receives no new setup,
-configuration, recovery, packaging, or daily-use support and is not invoked by
-the first-party GUI **Start** button. Existing detail is preserved in the
+These behaviors are deliberate current trade-offs, recorded so they are not
+mistaken for unnoticed defects:
+
+- `openvrpaths.vrpath` verification after registration requires the exact
+  prior `external_drivers` order with the LTB path appended last. A
+  `vrpathreg` that reorders entries would make registration fail in the safe
+  direction (rollback), not corrupt state.
+- Driver-root path equivalence checks are textual after canonicalization.
+  Symlink or 8.3 short-name aliases of the same directory evade duplicate
+  detection.
+- A single non-advancing LibOVR clock observation triggers a full Meta session
+  teardown with backoff before reconnection. This is fail-safe but heavy for
+  what may be a one-sample stall.
+- Rewrites of the owned SteamVR settings files drop JSON comments and any BOM.
+  SteamVR tolerates both outcomes.
+- GitHub Actions workflows pin actions to major version tags, not commit SHAs.
+
+## Legacy migration material
+
+The ALVR, VMT, and SteamVR `TrackingOverrides` implementation is retained
+historical migration material. The full legacy paths remain runnable behind
+the `legacy-*` CLI commands, each of which prints an unsupported-path warning
+before executing; they stay available until the Windows exit gates pass and
+are then scheduled for removal. The legacy paths receive no new setup,
+configuration, recovery, packaging, or daily-use support and are not invoked
+by the first-party GUI **Start** button. Existing detail is preserved in the
 [legacy setup reference](setup.md),
 [legacy troubleshooting reference](troubleshooting.md), and
 [legacy Windows checklist](windows-verification.md); none of those documents

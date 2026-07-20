@@ -70,9 +70,10 @@ OpenVR raw driver space.
 
 ALVR, Virtual Motion Tracker (VMT), and SteamVR `TrackingOverrides` are not part
 of the target architecture and are not accepted external dependencies. Legacy
-code for that path may remain buildable as a compile-only fallback until the
-new Windows exit gates pass. It receives no new automation and must be removed
-or isolated before the target release is complete.
+code for that path is retained and runnable only behind warning-gated
+`legacy-*` commands until the new Windows exit gates pass, and is then
+scheduled for removal. It receives no new automation and must be removed or
+isolated before the target release is complete.
 
 ---
 
@@ -90,7 +91,8 @@ LTB shall automate:
 - SteamVR, Meta Quest Link, LibOVR ABI, active-HMD, controller, tracker,
   first-party driver, and IPC readiness checks;
 - transactional `driver_ltb` registration, verification, rollback, and
-  removal;
+  removal, with removal authority persisted as a registration receipt so
+  removal survives application restarts;
 - tracker discovery and left/right association by stable identity;
 - synchronized recording and offline replay;
 - Meta-to-application and OpenVR-to-application time alignment;
@@ -627,6 +629,10 @@ shall:
 6. on removal, remove only the LTB path and restore the prior setting without
    deleting unrelated drivers or user configuration.
 
+Registration shall persist its snapshot as a durable registration receipt so
+removal authority survives application restarts; removal takes the prior
+`activateMultipleDrivers` presence and value from that receipt.
+
 A SteamVR restart may be required after registration or driver replacement.
 LTB shall report that requirement explicitly and shall not claim readiness
 until SteamVR loads the expected driver build and exposes exactly the two LTB
@@ -881,10 +887,11 @@ The architecture shall use generic source interfaces so later Meta Touch,
 Lighthouse tracker, and Lighthouse HMD variants can be qualified without
 changing the calibration mathematics.
 
-Legacy ALVR/VMT/`TrackingOverrides` code may remain compile-only while the
-first-party path is completing its Windows exit gates. It shall receive no new
-setup, configuration, recovery, packaging, or daily-use automation. No legacy
-external software is accepted in the release end state.
+Legacy ALVR/VMT/`TrackingOverrides` code remains buildable and runnable only
+behind warning-gated `legacy-*` commands while the first-party path is
+completing its Windows exit gates, and is scheduled for removal afterwards. It
+shall receive no new setup, configuration, recovery, packaging, or daily-use
+automation. No legacy external software is accepted in the release end state.
 
 ---
 

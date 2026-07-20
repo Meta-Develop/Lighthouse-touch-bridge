@@ -1,8 +1,9 @@
 # Legacy ALVR/VMT Troubleshooting Reference
 
 > [!IMPORTANT]
-> This document preserves compile-only ALVR, VMT, and SteamVR
-> `TrackingOverrides` migration diagnostics. It does not troubleshoot the
+> This document preserves legacy ALVR, VMT, and SteamVR `TrackingOverrides`
+> migration diagnostics for paths that run only behind warning-gated
+> `legacy-*` commands. It does not troubleshoot the
 > supported first-party desktop **Start** path. Use
 > [First-party internal driver operations](internal-drivers.md) for current
 > readiness and fail-safe behavior, and keep live results in the
