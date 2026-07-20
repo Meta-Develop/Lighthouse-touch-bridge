@@ -1,5 +1,70 @@
 # Architecture
 
+## Current integration direction: Meta Link and `driver_ltb`
+
+The primary architecture uses Quest through official Meta Quest Link while
+Bigscreen Beyond remains SteamVR's sole HMD. Quest and its Touch controllers
+stay in the Meta PC runtime and never enter SteamVR. SteamVR and official Meta
+Quest Link are the only external runtime dependencies of this path.
+
+```text
+Quest + Touch controllers
+        |
+        | Meta Quest Link
+        v
+Meta PC runtime -- installed LibOVR, invisible session --> Ltb.MetaLink
+                                                               |
+                                                               | Touch poses + inputs
+                                                               v
+Lighthouse trackers ----------------------------------------> Ltb.App
+                                                               |
+                                                               | calibrate and compose
+                                                               | T_output = T_tracker * X_mount
+                                                               v
+                                              same-user local IPC
+                                                               |
+                                                               v
+                                                        driver_ltb
+                                                               |
+                                                               v
+                                                SteamVR controllers
+```
+
+`Ltb.MetaLink` is a C# adapter over the LibOVR runtime installed with Meta
+Quest Link. It opens an invisible session, samples Touch poses and full input
+state, maps timestamps into the application clock, and exposes project-owned
+runtime-neutral contracts. The application associates the Touch and tracker
+streams, runs calibration, and composes each final controller pose as
+`T_output = T_tracker * X_mount`.
+
+The application sends the final pose and Touch input state over versioned,
+same-user local IPC. `driver_ltb` is intentionally thin: it exposes the two
+composed controllers to SteamVR, applies fresh state, and marks a controller
+untracked when the feed is stale. It does not calibrate, associate devices,
+estimate lag, or independently follow a tracker.
+
+The integration is split across four explicit modules:
+
+```text
+src/Ltb.MetaLink    installed-LibOVR adapter and Touch-source boundary
+src/Ltb.Protocol    versioned IPC schema, codecs, validation, golden vectors
+src/Ltb.Driver      C# driver-feed port, transport, readiness, registration
+native/driver_ltb   thin native SteamVR driver and portable protocol core
+```
+
+Platform-specific code remains behind these narrow boundaries.
+`Ltb.Calibration` retains its existing dependency direction and remains free of
+UI, SteamVR, OpenVR, Meta Link, LibOVR, driver, and application dependencies.
+The detailed protocol, lifecycle, packaging, safety, and verification contract
+is documented in [Internal Drivers](internal-drivers.md).
+
+## Existing v0.1 architecture history
+
+The milestone sections below retain the implemented ALVR, VMT, and
+`TrackingOverrides` architecture as a buildable fallback only. It receives no
+new configuration or orchestration automation and remains supported only until
+the Meta Link and `driver_ltb` path passes its documented Windows exit gates.
+
 ## Milestone 0 boundary
 
 Milestone 0 proves the mount-calibration mathematics from deterministic,
