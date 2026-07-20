@@ -1,3 +1,4 @@
+using System.Numerics;
 using Ltb.Core;
 
 namespace Ltb.OpenVr;
@@ -16,7 +17,35 @@ public readonly record struct PoseSourceSample
         double? runtimeTimeSeconds = null,
         double? predictionOffsetSeconds = null,
         double? sampleAgeSeconds = null)
+        : this(
+            poseSample,
+            isConnected,
+            trackingResult,
+            runtimeTimeSeconds,
+            predictionOffsetSeconds,
+            sampleAgeSeconds,
+            linearVelocityMetersPerSecond: null,
+            angularVelocityRadiansPerSecond: null)
     {
+    }
+
+    public PoseSourceSample(
+        TimestampedPoseSample poseSample,
+        bool isConnected,
+        PoseTrackingResult trackingResult,
+        double? runtimeTimeSeconds,
+        double? predictionOffsetSeconds,
+        double? sampleAgeSeconds,
+        Vector3? linearVelocityMetersPerSecond,
+        Vector3? angularVelocityRadiansPerSecond)
+    {
+        RequireFiniteOptional(
+            linearVelocityMetersPerSecond,
+            nameof(linearVelocityMetersPerSecond));
+        RequireFiniteOptional(
+            angularVelocityRadiansPerSecond,
+            nameof(angularVelocityRadiansPerSecond));
+
         RecordedSample = new RecordedPoseSample(
             poseSample,
             isConnected,
@@ -24,11 +53,15 @@ public readonly record struct PoseSourceSample
             runtimeTimeSeconds,
             predictionOffsetSeconds,
             sampleAgeSeconds);
+        LinearVelocityMetersPerSecond = linearVelocityMetersPerSecond;
+        AngularVelocityRadiansPerSecond = angularVelocityRadiansPerSecond;
     }
 
     private PoseSourceSample(RecordedPoseSample recordedSample)
     {
         RecordedSample = recordedSample;
+        LinearVelocityMetersPerSecond = null;
+        AngularVelocityRadiansPerSecond = null;
     }
 
     public RecordedPoseSample RecordedSample { get; }
@@ -51,10 +84,35 @@ public readonly record struct PoseSourceSample
 
     public double? SampleAgeSeconds => RecordedSample.SampleAgeSeconds;
 
-    /// <summary>Lossless conversion to the versioned Core recording contract.</summary>
+    /// <summary>
+    /// Runtime-observed linear velocity in meters per second, when every
+    /// component supplied by the pose source was finite.
+    /// </summary>
+    public Vector3? LinearVelocityMetersPerSecond { get; }
+
+    /// <summary>
+    /// Runtime-observed angular velocity in radians per second, when every
+    /// component supplied by the pose source was finite.
+    /// </summary>
+    public Vector3? AngularVelocityRadiansPerSecond { get; }
+
+    /// <summary>Converts pose and runtime-status metadata to the Core recording contract.</summary>
     public RecordedPoseSample ToRecordedPoseSample() => RecordedSample;
 
     public static PoseSourceSample FromRecordedPoseSample(RecordedPoseSample sample) => new(sample);
+
+    private static void RequireFiniteOptional(Vector3? value, string parameterName)
+    {
+        if (value is { } present &&
+            (!float.IsFinite(present.X) ||
+             !float.IsFinite(present.Y) ||
+             !float.IsFinite(present.Z)))
+        {
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                "Velocity components must be finite when present.");
+        }
+    }
 }
 
 /// <summary>Pose source for an original, non-overridden input controller.</summary>

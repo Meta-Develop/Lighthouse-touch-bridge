@@ -112,6 +112,14 @@ public sealed class ActiveHmdReadinessTests
     {
         var conflicting = ActiveHmdReadiness.Evaluate(
             [Hmd(0, "lighthouse", "ALVR", "Vendor", "HMD")]);
+        var conflictingVersion = ActiveHmdReadiness.Evaluate(
+            [Hmd(
+                0,
+                "lighthouse",
+                "lighthouse",
+                "Vendor",
+                "HMD",
+                driverVersion: "ALVR-display-build")]);
         var duplicate = ActiveHmdReadiness.Evaluate(
         [
             Hmd(0, "lighthouse", "lighthouse", "Vendor A", "HMD A"),
@@ -120,9 +128,12 @@ public sealed class ActiveHmdReadinessTests
 
         Assert.False(conflicting.IsReady);
         Assert.Contains("Quest/ALVR/Meta/Oculus", conflicting.Diagnostic);
+        Assert.False(conflictingVersion.IsReady);
+        Assert.Contains("ALVR-display-build", conflictingVersion.Diagnostic);
         Assert.False(duplicate.IsReady);
         Assert.Contains("multiple devices", duplicate.Diagnostic);
         AssertRemediation(conflicting);
+        AssertRemediation(conflictingVersion);
         AssertRemediation(duplicate);
     }
 
@@ -132,7 +143,8 @@ public sealed class ActiveHmdReadinessTests
         string trackingSystem,
         string manufacturer,
         string model,
-        bool connected = true) =>
+        bool connected = true,
+        string? driverVersion = null) =>
         Descriptor(
             index,
             SteamVrDeviceCategory.HeadMountedDisplay,
@@ -140,7 +152,8 @@ public sealed class ActiveHmdReadinessTests
             trackingSystem,
             manufacturer,
             model,
-            connected);
+            connected,
+            driverVersion);
 
     private static SteamVrDeviceDescriptor Descriptor(
         uint index,
@@ -149,7 +162,8 @@ public sealed class ActiveHmdReadinessTests
         string? trackingSystem = null,
         string manufacturer = "Vendor",
         string model = "Device",
-        bool connected = true)
+        bool connected = true,
+        string? driverVersion = null)
     {
         var driverForPath = driver ?? "unknown";
         return new SteamVrDeviceDescriptor(
@@ -167,13 +181,17 @@ public sealed class ActiveHmdReadinessTests
                     trackingSystem,
                     manufacturer,
                     model,
-                    controllerType: null));
+                    controllerType: null,
+                    inputProfilePath: null,
+                    driverVersion: driverVersion));
     }
 
     private static void AssertRemediation(ActiveHmdReadinessResult result)
     {
-        Assert.Contains("ALVR", result.Diagnostic);
-        Assert.Contains("tracking-reference-only", result.Diagnostic);
         Assert.Contains("intended Lighthouse HMD", result.Diagnostic);
+        Assert.Contains("sole active SteamVR display HMD", result.Diagnostic);
+        Assert.Contains("exclude Quest/Meta/Oculus/ALVR", result.Diagnostic);
+        Assert.DoesNotContain("tracking-reference-only", result.Diagnostic);
+        Assert.DoesNotContain("Configure ALVR", result.Diagnostic);
     }
 }

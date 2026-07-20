@@ -1,3 +1,4 @@
+using System.Numerics;
 using Ltb.Core;
 
 namespace Ltb.OpenVr;
@@ -47,7 +48,31 @@ internal readonly record struct OpenVrRuntimePose(
     PoseTrackingResult TrackingResult,
     double? RuntimeTimeSeconds,
     double? PredictionOffsetSeconds,
-    double? SampleAgeSeconds);
+    double? SampleAgeSeconds,
+    Vector3? LinearVelocityMetersPerSecond,
+    Vector3? AngularVelocityRadiansPerSecond)
+{
+    public OpenVrRuntimePose(
+        RigidTransform Pose,
+        PoseValidity Validity,
+        bool IsConnected,
+        PoseTrackingResult TrackingResult,
+        double? RuntimeTimeSeconds,
+        double? PredictionOffsetSeconds,
+        double? SampleAgeSeconds)
+        : this(
+            Pose,
+            Validity,
+            IsConnected,
+            TrackingResult,
+            RuntimeTimeSeconds,
+            PredictionOffsetSeconds,
+            SampleAgeSeconds,
+            LinearVelocityMetersPerSecond: null,
+            AngularVelocityRadiansPerSecond: null)
+    {
+    }
+}
 
 internal interface IOpenVrRuntime : IDisposable
 {

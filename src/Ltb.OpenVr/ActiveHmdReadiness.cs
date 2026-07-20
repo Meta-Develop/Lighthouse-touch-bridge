@@ -7,16 +7,16 @@ namespace Ltb.OpenVr;
 public sealed record ActiveHmdReadinessResult(bool IsReady, string Diagnostic);
 
 /// <summary>
-/// Verifies that ALVR is not supplying the active SteamVR display and that the
-/// active HMD reports Lighthouse driver or tracking-system evidence.
+/// Verifies that the active SteamVR display is the intended Lighthouse HMD and
+/// does not report Quest, Meta, Oculus, or ALVR runtime evidence.
 /// </summary>
 public static class ActiveHmdReadiness
 {
     public const uint ActiveDisplayHmdIndex = 0;
 
     private const string Remediation =
-        "Configure ALVR in tracking-reference-only mode and make the intended " +
-        "Lighthouse HMD the active SteamVR display HMD, then restart SteamVR and retry.";
+        "Make the intended Lighthouse HMD the sole active SteamVR display HMD, " +
+        "exclude Quest/Meta/Oculus/ALVR display sources, then restart SteamVR and retry.";
 
     private static readonly string[] DisallowedRuntimeTerms =
     [
@@ -77,13 +77,15 @@ public static class ActiveHmdReadiness
             trackingSystem,
             metadata.ManufacturerName,
             metadata.ModelNumber,
+            metadata.DriverVersion,
             active.Identity.DevicePath,
         };
         if (observedEvidence.Any(ContainsDisallowedRuntimeTerm))
         {
             return NotReady(
                 "The active SteamVR display HMD reports Quest/ALVR/Meta/Oculus runtime " +
-                $"evidence (driver='{driver}', tracking_system='{Format(trackingSystem)}').");
+                $"evidence (driver='{driver}', tracking_system='{Format(trackingSystem)}', " +
+                $"driver_version='{Format(metadata.DriverVersion)}').");
         }
 
         if (!ContainsLighthouseEvidence(driver) &&

@@ -82,6 +82,84 @@ public sealed class OpenVrPoseSourceTests
     }
 
     [Fact]
+    public void RawTrackerSourcePreservesExactIngressTimestampAndFiniteVelocities()
+    {
+        const double expectedIngressTime = 1234.567890123;
+        var expectedLinearVelocity = new Vector3(1.25f, -2.5f, 0.75f);
+        var expectedAngularVelocity = new Vector3(-0.5f, 1.5f, 2.25f);
+        var runtimePose = new OpenVrRuntimePose(
+            RigidTransform.Identity,
+            PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid,
+            IsConnected: true,
+            PoseTrackingResult.RunningOk,
+            RuntimeTimeSeconds: null,
+            PredictionOffsetSeconds: 0d,
+            SampleAgeSeconds: null,
+            LinearVelocityMetersPerSecond: expectedLinearVelocity,
+            AngularVelocityRadiansPerSecond: expectedAngularVelocity);
+        using var runtime = new FakeOpenVrRuntime(pose: runtimePose);
+        var source = new OpenVrTrackedPoseSourceAdapter(
+            runtime,
+            new AssertingClock(runtime, expectedIngressTime),
+            TrackerDescriptor(),
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            predictionOffsetSeconds: 0d);
+
+        var sample = source.ReadPose();
+
+        Assert.Equal(expectedIngressTime, sample.MonotonicHostTimeSeconds);
+        Assert.Equal(expectedLinearVelocity, sample.LinearVelocityMetersPerSecond);
+        Assert.Equal(expectedAngularVelocity, sample.AngularVelocityRadiansPerSecond);
+        Assert.Equal(
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            runtime.LastTrackingUniverse);
+    }
+
+    [Fact]
+    public void NativeVelocityMappingPreservesFiniteVectorAndDropsInvalidVectors()
+    {
+        Assert.Equal(
+            new Vector3(1.25f, -2.5f, 0.75f),
+            ValveOpenVrRuntime.MapFiniteVelocity(1.25f, -2.5f, 0.75f));
+        Assert.Null(ValveOpenVrRuntime.MapFiniteVelocity(float.NaN, 0f, 0f));
+        Assert.Null(ValveOpenVrRuntime.MapFiniteVelocity(0f, float.PositiveInfinity, 0f));
+        Assert.Null(ValveOpenVrRuntime.MapFiniteVelocity(0f, 0f, float.NegativeInfinity));
+    }
+
+    [Fact]
+    public void PoseSourceSampleRejectsNonFiniteVelocityComponents()
+    {
+        var poseSample = new TimestampedPoseSample(
+            1d,
+            RigidTransform.Identity,
+            PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid);
+
+        var linearException = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PoseSourceSample(
+                poseSample,
+                true,
+                PoseTrackingResult.RunningOk,
+                runtimeTimeSeconds: null,
+                predictionOffsetSeconds: null,
+                sampleAgeSeconds: null,
+                linearVelocityMetersPerSecond: new Vector3(float.NaN, 0f, 0f),
+                angularVelocityRadiansPerSecond: null));
+        var angularException = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PoseSourceSample(
+                poseSample,
+                true,
+                PoseTrackingResult.RunningOk,
+                runtimeTimeSeconds: null,
+                predictionOffsetSeconds: null,
+                sampleAgeSeconds: null,
+                linearVelocityMetersPerSecond: null,
+                angularVelocityRadiansPerSecond: new Vector3(0f, float.PositiveInfinity, 0f)));
+
+        Assert.Equal("linearVelocityMetersPerSecond", linearException.ParamName);
+        Assert.Equal("angularVelocityRadiansPerSecond", angularException.ParamName);
+    }
+
+    [Fact]
     public void PoseFactoryRejectsUndefinedTrackingUniverse()
     {
         using var runtime = new FakeOpenVrRuntime();
@@ -200,6 +278,31 @@ public sealed class OpenVrPoseSourceTests
                 .Concat(type.GetProperties().Select(property => property.PropertyType))
                 .Concat(type.GetFields().Select(field => field.FieldType)));
         Assert.DoesNotContain(publicSignatureTypes, ContainsValveType);
+    }
+
+    [Fact]
+    public void LegacyAndVelocityPoseSourceSampleConstructorsRemainAvailable()
+    {
+        Assert.NotNull(typeof(PoseSourceSample).GetConstructor(
+        [
+            typeof(TimestampedPoseSample),
+            typeof(bool),
+            typeof(PoseTrackingResult),
+            typeof(double?),
+            typeof(double?),
+            typeof(double?),
+        ]));
+        Assert.NotNull(typeof(PoseSourceSample).GetConstructor(
+        [
+            typeof(TimestampedPoseSample),
+            typeof(bool),
+            typeof(PoseTrackingResult),
+            typeof(double?),
+            typeof(double?),
+            typeof(double?),
+            typeof(Vector3?),
+            typeof(Vector3?),
+        ]));
     }
 
     [Fact]

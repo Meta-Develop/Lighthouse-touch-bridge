@@ -30,6 +30,8 @@ public enum SteamVrDriverDiagnosticCode
     ConcurrentModification,
     RollbackFailed,
     RemovalOwnershipLost,
+    StagedBuildIdMissing,
+    StagedBuildIdInvalid,
 }
 
 public sealed record SteamVrPaths(
@@ -38,6 +40,13 @@ public sealed record SteamVrPaths(
     string ConfigRoot,
     string VrPathRegExecutable,
     string SettingsFile);
+
+public sealed record SteamVrDriverInspection(
+    SteamVrPaths Paths,
+    string CanonicalDriverRoot,
+    string StagedBuildId,
+    bool IsRegistered,
+    SteamVrActivateMultipleDriversState ActivateMultipleDrivers);
 
 public sealed record SteamVrDriverRegistrationReceipt(
     string CanonicalDriverRoot,

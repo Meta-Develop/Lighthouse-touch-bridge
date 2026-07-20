@@ -17,6 +17,7 @@ public sealed class SteamVrDriverLifecycleTests
         Assert.True(result.RestartRequired);
         Assert.Equal(SteamVrDriverReadiness.RestartRequired, result.Readiness);
         Assert.Contains("restart SteamVR", result.Diagnostic, StringComparison.Ordinal);
+        Assert.Contains(SteamVrLifecycleFixture.BuildId, result.Diagnostic, StringComparison.Ordinal);
         Assert.Equal(
             [fixture.OtherDriverRoot, Path.GetFullPath(fixture.StagedDriverRoot)],
             fixture.ExternalDrivers());
@@ -62,6 +63,127 @@ public sealed class SteamVrDriverLifecycleTests
     }
 
     [Fact]
+    public async Task RegisterRequiresStagedBuildIdentityMarker()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        var unstagedRoot = Path.Combine(fixture.Root, "stage-without-build-id");
+        fixture.FileSystem.AddFile(
+            Path.Combine(unstagedRoot, SteamVrDriverLifecycle.DriverManifestRelativePath));
+        fixture.FileSystem.AddFile(
+            Path.Combine(unstagedRoot, SteamVrDriverLifecycle.DriverBinaryRelativePath));
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.RegisterAsync(unstagedRoot).AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.StagedBuildIdMissing, failure.DiagnosticCode);
+        Assert.Empty(fixture.ProcessRunner.Calls);
+        Assert.Equal([fixture.OtherDriverRoot], fixture.ExternalDrivers());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("driver_ltb-0.1-ipc-1.0")]
+    [InlineData("driver_ltb-0.1.0-ipc-1")]
+    [InlineData(" driver_ltb-0.1.0-ipc-1.0\n")]
+    [InlineData("driver_ltb-0.1.0-ipc-1.0\nsecond-line\n")]
+    public async Task RegisterRejectsMalformedStagedBuildIdentity(string buildIdText)
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        fixture.FileSystem.Write(fixture.BuildIdFile, buildIdText);
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.RegisterAsync(fixture.StagedDriverRoot).AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.StagedBuildIdInvalid, failure.DiagnosticCode);
+        Assert.Empty(fixture.ProcessRunner.Calls);
+        Assert.Equal([fixture.OtherDriverRoot], fixture.ExternalDrivers());
+    }
+
+    [Fact]
+    public async Task InspectReadsBuildAndRegistrationStateWithoutMutation()
+    {
+        using var fixture = new SteamVrLifecycleFixture(
+            SteamVrActivateMultipleDriversState.Enabled);
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson([fixture.OtherDriverRoot, fixture.StagedDriverRoot]));
+        var originalOpenVr = fixture.FileSystem.Read(fixture.OpenVrPathsFile);
+        var originalSettings = fixture.FileSystem.Read(fixture.SettingsFile);
+
+        var inspection = await fixture.Lifecycle.InspectAsync(
+            Path.Combine(fixture.StagedDriverRoot, "."));
+
+        Assert.Equal(Path.GetFullPath(fixture.StagedDriverRoot), inspection.CanonicalDriverRoot);
+        Assert.Equal(SteamVrLifecycleFixture.BuildId, inspection.StagedBuildId);
+        Assert.True(inspection.IsRegistered);
+        Assert.Equal(
+            SteamVrActivateMultipleDriversState.Enabled,
+            inspection.ActivateMultipleDrivers);
+        Assert.Equal(fixture.OpenVrPathsFile, inspection.Paths.OpenVrPathsFile);
+        Assert.Equal(originalOpenVr, fixture.FileSystem.Read(fixture.OpenVrPathsFile));
+        Assert.Equal(originalSettings, fixture.FileSystem.Read(fixture.SettingsFile));
+        Assert.Empty(fixture.ProcessRunner.Calls);
+    }
+
+    [Theory]
+    [InlineData("driver_ltb-0.1.0-ipc-1.0")]
+    [InlineData("driver_ltb-0.1.0-ipc-1.0\n")]
+    [InlineData("driver_ltb-0.1.0-ipc-1.0\r\n")]
+    public async Task InspectAcceptsPortableStagedBuildIdentityLineEndings(string buildIdText)
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        fixture.FileSystem.Write(fixture.BuildIdFile, buildIdText);
+
+        var inspection = await fixture.Lifecycle.InspectAsync(fixture.StagedDriverRoot);
+
+        Assert.Equal(SteamVrLifecycleFixture.BuildId, inspection.StagedBuildId);
+    }
+
+    [Fact]
+    public async Task InspectRejectsNonCanonicalEquivalentRegistrationWithoutMutation()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        var nonCanonicalEquivalent = Path.Combine(
+            fixture.StagedDriverRoot,
+            "..",
+            Path.GetFileName(fixture.StagedDriverRoot));
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson([fixture.OtherDriverRoot, nonCanonicalEquivalent]));
+        var originalOpenVr = fixture.FileSystem.Read(fixture.OpenVrPathsFile);
+        var originalSettings = fixture.FileSystem.Read(fixture.SettingsFile);
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.InspectAsync(fixture.StagedDriverRoot).AsTask());
+
+        Assert.Equal(
+            SteamVrDriverDiagnosticCode.RegistrationVerificationFailed,
+            failure.DiagnosticCode);
+        Assert.Equal(originalOpenVr, fixture.FileSystem.Read(fixture.OpenVrPathsFile));
+        Assert.Equal(originalSettings, fixture.FileSystem.Read(fixture.SettingsFile));
+        Assert.Empty(fixture.ProcessRunner.Calls);
+    }
+
+    [Fact]
+    public async Task RegisterReportsSettingsOnlyMutationAsRestartRequired()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson([fixture.OtherDriverRoot, fixture.StagedDriverRoot]));
+
+        var result = await fixture.Lifecycle.RegisterAsync(fixture.StagedDriverRoot);
+
+        Assert.True(result.Changed);
+        Assert.True(result.RestartRequired);
+        Assert.Equal(SteamVrDriverReadiness.RestartRequired, result.Readiness);
+        Assert.Empty(fixture.ProcessRunner.Calls);
+        Assert.Equal(
+            SteamVrActivateMultipleDriversState.Enabled,
+            fixture.ActivateMultipleDrivers());
+    }
+
+    [Fact]
     public async Task RegisterAndRemoveAreIdempotentAndRestorePriorDisabledSetting()
     {
         using var fixture = new SteamVrLifecycleFixture();
@@ -73,8 +195,14 @@ public sealed class SteamVrDriverLifecycleTests
 
         Assert.True(firstRegistration.Changed);
         Assert.False(repeatedRegistration.Changed);
-        Assert.True(repeatedRegistration.RestartRequired);
-        Assert.Equal(SteamVrDriverReadiness.RestartRequired, repeatedRegistration.Readiness);
+        Assert.False(repeatedRegistration.RestartRequired);
+        Assert.Equal(
+            SteamVrDriverReadiness.RuntimeVerificationRequired,
+            repeatedRegistration.Readiness);
+        Assert.DoesNotContain(
+            "restart SteamVR",
+            repeatedRegistration.Diagnostic,
+            StringComparison.Ordinal);
         Assert.Equal(firstRegistration.Receipt, repeatedRegistration.Receipt);
         Assert.True(removal.Changed);
         Assert.True(removal.RestartRequired);
@@ -133,13 +261,39 @@ public sealed class SteamVrDriverLifecycleTests
             SteamVrActivateMultipleDriversState.Enabled);
         var registration = await fixture.Lifecycle.RegisterAsync(fixture.StagedDriverRoot);
 
-        await fixture.Lifecycle.RemoveAsync(registration.Receipt);
+        var removal = await fixture.Lifecycle.RemoveAsync(registration.Receipt);
 
         Assert.False(registration.Receipt.ActivateMultipleDriversChanged);
+        Assert.True(removal.Changed);
+        Assert.True(removal.RestartRequired);
+        Assert.Equal(SteamVrDriverReadiness.RestartRequired, removal.Readiness);
         Assert.Equal(
             SteamVrActivateMultipleDriversState.Enabled,
             fixture.ActivateMultipleDrivers());
         Assert.Equal([fixture.OtherDriverRoot], fixture.ExternalDrivers());
+    }
+
+    [Fact]
+    public async Task RemoveReportsSettingsOnlyRestorationAsRestartRequired()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        var registration = await fixture.Lifecycle.RegisterAsync(fixture.StagedDriverRoot);
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson([fixture.OtherDriverRoot]));
+
+        var removal = await fixture.Lifecycle.RemoveAsync(registration.Receipt);
+
+        Assert.True(removal.Changed);
+        Assert.True(removal.RestartRequired);
+        Assert.Equal(SteamVrDriverReadiness.RestartRequired, removal.Readiness);
+        Assert.Equal(
+            SteamVrActivateMultipleDriversState.Disabled,
+            fixture.ActivateMultipleDrivers());
+        Assert.Equal([fixture.OtherDriverRoot], fixture.ExternalDrivers());
+        Assert.Collection(
+            fixture.ProcessRunner.Calls,
+            call => Assert.Equal("adddriver", call.Verb));
     }
 
     [Fact]

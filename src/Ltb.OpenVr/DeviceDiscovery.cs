@@ -39,7 +39,8 @@ public sealed record SteamVrDeviceMetadata
             manufacturerName,
             modelNumber,
             controllerType,
-            inputProfilePath: null)
+            inputProfilePath: null,
+            driverVersion: null)
     {
     }
 
@@ -50,6 +51,25 @@ public sealed record SteamVrDeviceMetadata
         string? modelNumber,
         string? controllerType,
         string? inputProfilePath)
+        : this(
+            driverId,
+            trackingSystemName,
+            manufacturerName,
+            modelNumber,
+            controllerType,
+            inputProfilePath,
+            driverVersion: null)
+    {
+    }
+
+    public SteamVrDeviceMetadata(
+        string driverId,
+        string? trackingSystemName,
+        string? manufacturerName,
+        string? modelNumber,
+        string? controllerType,
+        string? inputProfilePath,
+        string? driverVersion)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(driverId);
         DriverId = driverId;
@@ -58,6 +78,7 @@ public sealed record SteamVrDeviceMetadata
         ModelNumber = NormalizeOptional(modelNumber);
         ControllerType = NormalizeOptional(controllerType);
         InputProfilePath = NormalizeOptional(inputProfilePath);
+        DriverVersion = NormalizeOptional(driverVersion);
     }
 
     public string DriverId { get; }
@@ -75,6 +96,12 @@ public sealed record SteamVrDeviceMetadata
     /// evidence and is not inferred from a stored calibration profile.
     /// </summary>
     public string? InputProfilePath { get; }
+
+    /// <summary>
+    /// Version string reported by OpenVR's active device driver. This is
+    /// observed runtime evidence rather than a staged or configured version.
+    /// </summary>
+    public string? DriverVersion { get; }
 
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();

@@ -124,7 +124,9 @@ internal abstract class OpenVrPoseSourceAdapter
             runtimePose.TrackingResult,
             runtimePose.RuntimeTimeSeconds,
             runtimePose.PredictionOffsetSeconds,
-            runtimePose.SampleAgeSeconds);
+            runtimePose.SampleAgeSeconds,
+            runtimePose.LinearVelocityMetersPerSecond,
+            runtimePose.AngularVelocityRadiansPerSecond);
     }
 }
 
