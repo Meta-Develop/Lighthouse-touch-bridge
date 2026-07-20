@@ -192,6 +192,61 @@ public sealed class DriverFeedTests
     }
 
     [Fact]
+    public async Task AuthorizationRejectionDuringReconnectRecoversWithFreshSession()
+    {
+        var first = new ScriptedDriverTransport { FailOnWriteNumber = 2 };
+        var rejected = new ScriptedDriverTransport
+        {
+            ConnectFailure = new DriverPeerAuthorizationException(
+                "Named-pipe server authorization failed: server session 1 does not match client session 2."),
+        };
+        var recovered = new ScriptedDriverTransport();
+        var factory = new QueueDriverTransportFactory(first, rejected, recovered);
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(
+            factory,
+            clock,
+            DriverTestData.SessionA,
+            DriverTestData.SessionB);
+        await feed.StartAsync();
+        await DriverTestData.WaitUntilAsync(() => clock.PendingDelayCount == 1);
+
+        Task publish = feed.PublishAsync(DriverTestData.State()).AsTask();
+        await DriverTestData.WaitUntilAsync(() =>
+        {
+            var health = feed.Health;
+            return first.IsDisposed &&
+                health.Readiness == DriverFeedReadiness.Reconnecting &&
+                health.LastError == "Scripted write failure." &&
+                clock.PendingDelayCount == 2;
+        });
+        clock.Advance(TimeSpan.FromMilliseconds(25));
+        await DriverTestData.WaitUntilAsync(() =>
+        {
+            var health = feed.Health;
+            return rejected.IsDisposed &&
+                health.Readiness == DriverFeedReadiness.Reconnecting &&
+                health.LastError?.Contains("server session 1", StringComparison.Ordinal) == true &&
+                clock.PendingDelayCount == 2;
+        });
+        Assert.Equal(DriverFeedReadiness.Reconnecting, feed.Health.Readiness);
+        Assert.Contains("server session 1", feed.Health.LastError, StringComparison.Ordinal);
+        clock.Advance(TimeSpan.FromMilliseconds(50));
+        await publish;
+
+        var firstHeartbeat = Assert.IsType<ProtocolHeartbeat>(
+            ProtocolCodec.Decode(Assert.Single(first.Packets)));
+        var recoveredState = Assert.IsType<ProtocolHandState>(
+            ProtocolCodec.Decode(Assert.Single(recovered.Packets)));
+        Assert.Equal(DriverTestData.SessionA, firstHeartbeat.Ordering.SessionId);
+        Assert.Equal(DriverTestData.SessionB, recoveredState.Ordering.SessionId);
+        Assert.Equal(0UL, recoveredState.Ordering.Sequence);
+        Assert.Empty(rejected.Packets);
+        Assert.Equal(3, factory.CreateCount);
+        Assert.Equal(DriverFeedReadiness.Ready, feed.Health.Readiness);
+    }
+
+    [Fact]
     public async Task HeartbeatContinuesWhenHandStateDoesNotChange()
     {
         var transport = new ScriptedDriverTransport();
