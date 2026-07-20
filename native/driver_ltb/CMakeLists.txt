@@ -6,6 +6,7 @@ option(LTB_BUILD_OPENVR_DRIVER "Build the Windows OpenVR driver shell" ${WIN32})
 option(LTB_BUILD_TESTS "Build the portable driver-core tests" ON)
 
 add_library(ltb_driver_core STATIC
+    src/core/peer_session.cpp
     src/core/protocol.cpp
     src/core/state_store.cpp)
 target_include_directories(ltb_driver_core PUBLIC include)

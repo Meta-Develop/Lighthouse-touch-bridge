@@ -13,6 +13,7 @@ inline constexpr std::uint64_t kWatchdogTimeoutNanoseconds = 500'000'000ULL;
 
 enum class ApplyError {
     None,
+    PeerNotAuthorized,
     DecodeRejected,
     FirstSequenceNotZero,
     ReplayedSequence,
