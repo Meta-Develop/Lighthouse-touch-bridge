@@ -29,6 +29,15 @@ public sealed class NamedPipeDriverTransportTests
     }
 
     [Fact]
+    public async Task WriteBeforeConnectionClassifiesDisconnectAsRecoverableTransportFailure()
+    {
+        await using var transport = new NamedPipeDriverTransport("ltb-test");
+
+        await Assert.ThrowsAsync<DriverTransportDisconnectedException>(
+            () => transport.WriteAsync(new byte[] { 1, 2, 3 }, CancellationToken.None).AsTask());
+    }
+
+    [Fact]
     public async Task FakeTransportRunsCompleteFeedOnNonWindowsHost()
     {
         var transport = new ScriptedDriverTransport();

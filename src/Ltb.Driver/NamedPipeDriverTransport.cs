@@ -2,6 +2,19 @@ using System.IO.Pipes;
 
 namespace Ltb.Driver;
 
+public sealed class DriverTransportDisconnectedException : IOException
+{
+    public DriverTransportDisconnectedException(string message)
+        : base(message)
+    {
+    }
+
+    public DriverTransportDisconnectedException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
 public sealed class NamedPipeDriverTransportFactory : IDriverTransportFactory
 {
     public const string DefaultPipeName = "lighthouse-touch-bridge-v1";
@@ -72,11 +85,20 @@ public sealed class NamedPipeDriverTransport : IDriverTransport
         var pipe = _pipe;
         if (pipe is null || !pipe.IsConnected)
         {
-            throw new InvalidOperationException("The named pipe is not connected.");
+            throw new DriverTransportDisconnectedException("The named pipe is not connected.");
         }
 
-        await pipe.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
-        await pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await pipe.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
+            await pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new DriverTransportDisconnectedException(
+                "The named pipe disconnected during a driver-feed write.",
+                exception);
+        }
     }
 
     public async ValueTask DisposeAsync()
