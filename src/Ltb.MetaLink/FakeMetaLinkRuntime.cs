@@ -64,6 +64,10 @@ public sealed class FakeMetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerS
             ThrowIfDisposed();
             ResetCount++;
             _queued.Clear();
+            _current = Neutralized(
+                _current.Sequence,
+                _current.ObservedAtMonotonicSeconds,
+                "Fake Meta Link runtime was reset; enqueue a ready snapshot to resume inputs.");
         }
     }
 
@@ -82,4 +86,14 @@ public sealed class FakeMetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerS
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(IsDisposed, this);
+
+    private static MetaLinkRuntimeSnapshot Neutralized(
+        long sequence,
+        double observedAt,
+        string diagnostic) =>
+        new(
+            sequence,
+            observedAt,
+            new MetaLinkHandSnapshot(MetaLinkHand.Left, MetaLinkReadiness.RuntimeStopped, diagnostic),
+            new MetaLinkHandSnapshot(MetaLinkHand.Right, MetaLinkReadiness.RuntimeStopped, diagnostic));
 }

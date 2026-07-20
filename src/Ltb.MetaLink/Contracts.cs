@@ -17,12 +17,13 @@ public enum MetaLinkHand
 /// </summary>
 public enum MetaLinkReadiness
 {
-    MetaRuntimeMissing,
-    RuntimeAbiUnsupported,
-    RuntimeIncompatible,
-    LinkNotConnected,
+    NotInstalled,
+    AbiUnavailable,
+    RuntimeStopped,
+    HeadsetDisconnected,
     ControllersUnavailable,
-    InputsLive,
+    Ready,
+    Faulted,
 }
 
 /// <summary>Buttons publicly reported for a Touch controller hand.</summary>
@@ -225,9 +226,14 @@ public sealed record MetaLinkHandSnapshot
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(diagnostic);
-        if (readiness == MetaLinkReadiness.InputsLive && controller is null)
+        if (readiness == MetaLinkReadiness.Ready && controller is null)
         {
-            throw new ArgumentException("InputsLive requires a controller sample.", nameof(controller));
+            throw new ArgumentException("Ready requires a controller sample.", nameof(controller));
+        }
+
+        if (readiness != MetaLinkReadiness.Ready && controller is not null)
+        {
+            throw new ArgumentException("A non-ready hand cannot carry a controller sample.", nameof(controller));
         }
 
         if (controller is not null && controller.Hand != hand)
@@ -249,7 +255,7 @@ public sealed record MetaLinkHandSnapshot
 
     public MetaLinkControllerSnapshot? Controller { get; }
 
-    public bool InputsLive => Readiness == MetaLinkReadiness.InputsLive;
+    public bool InputsLive => Readiness == MetaLinkReadiness.Ready;
 }
 
 /// <summary>One atomic two-hand observation from the Meta runtime.</summary>
