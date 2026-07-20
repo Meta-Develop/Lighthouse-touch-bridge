@@ -53,6 +53,13 @@ all tracking and input-valid flags must be clear.
 The Windows pipe name is `\\.\pipe\lighthouse-touch-bridge-v1`, matching the
 managed `NamedPipeDriverTransportFactory` default.
 
+The staged driver has one deterministic build identity in the format
+`driver_ltb-<major>.<minor>.<patch>-ipc-<major>.<minor>`. CMake derives it from
+the stable driver project version and IPC major/minor, then generates both the
+compile-time constant published through OpenVR's `Prop_DriverVersion_String`
+and the staged `build-id.txt`. The marker and runtime property therefore name
+the same build without using a timestamp, source path, or machine state.
+
 Sequence numbers increase globally within a session. Timestamp monotonicity is
 checked independently for heartbeats, left-hand samples, and right-hand
 samples: a heartbeat carries producer send time, while a hand packet carries
@@ -78,5 +85,6 @@ ctest --test-dir build/native --output-on-failure
 
 On Windows with Visual Studio 2022, configure with `-A x64`. The staged
 external-driver root is `<build>/driver_ltb`; its binary is
-`bin/win64/driver_ltb.dll`. Generated DLLs and build directories are artifacts,
-not source inputs, and must not be committed.
+`bin/win64/driver_ltb.dll`, and `build-id.txt` is beside
+`driver.vrdrivermanifest`. Generated headers, staged files, DLLs, and build
+directories are artifacts, not source inputs, and must not be committed.
