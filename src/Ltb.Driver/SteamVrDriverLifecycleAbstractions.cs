@@ -39,6 +39,10 @@ public interface ISteamVrDriverLifecycle : IDisposable
 {
     ValueTask<SteamVrPaths> DiscoverAsync(CancellationToken cancellationToken = default);
 
+    ValueTask<SteamVrDriverInspection> InspectAsync(
+        string stagedDriverRoot,
+        CancellationToken cancellationToken = default);
+
     ValueTask<SteamVrDriverLifecycleResult> RegisterAsync(
         string stagedDriverRoot,
         CancellationToken cancellationToken = default);
