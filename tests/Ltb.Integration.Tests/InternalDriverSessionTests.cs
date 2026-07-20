@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Numerics;
+using System.Text.Json;
 using Ltb.App;
 using Ltb.Core;
 using Ltb.Driver;
@@ -42,6 +43,35 @@ public sealed class InternalDriverSessionTests
         }
 
         Assert.DoesNotContain(unchangedOutput.Snapshots, snapshot => snapshot.RestartRequired);
+    }
+
+    [Fact]
+    public async Task CancellationTerminalPreservesDiagnosticRemediationAndPendingRestartFlag()
+    {
+        var runtime = new FakeRuntime(MetaLostObservation())
+        {
+            Registration = Registration(changed: true),
+        };
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        var run = session.RunAsync();
+        await output.WaitForStateAsync(
+            InternalDriverSessionState.WaitingForMetaLink,
+            TimeSpan.FromSeconds(2));
+        await session.StopAsync();
+        await run;
+
+        var terminal = output.Snapshots.Where(snapshot =>
+            snapshot.State == InternalDriverSessionState.Stopped).ToArray();
+        Assert.NotEmpty(terminal);
+        Assert.All(terminal, snapshot =>
+        {
+            Assert.True(snapshot.RestartRequired);
+            Assert.Contains("cancellation", snapshot.Diagnostic, StringComparison.Ordinal);
+            Assert.Contains("Run the session again", snapshot.Remediation, StringComparison.Ordinal);
+        });
+        AssertAllTerminalSnapshotsCleared(output.Snapshots);
     }
 
     [Fact]
@@ -225,23 +255,34 @@ public sealed class InternalDriverSessionTests
         var cadence = new InternalDriverCaptureReportCadence(
             TimeSpan.FromMilliseconds(250),
             startedNanoseconds: 1_000_000_000UL);
+        var coverage = new InternalDriverCaptureEvidenceTracker(MetaLinkHand.Left);
         var callbacks = 1; // Initial capture-state publication.
         for (var milliseconds = 10; milliseconds <= 1_000; milliseconds += 10)
         {
+            Assert.True(coverage.TryAppend(ReadyMeta(10d + (milliseconds / 1000d))));
             if (cadence.ShouldReport(1_000_000_000UL + ((ulong)milliseconds * 1_000_000UL)))
             {
+                _ = coverage.Evaluate();
                 callbacks++;
             }
         }
 
+        _ = coverage.Evaluate();
         callbacks++; // CaptureHandAsync always emits one final evidence report.
         Assert.Equal(6, callbacks);
+        Assert.Equal(5, coverage.EvaluationCount);
 
-        var evidence = CaptureEvidence(40, 0.01d, rotationReady: false) with
-        {
-            OrientationValidityFraction = 0.5d,
-            TotalRotationDegrees = 35d,
-        };
+        var evidence = new InternalDriverCaptureEvidence(
+            40,
+            0.96d,
+            0.5d,
+            0.88d,
+            0.01d,
+            35d,
+            0.42d,
+            1d,
+            rotationReady: false,
+            positionReady: true);
         var exception = Assert.Throws<InvalidOperationException>(() =>
             ProductionInternalDriverSessionRuntime.EnsureRotationReady(
                 MetaLinkHand.Left,
@@ -252,10 +293,101 @@ public sealed class InternalDriverSessionTests
 
         ProductionInternalDriverSessionRuntime.EnsureRotationReady(
             MetaLinkHand.Right,
-            CaptureEvidence(48, 0.8d, rotationReady: true) with
-            {
-                PositionReady = false,
-            });
+            new InternalDriverCaptureEvidence(
+                48,
+                0.96d,
+                0.95d,
+                0.4d,
+                0.8d,
+                220d,
+                1d,
+                0.5d,
+                rotationReady: true,
+                positionReady: false));
+    }
+
+    [Fact]
+    public void PublicEvidenceDtosRejectInvalidOrIncoherentValues()
+    {
+        var left = new InternalDriverLoadedControllerEvidence(
+            InternalDriverLoadedReadiness.LeftControllerSerial,
+            BuildIdentity);
+        var right = new InternalDriverLoadedControllerEvidence(
+            InternalDriverLoadedReadiness.RightControllerSerial,
+            BuildIdentity);
+        var quality = new InternalDriverCalibrationQualityEvidence(1d, null, null, 0.9d);
+        var created = new DateTimeOffset(2026, 7, 21, 0, 0, 0, TimeSpan.Zero);
+
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverLoadedControllerEvidence(" ", BuildIdentity));
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverLoadedControllerEvidence("LTB-TOUCH-LEFT", ""));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverDriverEvidence(""));
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverDriverEvidence(BuildIdentity, left, rightController: null));
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverDriverEvidence(BuildIdentity, right, left));
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverDriverEvidence(
+                BuildIdentity,
+                new InternalDriverLoadedControllerEvidence(
+                    InternalDriverLoadedReadiness.LeftControllerSerial,
+                    "other-build"),
+                right));
+
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverLighthouseHmdEvidence(
+            " ", "/devices/hmd", "lighthouse", null, null, null));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverLighthouseHmdEvidence(
+            "HMD", "", "lighthouse", null, null, null));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverLighthouseHmdEvidence(
+            "HMD", "/devices/hmd", "", null, null, null));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverLighthouseHmdEvidence(
+            "HMD", "/devices/hmd", "lighthouse", " ", null, null));
+
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverCalibrationQualityEvidence(-1d, null, null, 0.9d));
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverCalibrationQualityEvidence(1d, double.NaN, null, 0.9d));
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverCalibrationQualityEvidence(1d, null, double.PositiveInfinity, 0.9d));
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverCalibrationQualityEvidence(1d, null, null, 1.1d));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverCalibrationEvidence(
+            1, InternalDriverCalibrationMode.RotationOnly, "reason", 0d, quality, created));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverCalibrationEvidence(
+            2, (InternalDriverCalibrationMode)99, "reason", 0d, quality, created));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverCalibrationEvidence(
+            2, InternalDriverCalibrationMode.RotationOnly, " ", 0d, quality, created));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverCalibrationEvidence(
+            2, InternalDriverCalibrationMode.RotationOnly, "reason", double.NaN, quality, created));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverCalibrationEvidence(
+            2, InternalDriverCalibrationMode.RotationOnly, "reason", 0d, null!, created));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverCalibrationEvidence(
+            2, InternalDriverCalibrationMode.FullSixDof, "reason", 0d, quality, created));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverCalibrationEvidence(
+            2, InternalDriverCalibrationMode.RotationOnly, "reason", 0d, quality, default));
+
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(sampleCount: -1));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            trackingValidityFraction: double.NaN));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            orientationValidityFraction: 1.1d));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            motionAxisCoverage: -0.1d));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            totalRotationDegrees: double.PositiveInfinity));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            rotationProgress: 1d,
+            rotationReady: false));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            positionProgress: 0.5d,
+            positionReady: true));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            sampleCount: 0,
+            trackingValidityFraction: 0.1d,
+            rotationProgress: 0d,
+            positionProgress: 0d,
+            positionReady: false));
     }
 
     [Fact]
@@ -483,6 +615,7 @@ public sealed class InternalDriverSessionTests
         Assert.Equal(0, fault.Feed.ReconnectAttempts);
         Assert.Null(fault.Feed.LastError);
         AssertFinalRuntimeEvidenceCleared(fault);
+        AssertAllTerminalSnapshotsCleared(output.Snapshots);
     }
 
     [Fact]
@@ -514,6 +647,7 @@ public sealed class InternalDriverSessionTests
         Assert.Equal(1, runtime.StopRunCount);
         Assert.Equal(InternalDriverSessionState.Stopped, session.CurrentSnapshot.State);
         AssertFinalRuntimeEvidenceCleared(session.CurrentSnapshot);
+        AssertAllTerminalSnapshotsCleared(output.Snapshots);
         Assert.True(run.IsCompleted);
         Assert.Contains(output.Snapshots, snapshot =>
             snapshot.State == InternalDriverSessionState.Reconnecting &&
@@ -537,6 +671,72 @@ public sealed class InternalDriverSessionTests
             snapshot.Diagnostic.Contains("SteamVR", StringComparison.Ordinal) &&
             snapshot.Left.NeutralReason == InternalDriverNeutralReason.SteamVrStopped);
         Assert.Equal(InternalDriverSessionState.Stopped, session.CurrentSnapshot.State);
+        AssertAllTerminalSnapshotsCleared(output.Snapshots);
+    }
+
+    [Fact]
+    public async Task JsonLinesNeverPersistsStaleTerminalSessionEvidence()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-terminal-json-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "session.jsonl");
+        try
+        {
+            var runtime = new FakeRuntime(
+                ReadyObservation(sampleTimeSeconds: 10d),
+                ReadyObservation(sampleTimeSeconds: 11d))
+            {
+                ObserveFailureAtCall = 3,
+                ResolveAsCalibrated = true,
+            };
+            await using (var session = new InternalDriverSession(
+                runtime,
+                new InternalDriverSessionOptions
+                {
+                    PollInterval = TimeSpan.FromMilliseconds(1),
+                    ShutdownOperationTimeout = TimeSpan.FromMilliseconds(50),
+                },
+                new JsonLinesInternalDriverSessionOutput(path)))
+            {
+                await session.RunAsync();
+            }
+
+            var terminalCount = 0;
+            foreach (var line in File.ReadLines(path))
+            {
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                var state = root.GetProperty("state").GetString();
+                if (state is not ("Stopped" or "Faulted"))
+                {
+                    continue;
+                }
+
+                terminalCount++;
+                Assert.False(root.GetProperty("readiness").GetProperty("can_publish").GetBoolean());
+                Assert.Equal(JsonValueKind.Null, root.GetProperty("driver").ValueKind);
+                Assert.Equal(JsonValueKind.Null, root.GetProperty("lighthouse_hmd").ValueKind);
+                Assert.Equal(
+                    "Stopped",
+                    root.GetProperty("feed").GetProperty("readiness").GetString());
+                foreach (var handName in new[] { "left", "right" })
+                {
+                    var hand = root.GetProperty(handName);
+                    Assert.Equal(JsonValueKind.Null, hand.GetProperty("tracker_serial").ValueKind);
+                    Assert.Equal("Missing", hand.GetProperty("profile_readiness").GetString());
+                    Assert.Equal(JsonValueKind.Null, hand.GetProperty("calibration").ValueKind);
+                    Assert.Equal(JsonValueKind.Null, hand.GetProperty("capture").ValueKind);
+                }
+            }
+
+            Assert.True(terminalCount >= 1, "No terminal JSONL record was emitted.");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [Fact]
@@ -604,6 +804,11 @@ public sealed class InternalDriverSessionTests
         Assert.Null(snapshot.LighthouseHmd);
         Assert.Equal(DriverFeedReadiness.Stopped, snapshot.Feed.Readiness);
         Assert.Null(snapshot.Feed.SessionId);
+        Assert.Null(snapshot.Feed.LastSuccessfulSequence);
+        Assert.Null(snapshot.Feed.LastSuccessfulSendAge);
+        Assert.Null(snapshot.Feed.LastSuccessfulHeartbeatAge);
+        Assert.Equal(0, snapshot.Feed.ReconnectAttempts);
+        Assert.Null(snapshot.Feed.LastError);
         foreach (var hand in new[] { snapshot.Left, snapshot.Right })
         {
             Assert.Null(hand.TrackerSerial);
@@ -619,23 +824,54 @@ public sealed class InternalDriverSessionTests
         }
     }
 
+    private static void AssertAllTerminalSnapshotsCleared(
+        IEnumerable<InternalDriverSessionSnapshot> snapshots)
+    {
+        var terminal = snapshots.Where(snapshot => snapshot.State is
+            InternalDriverSessionState.Stopped or InternalDriverSessionState.Faulted).ToArray();
+        Assert.NotEmpty(terminal);
+        Assert.All(terminal, AssertFinalRuntimeEvidenceCleared);
+    }
+
+    private static InternalDriverCaptureEvidence CaptureEvidenceWith(
+        int sampleCount = 1,
+        double trackingValidityFraction = 1d,
+        double orientationValidityFraction = 1d,
+        double positionValidityFraction = 1d,
+        double motionAxisCoverage = 0d,
+        double totalRotationDegrees = 0d,
+        double rotationProgress = 0d,
+        double positionProgress = 1d,
+        bool rotationReady = false,
+        bool positionReady = true) => new(
+        sampleCount,
+        trackingValidityFraction,
+        orientationValidityFraction,
+        positionValidityFraction,
+        motionAxisCoverage,
+        totalRotationDegrees,
+        rotationProgress,
+        positionProgress,
+        rotationReady,
+        positionReady);
+
     private static InternalDriverCalibrationEvidence CalibrationEvidence(
         ProtocolHand hand,
         bool calibrated)
     {
         var fullSixDof = hand == ProtocolHand.Right;
         return new InternalDriverCalibrationEvidence(
-            SchemaVersion: 2,
+            2,
             fullSixDof
                 ? InternalDriverCalibrationMode.FullSixDof
                 : InternalDriverCalibrationMode.RotationOnly,
             $"{(calibrated ? "fresh" : "reused")} {hand} profile evidence",
-            EstimatedLagMilliseconds: fullSixDof ? 12.5d : 9.75d,
+            fullSixDof ? 12.5d : 9.75d,
             new InternalDriverCalibrationQualityEvidence(
-                RotationRmsDegrees: 1.25d,
-                PositionRmsMillimeters: fullSixDof ? 4.5d : null,
-                TranslationConditionNumber: fullSixDof ? 17d : null,
-                InlierRatio: fullSixDof ? 0.93d : 0.91d),
+                1.25d,
+                fullSixDof ? 4.5d : null,
+                fullSixDof ? 17d : null,
+                fullSixDof ? 0.93d : 0.91d),
             new DateTimeOffset(2026, 7, 21, 0, 0, 0, TimeSpan.Zero));
     }
 
@@ -644,15 +880,15 @@ public sealed class InternalDriverSessionTests
         double motionAxisCoverage,
         bool rotationReady) => new(
         sampleCount,
-        TrackingValidityFraction: 0.96d,
-        OrientationValidityFraction: 0.95d,
-        PositionValidityFraction: 0.88d,
+        0.96d,
+        0.95d,
+        0.88d,
         motionAxisCoverage,
-        TotalRotationDegrees: rotationReady ? 220d : 70d,
-        RotationProgress: rotationReady ? 1d : 0.42d,
-        PositionProgress: 1d,
+        rotationReady ? 220d : 70d,
+        rotationReady ? 1d : 0.42d,
+        1d,
         rotationReady,
-        PositionReady: true);
+        true);
 
     private static InternalDriverRegistration Registration(bool changed) => new(
         IsRegistered: true,
