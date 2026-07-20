@@ -132,9 +132,51 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
             Assert.True(root.TryGetProperty("left", out _));
             Assert.True(root.TryGetProperty("right", out _));
             Assert.True(root.TryGetProperty("feed", out _));
+            Assert.True(root.TryGetProperty("driver", out var driver));
+            Assert.Equal("driver_ltb-test", driver.GetProperty("staged_build_identity").GetString());
+            Assert.Equal(
+                "LTB-TOUCH-LEFT",
+                driver.GetProperty("left_controller").GetProperty("serial_number").GetString());
+            Assert.True(root.TryGetProperty("lighthouse_hmd", out var hmd));
+            Assert.Equal("HMD-LIGHTHOUSE", hmd.GetProperty("stable_device_id").GetString());
+            Assert.Equal(
+                "RotationOnly",
+                root.GetProperty("left").GetProperty("calibration").GetProperty("selected_mode").GetString());
+            Assert.Equal(
+                24,
+                root.GetProperty("left").GetProperty("capture").GetProperty("sample_count").GetInt32());
             Assert.True(root.TryGetProperty("diagnostic", out _));
             Assert.True(root.TryGetProperty("remediation", out _));
         }
+    }
+
+    [Fact]
+    public void FinalClearedSnapshotSerializesNullRuntimeProfileAndCaptureEvidence()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "session.jsonl");
+        using (var output = new JsonLinesInternalDriverSessionOutput(path))
+        {
+            output.Write(ActiveSnapshot());
+            output.Write(InternalDriverSessionSnapshot.Initial);
+        }
+
+        var finalLine = File.ReadAllLines(path)[^1];
+        using var document = JsonDocument.Parse(finalLine);
+        var root = document.RootElement;
+        Assert.Equal("Stopped", root.GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("driver").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("lighthouse_hmd").ValueKind);
+        Assert.Equal(
+            JsonValueKind.Null,
+            root.GetProperty("left").GetProperty("tracker_serial").ValueKind);
+        Assert.Equal(
+            JsonValueKind.Null,
+            root.GetProperty("left").GetProperty("calibration").ValueKind);
+        Assert.Equal(
+            JsonValueKind.Null,
+            root.GetProperty("left").GetProperty("capture").ValueKind);
+        Assert.False(root.GetProperty("readiness").GetProperty("can_publish").GetBoolean());
     }
 
     [Fact]
@@ -188,11 +230,29 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
                 LastError: null),
             RestartRequired: false,
             "Both hands are publishing.",
-            "No remediation is required.");
+            "No remediation is required.")
+        {
+            Driver = new InternalDriverDriverEvidence("driver_ltb-test")
+            {
+                LeftController = new InternalDriverLoadedControllerEvidence(
+                    "LTB-TOUCH-LEFT",
+                    "driver_ltb-test"),
+                RightController = new InternalDriverLoadedControllerEvidence(
+                    "LTB-TOUCH-RIGHT",
+                    "driver_ltb-test"),
+            },
+            LighthouseHmd = new InternalDriverLighthouseHmdEvidence(
+                "HMD-LIGHTHOUSE",
+                "/devices/HMD-LIGHTHOUSE",
+                "lighthouse",
+                "lighthouse",
+                "Example",
+                "Lighthouse HMD"),
+        };
     }
 
     private static InternalDriverHandSnapshot ActiveHand(ProtocolHand hand, string trackerSerial) =>
-        new(
+        new InternalDriverHandSnapshot(
             hand,
             trackerSerial,
             TrackerConnected: true,
@@ -203,5 +263,29 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
             PoseAge: TimeSpan.FromMilliseconds(2),
             IsPublishing: true,
             InternalDriverNeutralReason.None,
-            "The hand is publishing.");
+            "The hand is publishing.")
+        {
+            Calibration = new InternalDriverCalibrationEvidence(
+                SchemaVersion: 2,
+                InternalDriverCalibrationMode.RotationOnly,
+                "held-out rotation evidence accepted",
+                EstimatedLagMilliseconds: 8.5d,
+                new InternalDriverCalibrationQualityEvidence(
+                    RotationRmsDegrees: 1.2d,
+                    PositionRmsMillimeters: null,
+                    TranslationConditionNumber: null,
+                    InlierRatio: 0.94d),
+                new DateTimeOffset(2026, 7, 21, 0, 0, 0, TimeSpan.Zero)),
+            Capture = new InternalDriverCaptureEvidence(
+                SampleCount: 24,
+                TrackingValidityFraction: 1d,
+                OrientationValidityFraction: 1d,
+                PositionValidityFraction: 0.9d,
+                MotionAxisCoverage: 0.6d,
+                TotalRotationDegrees: 210d,
+                RotationProgress: 1d,
+                PositionProgress: 1d,
+                RotationReady: true,
+                PositionReady: true),
+        };
 }

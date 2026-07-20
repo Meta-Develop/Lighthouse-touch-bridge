@@ -140,6 +140,14 @@ public sealed class InternalDriverCalibrationTests
             Assert.Equal(ControllerRuntimeIdentities.MetaLinkLibOvr, lookup.Profile.ControllerRuntime);
             Assert.Null(lookup.Profile.ControllerIdentity);
             Assert.False(lookup.Recalibration!.IsRequired);
+            var evidence = ProductionInternalDriverSessionRuntime.ToCalibrationEvidence(
+                lookup.Profile);
+            Assert.Equal(CalibrationProfileSchema.CurrentVersion, evidence.SchemaVersion);
+            Assert.Equal(InternalDriverCalibrationMode.RotationOnly, evidence.SelectedMode);
+            Assert.Equal(1d, evidence.Quality.RotationRmsDegrees);
+            Assert.Null(evidence.Quality.PositionRmsMillimeters);
+            Assert.Null(evidence.Quality.TranslationConditionNumber);
+            Assert.Equal(0.95d, evidence.Quality.InlierRatio);
         });
     }
 
@@ -267,6 +275,16 @@ public sealed class InternalDriverCalibrationTests
             Assert.Equal(ProfileCalibrationMode.FullSixDof, profile.SelectedMode);
             Assert.Equal(CreatedUtc, profile.CreatedUtc);
             Assert.InRange(profile.EstimatedLagMilliseconds, 10d, 14d);
+
+            var evidence = ProductionInternalDriverSessionRuntime.ToCalibrationEvidence(profile);
+            Assert.Equal(InternalDriverCalibrationMode.FullSixDof, evidence.SelectedMode);
+            Assert.Equal(profile.SelectionReason, evidence.SelectionReason);
+            Assert.Equal(profile.EstimatedLagMilliseconds, evidence.EstimatedLagMilliseconds);
+            Assert.Equal(profile.Quality.RotationRmsDegrees, evidence.Quality.RotationRmsDegrees);
+            Assert.Equal(profile.Quality.PositionRmsMillimeters, evidence.Quality.PositionRmsMillimeters);
+            Assert.Equal(profile.Quality.TranslationCondition, evidence.Quality.TranslationConditionNumber);
+            Assert.Equal(profile.Quality.InlierRatio, evidence.Quality.InlierRatio);
+            Assert.Equal(CreatedUtc, evidence.CreatedUtc);
 
             var later = calibration.FindReusableProfile(Context());
             Assert.True(later.CanReuse, later.Diagnostic);
