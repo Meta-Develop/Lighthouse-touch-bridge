@@ -1,48 +1,105 @@
 # Lighthouse Touch Bridge
 
-Meta Touch inputs. Lighthouse tracking. One SteamVR controller.
+Meta Touch inputs. Lighthouse tracking. Two first-party SteamVR controllers.
 
-Lighthouse Touch Bridge is a Windows utility that combines Meta Touch controller inputs with poses from Lighthouse-tracked devices. It is designed for mixed-VR setups where a Lighthouse HMD such as Bigscreen Beyond is used with Quest Touch controllers whose runtime position and orientation are replaced by mounted Vive Trackers.
+Lighthouse Touch Bridge (LTB) is a Windows utility for mixed-VR systems where
+a Lighthouse HMD, initially Bigscreen Beyond 2/2e, is used with Quest Touch
+controllers and two rigidly mounted Lighthouse trackers. The trackers provide
+the runtime poses; the official Meta Horizon Link runtime provides the Touch
+inputs and calibration-time Touch poses.
 
-LTB automatically associates controllers and trackers, aligns their pose streams in time, and calibrates the fixed mount transform. It supports rotation-only calibration when Quest position is unavailable and full 6DoF calibration when reliable position data is present. At runtime, only the Lighthouse tracker pose is used; the Quest system remains connected to provide controller inputs.
+## Current supported path
 
-## Status
+The first-party internal-driver path is the project default. Its only accepted
+external runtime dependencies are:
 
-The v0.1 implementation is complete. The calibration core, live recorder, VMT
-and TrackingOverrides integration, two-hand calibration wizard, Avalonia
-desktop GUI, reliability runtime, and win-x64 packaging are implemented, and
-the full test suite passes on Linux. Live Windows/SteamVR hardware verification,
-including native GUI launch and visual checks, is the remaining step, tracked
-in the [Windows verification checklist](docs/windows-verification.md).
+- SteamVR; and
+- the official Meta Horizon Link PC runtime, using Quest Link or Air Link.
 
-## How It Works
+LTB supplies its own `driver_ltb` SteamVR driver. ALVR, Virtual Motion Tracker
+(VMT), and SteamVR `TrackingOverrides` are not dependencies of the supported
+path.
 
-During calibration, LTB compares synchronized Meta Touch and Lighthouse tracker pose streams to estimate the fixed transform between the mounted tracker and the controller. At runtime it combines that mount transform with the authoritative tracker pose using `T_output(t) = T_tracker(t) · X_mount`, then coordinates VMT and SteamVR TrackingOverrides so Touch supplies the inputs and Lighthouse supplies the pose.
+The internal-driver implementation, default Avalonia desktop flow, automated
+managed/native coverage, packaging, and fail-safe lifecycle are present. No
+Windows hardware/runtime acceptance evidence is claimed yet. Every required
+live check remains unchecked in the
+[Windows internal-driver verification checklist](docs/windows-internal-driver-verification.md).
 
-## Calibration Modes
+## Start LTB
 
-- **Rotation-only** estimates mount orientation and uses the physical tracker origin as the virtual controller position origin.
-- **Full 6DoF** estimates both mount orientation and translation when reliable Touch position data and sufficiently rich motion are available.
-- **Auto** solves and validates rotation first, attempts translation only when observable, and falls back to rotation-only when the full transform is not reliably better.
+Use the packaged `Ltb.Gui.exe` on the Windows SteamVR host. The window opens on
+the **First-party internal driver** flow; **Start** runs the supported path with
+no device indexes, VMT slots, driver paths, or settings paths to enter.
 
-## Repository Layout
+1. Connect Quest to the official Meta Horizon Link runtime and keep both Touch
+   controllers awake.
+2. Start SteamVR with the intended Lighthouse HMD as its sole HMD and connect
+   exactly two physical Lighthouse trackers.
+3. Run `Ltb.Gui.exe` and press **Start**.
+4. If LTB registers or updates `driver_ltb`, restart SteamVR when the GUI asks,
+   then press **Start** again.
+5. Follow the separate left- and right-hand movement prompts if the mounts need
+   calibration. Stop from the GUI before changing hardware.
 
-- `src/` contains the application and reusable runtime, calibration, and configuration libraries.
-- `tests/` contains calibration, configuration, and integration test projects.
-- `tools/` contains recording-inspection and synthetic-data command-line utilities.
-- `docs/` contains the specification and focused architecture, calibration, setup, and troubleshooting documentation.
+See [Internal driver operations](docs/internal-drivers.md) for discovery,
+readiness, calibration, paths, keep-awake guidance, and failure behavior.
 
-See the [complete specification](docs/specification.md) for product requirements, coordinate conventions, calibration design, integration constraints, and acceptance criteria.
+## Architecture
 
-## Roadmap
+```text
+Quest + Touch
+  -> official Meta Horizon Link runtime
+  -> Ltb.MetaLink
+  -> Ltb.App calibration and pose composition
+  -> same-user local named pipe
+  -> first-party driver_ltb
+  -> exactly two SteamVR controllers
 
-- **Milestone 0 — Offline calibration proof:** recover known transforms from synthetic data and report calibration quality.
-- **Milestone 1 — Live recorder:** discover SteamVR devices, record pose streams, replay captures, and estimate stream lag.
-- **Milestone 2 — One-hand live bridge:** apply one VMT transform and one safe hand override.
-- **Milestone 3 — Two-hand calibration wizard:** automate association, guided capture, model selection, and profile persistence.
-- **Milestone 4 — Reliable daily use:** add startup sequencing, recovery, watchdog behavior, rollback, packaging, and complete documentation.
-- **Milestone 5 — Generalization:** support additional Meta Touch, Lighthouse tracker, and Lighthouse HMD combinations.
+Lighthouse HMD + two physical Lighthouse trackers
+  -> SteamVR/OpenVR raw tracker poses
+  -> Ltb.App
+```
+
+During calibration, LTB associates each mounted tracker with one hand, aligns
+the Meta and Lighthouse streams in monotonic time, and estimates the fixed
+mount transform. During active use it publishes
+`T_output(t) = T_tracker(t) * X_mount`; Touch supplies controller inputs, while
+the physical trackers supply the authoritative runtime poses.
+
+## Calibration modes
+
+- **Rotation-only** estimates mount orientation and uses the tracker origin as
+  the controller position origin.
+- **Full 6DoF** estimates mount orientation and translation when reliable Touch
+  position and sufficiently rich motion are available.
+- **Auto** validates rotation first, attempts translation only when observable,
+  and retains rotation-only when translation is not reliable.
+
+## Legacy migration material
+
+The older ALVR/VMT/`TrackingOverrides` commands and documents remain buildable
+only as historical migration material. They are unsupported, receive no new
+production automation, and are not invoked by the GUI **Start** button. Their
+references are clearly labeled under [legacy setup](docs/setup.md),
+[legacy troubleshooting](docs/troubleshooting.md), and the
+[legacy Windows checklist](docs/windows-verification.md).
+
+## Repository layout
+
+- `src/` contains the desktop/application layers and reusable runtime,
+  calibration, configuration, Meta Link, protocol, and driver libraries.
+- `native/driver_ltb/` contains the first-party SteamVR driver and its portable
+  protocol/watchdog core.
+- `tests/` contains managed unit, integration, and desktop tests.
+- `tools/` contains recording-inspection and synthetic-data utilities.
+- `docs/` contains the specification and focused architecture, operations,
+  calibration, and verification documentation.
+
+See the [complete specification](docs/specification.md) for the product,
+coordinate, protocol, readiness, safety, and acceptance contracts.
 
 ## License
 
-Lighthouse Touch Bridge is licensed under the [GNU General Public License v3.0 or later](LICENSE).
+Lighthouse Touch Bridge is licensed under the
+[GNU General Public License v3.0 or later](LICENSE).

@@ -1,4 +1,12 @@
-# Setup
+# Legacy ALVR/VMT Setup Reference
+
+> [!IMPORTANT]
+> This document preserves compile-only ALVR, VMT, and SteamVR
+> `TrackingOverrides` migration detail. It is not the supported first-party
+> setup and none of these commands is invoked by the desktop **Start** button.
+> Use [First-party internal driver operations](internal-drivers.md) and the
+> [Windows internal-driver checklist](windows-internal-driver-verification.md)
+> for the current path.
 
 ## Version 0.1 support boundary
 
