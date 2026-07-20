@@ -58,6 +58,16 @@ public sealed class OvrAbiLayoutTests
     }
 
     [Fact]
+    public void InitializationFlagConstantsMatchPublicAbi()
+    {
+        // OVR_CAPI.h: ovrInit_RequestVersion = 0x00000004
+        Assert.Equal(0x00000004u, OvrConstants.InitRequestVersion);
+
+        // OVR_CAPI.h: ovrInit_Invisible = 0x00000010
+        Assert.Equal(0x00000010u, OvrConstants.InitInvisible);
+    }
+
+    [Fact]
     public void InvisibleInitializationRequestsAbiMinorSixtyFour()
     {
         var parameters = OvrInitParams.InvisibleSession;
