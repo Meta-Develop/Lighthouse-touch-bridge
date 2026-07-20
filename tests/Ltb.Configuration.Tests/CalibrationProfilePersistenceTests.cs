@@ -30,7 +30,7 @@ public sealed class CalibrationProfilePersistenceTests
     }
 
     [Fact]
-    public void ProfileRoundTripUsesExactSchemaVersionOneNamesAndValues()
+    public void ProfileRoundTripUsesExactSchemaVersionTwoNamesAndValues()
     {
         var profile = Profile(
             ControllerHand.Left,
@@ -49,8 +49,9 @@ public sealed class CalibrationProfilePersistenceTests
                 "hand",
                 "controller_runtime",
                 "controller_model",
-                "controller_serial",
+                "controller_identity",
                 "tracker_serial",
+                "driver_profile",
                 "calibration_policy",
                 "selected_mode",
                 "selection_reason",
@@ -60,12 +61,13 @@ public sealed class CalibrationProfilePersistenceTests
                 "created_utc",
             ],
             root.EnumerateObject().Select(property => property.Name));
-        Assert.Equal(1, root.GetProperty("schema_version").GetInt32());
+        Assert.Equal(2, root.GetProperty("schema_version").GetInt32());
         Assert.Equal("left", root.GetProperty("hand").GetString());
-        Assert.Equal("ALVR", root.GetProperty("controller_runtime").GetString());
+        Assert.Equal("meta_link_libovr", root.GetProperty("controller_runtime").GetString());
         Assert.Equal("Quest 2 Touch", root.GetProperty("controller_model").GetString());
-        Assert.Equal("CTRL-TEST0001", root.GetProperty("controller_serial").GetString());
+        Assert.Equal("CTRL-TEST0001", root.GetProperty("controller_identity").GetString());
         Assert.Equal("LHR-TEST0001", root.GetProperty("tracker_serial").GetString());
+        Assert.Equal("ltb_touch", root.GetProperty("driver_profile").GetString());
         Assert.Equal("auto", root.GetProperty("calibration_policy").GetString());
         Assert.Equal("full_6dof", root.GetProperty("selected_mode").GetString());
         Assert.Equal(
@@ -93,33 +95,267 @@ public sealed class CalibrationProfilePersistenceTests
     [InlineData("Quest 2 Touch")]
     [InlineData("Quest 3 Touch Plus")]
     [InlineData("Quest Pro Touch")]
-    public void SchemaVersionOnePreservesDataDrivenTouchFamilyCompatibility(
+    public void SchemaVersionTwoPreservesDataDrivenTouchFamilyCompatibility(
         string controllerModel)
     {
         var profile = Profile(
-            controllerRuntime: "ALVR",
+            controllerRuntime: ControllerRuntimeIdentities.MetaLinkLibOvr,
             controllerModel: controllerModel);
 
         var loaded = CalibrationProfileJson.DeserializeProfile(
             CalibrationProfileJson.SerializeProfile(profile));
 
-        Assert.Equal(1, loaded.SchemaVersion);
-        Assert.Equal("ALVR", loaded.ControllerRuntime);
+        Assert.Equal(2, loaded.SchemaVersion);
+        Assert.Equal(ControllerRuntimeIdentities.MetaLinkLibOvr, loaded.ControllerRuntime);
         Assert.Equal(controllerModel, loaded.ControllerModel);
-        Assert.True(loaded.MatchesController("ALVR", controllerModel));
-        Assert.False(loaded.MatchesController("ALVR", "Different Meta Touch family"));
-        Assert.False(loaded.MatchesController("Different runtime", controllerModel));
+        Assert.True(loaded.MatchesController(
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            controllerModel,
+            "CTRL-TEST0001"));
+        Assert.False(loaded.MatchesController(
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Different Meta Touch family",
+            "CTRL-TEST0001"));
+        Assert.False(loaded.MatchesController(
+            CalibrationDriverProfiles.LtbTouch,
+            "Different runtime",
+            controllerModel,
+            "CTRL-TEST0001"));
     }
 
     [Fact]
-    public void OptionalControllerSerialIsOmittedAndNullableQualityFieldsRemainExplicit()
+    public void SchemaVersionOneLegacyReadPreservesExactIdentityAndShape()
+    {
+        var legacy = LegacyProfile();
+        var json = CalibrationProfileJson.SerializeProfile(legacy);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        Assert.Equal(1, root.GetProperty("schema_version").GetInt32());
+        Assert.Equal("ALVR", root.GetProperty("controller_runtime").GetString());
+        Assert.Equal("CTRL-TEST0001", root.GetProperty("controller_serial").GetString());
+        Assert.False(root.TryGetProperty("controller_identity", out _));
+        Assert.False(root.TryGetProperty("driver_profile", out _));
+
+        var loaded = CalibrationProfileJson.DeserializeProfile(json);
+
+        Assert.True(loaded.IsLegacy);
+        Assert.Null(loaded.DriverProfile);
+        Assert.Equal("ALVR", loaded.ControllerRuntime);
+        Assert.Equal("CTRL-TEST0001", loaded.ControllerSerial);
+        Assert.True(loaded.MatchesController("ALVR", "Quest 2 Touch"));
+        Assert.False(loaded.MatchesController(
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            "CTRL-TEST0001"));
+        Assert.Equal(json, CalibrationProfileJson.SerializeProfile(loaded));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("unexpected_driver")]
+    public void SchemaVersionTwoRejectsMissingBlankOrUnexpectedDriverProfile(
+        string? driverProfile)
+    {
+        var root = SerializedProfileObject();
+        if (driverProfile is null)
+        {
+            Assert.True(root.Remove("driver_profile"));
+        }
+        else
+        {
+            root["driver_profile"] = driverProfile;
+        }
+
+        var exception = Assert.Throws<CalibrationProfileFormatException>(() =>
+            CalibrationProfileJson.DeserializeProfile(root.ToJsonString()));
+
+        Assert.Equal(CalibrationProfileFormatReason.InvalidProfileData, exception.Reason);
+        Assert.Contains("driver", exception.Message + exception.InnerException?.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SchemaSpecificIdentityMembersCannotSilentlyRelabelProfiles()
+    {
+        var legacyRoot = JsonNode.Parse(
+            CalibrationProfileJson.SerializeProfile(LegacyProfile()))!.AsObject();
+        legacyRoot["driver_profile"] = CalibrationDriverProfiles.LtbTouch;
+
+        var legacyException = Assert.Throws<CalibrationProfileFormatException>(() =>
+            CalibrationProfileJson.DeserializeProfile(legacyRoot.ToJsonString()));
+        Assert.Equal(CalibrationProfileFormatReason.InvalidProfileData, legacyException.Reason);
+
+        var currentRoot = SerializedProfileObject();
+        currentRoot["controller_serial"] = "legacy-serial";
+        var currentException = Assert.Throws<CalibrationProfileFormatException>(() =>
+            CalibrationProfileJson.DeserializeProfile(currentRoot.ToJsonString()));
+        Assert.Equal(CalibrationProfileFormatReason.InvalidProfileData, currentException.Reason);
+    }
+
+    [Fact]
+    public void ExplicitMigrationPreservesControllerContractAndReversibleOriginal()
+    {
+        var legacy = LegacyProfile();
+        var originalJson = CalibrationProfileJson.SerializeProfile(legacy);
+        var target = new CalibrationProfileTargetIdentity(
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.LegacyAlvr,
+            "Quest 2 Touch",
+            "CTRL-TEST0001");
+
+        var result = CalibrationProfileMigration.MigrateLegacyProfile(legacy, target);
+
+        Assert.Same(legacy, result.OriginalLegacyProfile);
+        Assert.Same(legacy, result.Revert());
+        Assert.Equal(originalJson, CalibrationProfileJson.SerializeProfile(legacy));
+        Assert.Equal(2, result.MigratedProfile.SchemaVersion);
+        Assert.Equal(CalibrationDriverProfiles.LtbTouch, result.MigratedProfile.DriverProfile);
+        Assert.Equal(ControllerRuntimeIdentities.LegacyAlvr, result.MigratedProfile.ControllerRuntime);
+        Assert.Equal("CTRL-TEST0001", result.MigratedProfile.ControllerIdentity);
+        Assert.Equal(legacy.TrackerToController, result.MigratedProfile.TrackerToController);
+        Assert.Equal(legacy.Quality, result.MigratedProfile.Quality);
+        Assert.NotEqual(originalJson, CalibrationProfileJson.SerializeProfile(result.MigratedProfile));
+    }
+
+    [Fact]
+    public void MigrationRejectsCrossRuntimeRelabelAndLeavesOriginalUnchanged()
+    {
+        var legacy = LegacyProfile();
+        var originalJson = CalibrationProfileJson.SerializeProfile(legacy);
+        var target = new CalibrationProfileTargetIdentity(
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            "META-RUNTIME-IDENTITY");
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            CalibrationProfileMigration.MigrateLegacyProfile(legacy, target));
+
+        Assert.Contains("recalibration", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Cross-runtime", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(originalJson, CalibrationProfileJson.SerializeProfile(legacy));
+        Assert.True(legacy.IsLegacy);
+    }
+
+    [Fact]
+    public void MigrationRejectsCurrentProfilesAndRequiresSupportedCallerTarget()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            CalibrationProfileMigration.MigrateLegacyProfile(
+                Profile(),
+                new CalibrationProfileTargetIdentity(
+                    CalibrationDriverProfiles.LtbTouch,
+                    ControllerRuntimeIdentities.MetaLinkLibOvr,
+                    "Quest 2 Touch",
+                    "CTRL-TEST0001")));
+        Assert.Throws<ArgumentException>(() =>
+            new CalibrationProfileTargetIdentity(
+                "unexpected_driver",
+                ControllerRuntimeIdentities.MetaLinkLibOvr,
+                "Quest 2 Touch",
+                "CTRL-TEST0001"));
+        var identityFreeTarget = new CalibrationProfileTargetIdentity(
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            controllerIdentity: null);
+        Assert.Null(identityFreeTarget.ControllerIdentity);
+    }
+
+    [Fact]
+    public void ExplicitMigrationPreservesAnUnavailableControllerIdentity()
+    {
+        var legacy = LegacyProfile(controllerSerial: null);
+        var target = new CalibrationProfileTargetIdentity(
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.LegacyAlvr,
+            "Quest 2 Touch",
+            controllerIdentity: null);
+
+        var result = CalibrationProfileMigration.MigrateLegacyProfile(legacy, target);
+
+        Assert.Null(result.OriginalLegacyProfile.ControllerIdentity);
+        Assert.Null(result.MigratedProfile.ControllerIdentity);
+        Assert.Equal(CalibrationProfileSchema.CurrentVersion, result.MigratedProfile.SchemaVersion);
+    }
+
+    [Fact]
+    public void ProfileSerializationIsByteDeterministicAcrossRoundTrip()
+    {
+        var first = CalibrationProfileJson.SerializeProfile(Profile());
+        var second = CalibrationProfileJson.SerializeProfile(
+            CalibrationProfileJson.DeserializeProfile(first));
+
+        Assert.Equal(first, second);
+        Assert.EndsWith("\n", first, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SchemaVersionTwoRoundTripsWithoutAControllerIdentity()
+    {
+        var missing = SerializedProfileObject();
+        Assert.True(missing.Remove("controller_identity"));
+        var missingIdentity = CalibrationProfileJson.DeserializeProfile(
+            missing.ToJsonString());
+        Assert.Null(missingIdentity.ControllerIdentity);
+        Assert.False(JsonNode.Parse(
+            CalibrationProfileJson.SerializeProfile(missingIdentity))!
+            .AsObject()
+            .ContainsKey("controller_identity"));
+
+        var nullIdentity = SerializedProfileObject();
+        nullIdentity["controller_identity"] = null;
+        var explicitNullIdentity = CalibrationProfileJson.DeserializeProfile(
+            nullIdentity.ToJsonString());
+        Assert.Null(explicitNullIdentity.ControllerIdentity);
+
+        var constructed = Profile(controllerSerial: null);
+        Assert.Null(constructed.ControllerIdentity);
+        Assert.Equal(
+            CalibrationProfileJson.SerializeProfile(constructed),
+            CalibrationProfileJson.SerializeProfile(
+                CalibrationProfileJson.DeserializeProfile(
+                    CalibrationProfileJson.SerializeProfile(constructed))));
+    }
+
+    [Fact]
+    public void LegacyConstructorRejectsCurrentVersionInsteadOfSilentlyWritingSchemaTwo()
+    {
+        var legacy = LegacyProfile();
+
+        var exception = Assert.Throws<ArgumentException>(() => new CalibrationProfile(
+            CalibrationProfileSchema.CurrentVersion,
+            legacy.ProfileName,
+            legacy.Hand,
+            legacy.ControllerRuntime,
+            legacy.ControllerModel,
+            legacy.ControllerIdentity,
+            legacy.TrackerSerial,
+            legacy.CalibrationPolicy,
+            legacy.SelectedMode,
+            legacy.SelectionReason,
+            legacy.TrackerToController,
+            legacy.EstimatedLagMilliseconds,
+            legacy.Quality,
+            legacy.CreatedUtc));
+
+        Assert.Equal("driverProfile", exception.ParamName);
+        Assert.Contains("Schema-version-2", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NullableQualityFieldsRemainExplicit()
     {
         var profile = Profile(
             ControllerHand.Right,
             "LHR-TEST0002",
             ProfileCalibrationMode.RotationOnly,
             Vector3.Zero,
-            controllerSerial: null,
             positionRmsMillimeters: null,
             translationCondition: null);
 
@@ -128,23 +364,24 @@ public sealed class CalibrationProfilePersistenceTests
         var root = document.RootElement;
 
         Assert.False(root.TryGetProperty("controller_serial", out _));
+        Assert.Equal("CTRL-TEST0001", root.GetProperty("controller_identity").GetString());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("quality").GetProperty("position_rms_mm").ValueKind);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("quality").GetProperty("translation_condition").ValueKind);
 
         var loaded = CalibrationProfileJson.DeserializeProfile(json);
-        Assert.Null(loaded.ControllerSerial);
+        Assert.Equal("CTRL-TEST0001", loaded.ControllerIdentity);
         Assert.Null(loaded.Quality.PositionRmsMillimeters);
         Assert.Null(loaded.Quality.TranslationCondition);
     }
 
     [Theory]
     [InlineData(0)]
-    [InlineData(2)]
+    [InlineData(3)]
     public void UnsupportedSchemaVersionsAreRejected(int schemaVersion)
     {
         var json = CalibrationProfileJson.SerializeProfile(Profile());
         json = json.Replace(
-            "\"schema_version\": 1",
+            "\"schema_version\": 2",
             $"\"schema_version\": {schemaVersion}",
             StringComparison.Ordinal);
 
@@ -161,7 +398,7 @@ public sealed class CalibrationProfilePersistenceTests
         var root = JsonNode.Parse(
             CalibrationProfileJson.SerializeStore(new CalibrationProfileStore([Profile()])))!
             .AsObject();
-        root["profiles"]!.AsArray()[0]!.AsObject()["schema_version"] = 2;
+        root["profiles"]!.AsArray()[0]!.AsObject()["schema_version"] = 3;
 
         var exception = Assert.Throws<CalibrationProfileFormatException>(() =>
             CalibrationProfileJson.DeserializeStore(root.ToJsonString()));
@@ -275,18 +512,113 @@ public sealed class CalibrationProfilePersistenceTests
     }
 
     [Fact]
-    public void ProfileMatchingUsesExactTrackerSerialPlusHandOnly()
+    public void CandidateLookupUsesExactTrackerSerialPlusHand()
     {
         var left = Profile(ControllerHand.Left, "LHR-TEST0001");
         var right = Profile(ControllerHand.Right, "LHR-TEST0002");
         var store = new CalibrationProfileStore([right, left]);
 
-        Assert.Same(left, store.FindMatchingProfile("LHR-TEST0001", ControllerHand.Left));
-        Assert.Same(right, store.FindMatchingProfile("LHR-TEST0002", ControllerHand.Right));
-        Assert.Null(store.FindMatchingProfile("LHR-TEST0001", ControllerHand.Right));
-        Assert.Null(store.FindMatchingProfile("LHR-TEST0002", ControllerHand.Left));
-        Assert.Null(store.FindMatchingProfile("lhr-test0001", ControllerHand.Left));
-        Assert.Null(store.FindMatchingProfile("LHR-TEST9999", ControllerHand.Left));
+        Assert.Same(left, store.FindCandidateProfile("LHR-TEST0001", ControllerHand.Left));
+        Assert.Same(right, store.FindCandidateProfile("LHR-TEST0002", ControllerHand.Right));
+        Assert.Null(store.FindCandidateProfile("LHR-TEST0001", ControllerHand.Right));
+        Assert.Null(store.FindCandidateProfile("LHR-TEST0002", ControllerHand.Left));
+        Assert.Null(store.FindCandidateProfile("lhr-test0001", ControllerHand.Left));
+        Assert.Null(store.FindCandidateProfile("LHR-TEST9999", ControllerHand.Left));
+    }
+
+    [Fact]
+    public void ReusableMatchingIncludesDriverRuntimeModelAndRuntimeIdentity()
+    {
+        var profile = Profile();
+        var store = new CalibrationProfileStore([profile]);
+
+        Assert.Same(profile, store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            "CTRL-TEST0001"));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            "ALVR",
+            "Quest 2 Touch",
+            "CTRL-TEST0001"));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            "DIFFERENT-IDENTITY"));
+    }
+
+    [Fact]
+    public void IdentityFreeMetaProfileRemainsBoundToExactTrackerHandRuntimeAndModel()
+    {
+        var profile = Profile(controllerSerial: null);
+        var store = new CalibrationProfileStore([profile]);
+
+        Assert.Same(profile, store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            controllerIdentity: null));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Right,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            controllerIdentity: null));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-DIFFERENT",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            controllerIdentity: null));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.LegacyAlvr,
+            "Quest 2 Touch",
+            controllerIdentity: null));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Different Touch model",
+            controllerIdentity: null));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            "NOW-EXPOSED-IDENTITY"));
+    }
+
+    [Fact]
+    public void LegacyCandidateCannotBeSelectedAsMetaLinkProfile()
+    {
+        var legacy = LegacyProfile();
+        var store = new CalibrationProfileStore([legacy]);
+
+        Assert.Same(legacy, store.FindCandidateProfile("LHR-TEST0001", ControllerHand.Left));
+        Assert.Null(store.FindMatchingProfile(
+            "LHR-TEST0001",
+            ControllerHand.Left,
+            CalibrationDriverProfiles.LtbTouch,
+            ControllerRuntimeIdentities.MetaLinkLibOvr,
+            "Quest 2 Touch",
+            "CTRL-TEST0001"));
     }
 
     [Fact]
@@ -542,9 +874,9 @@ public sealed class CalibrationProfilePersistenceTests
 
             Assert.Equal(2, loaded.Profiles.Count);
             AssertProfileEqual(left, Assert.IsType<CalibrationProfile>(
-                loaded.FindMatchingProfile("LHR-TEST0001", ControllerHand.Left)));
+                loaded.FindCandidateProfile("LHR-TEST0001", ControllerHand.Left)));
             AssertProfileEqual(right, Assert.IsType<CalibrationProfile>(
-                loaded.FindMatchingProfile("LHR-TEST0002", ControllerHand.Right)));
+                loaded.FindCandidateProfile("LHR-TEST0002", ControllerHand.Right)));
 
             using var document = JsonDocument.Parse(File.ReadAllText(path));
             Assert.Equal(["profiles"], document.RootElement.EnumerateObject().Select(property => property.Name));
@@ -570,7 +902,7 @@ public sealed class CalibrationProfilePersistenceTests
             CalibrationProfileFile.SaveStore(path, updated);
 
             var matched = CalibrationProfileFile.LoadStore(path)
-                .FindMatchingProfile("LHR-TEST0001", ControllerHand.Left);
+                .FindCandidateProfile("LHR-TEST0001", ControllerHand.Left);
             Assert.NotNull(matched);
             Assert.Equal("Replacement", matched.ProfileName);
 
@@ -596,7 +928,7 @@ public sealed class CalibrationProfilePersistenceTests
         double? positionRmsMillimeters = 8.4d,
         double? translationCondition = 14.7d,
         string profileName = "Quest2 Touch + Vive Tracker test mount",
-        string controllerRuntime = "ALVR",
+        string controllerRuntime = ControllerRuntimeIdentities.MetaLinkLibOvr,
         string controllerModel = "Quest 2 Touch",
         ProfileCalibrationPolicy policy = ProfileCalibrationPolicy.Auto,
         double estimatedLagMilliseconds = 11.5d,
@@ -609,6 +941,7 @@ public sealed class CalibrationProfilePersistenceTests
             controllerModel,
             controllerSerial,
             trackerSerial,
+            CalibrationDriverProfiles.LtbTouch,
             policy,
             mode,
             mode == ProfileCalibrationMode.FullSixDof
@@ -626,6 +959,23 @@ public sealed class CalibrationProfilePersistenceTests
                 translationCondition,
                 0.94d),
             createdUtc ?? new DateTimeOffset(2026, 7, 17, 0, 0, 0, TimeSpan.Zero));
+
+    private static CalibrationProfile LegacyProfile(
+        string? controllerSerial = "CTRL-TEST0001") => new(
+        CalibrationProfileSchema.LegacyVersion,
+        "Legacy Quest2 Touch + Vive Tracker test mount",
+        ControllerHand.Left,
+        ControllerRuntimeIdentities.LegacyAlvr,
+        "Quest 2 Touch",
+        controllerSerial,
+        "LHR-TEST0001",
+        ProfileCalibrationPolicy.Auto,
+        ProfileCalibrationMode.RotationOnly,
+        "translation unobservable; rotation-only fallback",
+        new TrackerToControllerTransform(Vector3.Zero, Quaternion.Identity),
+        10d,
+        new CalibrationProfileQuality(1d, null, null, 0.95d),
+        new DateTimeOffset(2026, 7, 17, 0, 0, 0, TimeSpan.Zero));
 
     private static JsonObject SerializedProfileObject() =>
         JsonNode.Parse(CalibrationProfileJson.SerializeProfile(Profile()))!.AsObject();
@@ -670,8 +1020,9 @@ public sealed class CalibrationProfilePersistenceTests
         Assert.Equal(expected.Hand, actual.Hand);
         Assert.Equal(expected.ControllerRuntime, actual.ControllerRuntime);
         Assert.Equal(expected.ControllerModel, actual.ControllerModel);
-        Assert.Equal(expected.ControllerSerial, actual.ControllerSerial);
+        Assert.Equal(expected.ControllerIdentity, actual.ControllerIdentity);
         Assert.Equal(expected.TrackerSerial, actual.TrackerSerial);
+        Assert.Equal(expected.DriverProfile, actual.DriverProfile);
         Assert.Equal(expected.CalibrationPolicy, actual.CalibrationPolicy);
         Assert.Equal(expected.SelectedMode, actual.SelectedMode);
         Assert.Equal(expected.SelectionReason, actual.SelectionReason);

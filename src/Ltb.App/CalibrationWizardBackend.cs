@@ -44,7 +44,8 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
             _replaceIncompatibleStore = true;
             return EmptyLookup(
                 $"recalibration trigger {RecalibrationTriggerKind.SchemaVersionChanged}: " +
-                "the stored profile schema is unsupported; a new schema-1 capture " +
+                $"the stored profile schema is unsupported; a new schema-" +
+                $"{devices.Recalibration.ExpectedSchemaVersion} capture " +
                 "will replace the incompatible store.");
         }
 
@@ -67,7 +68,10 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
 
         return new CalibrationWizardProfileLookup(
             [ToView(left), ToView(right)],
-            "loaded one reusable schema-1 profile for each exact tracker serial and hand");
+            (left.IsLegacy
+                ? "loaded deprecated ALVR/VMT schema-1 profiles for each "
+                : $"loaded reusable schema-{left.SchemaVersion} profiles for each ") +
+            "exact tracker serial, hand, and controller identity");
     }
 
     public CalibrationWizardAnalysis AnalyzeFirstRun(
@@ -142,9 +146,7 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
         _replaceIncompatibleStore = false;
         var reloaded = CalibrationProfileFile.LoadStore(_profileStorePath);
         return profiles
-            .Select(profile => reloaded.FindMatchingProfile(
-                    profile.TrackerSerial,
-                    profile.Hand)
+            .Select(profile => FindReloadedProfile(reloaded, profile)
                 ?? throw new InvalidDataException(
                     $"Saved profile for {profile.Hand} and '{profile.TrackerSerial}' did not reload."))
             .Select(ToView)
@@ -158,7 +160,7 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
         out string diagnostic)
     {
         var candidates = devices.TrackerSerials
-            .Select(serial => store.FindMatchingProfile(serial, hand))
+            .Select(serial => store.FindCandidateProfile(serial, hand))
             .Where(profile => profile is not null)
             .Cast<CalibrationProfile>()
             .ToArray();
@@ -172,15 +174,19 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
             var evaluation = RecalibrationEvaluator.Evaluate(
                 profile,
                 new RecalibrationContext(
-                    devices.Recalibration.ExplicitRequest,
-                    currentTrackerSerial,
-                    hand,
-                    devices.Recalibration.ControllerRuntime,
-                    devices.Recalibration.ControllerModel,
-                    devices.Recalibration.MountMoved,
-                    devices.Recalibration.ValidationThresholdExceeded,
-                    devices.Recalibration.ExpectedSchemaVersion,
-                    devices.Recalibration.ExpectedTransformConvention));
+                    ExplicitRequest: devices.Recalibration.ExplicitRequest,
+                    TrackerSerial: currentTrackerSerial,
+                    Hand: hand,
+                    ControllerRuntime: devices.Recalibration.ControllerRuntime,
+                    ControllerModel: devices.Recalibration.ControllerModel,
+                    MountMoved: devices.Recalibration.MountMoved,
+                    ValidationThresholdExceeded:
+                        devices.Recalibration.ValidationThresholdExceeded,
+                    DriverProfile: devices.Recalibration.DriverProfile,
+                    ControllerIdentity: PersistentControllerIdentity(devices, hand),
+                    ExpectedSchemaVersion: devices.Recalibration.ExpectedSchemaVersion,
+                    ExpectedTransformConvention:
+                        devices.Recalibration.ExpectedTransformConvention));
             if (evaluation.IsRequired)
             {
                 triggers.AddRange(evaluation.Triggers);
@@ -338,26 +344,59 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
                 $"The accepted {hand.Hand} result has no finite inlier ratio.");
         }
 
-        return new CalibrationProfile(
-            CalibrationProfileSchema.CurrentVersion,
-            $"LTB {hand.Hand.ToString().ToLowerInvariant()} Auto calibration",
-            ToControllerHand(hand.Hand),
-            recalibration.ControllerRuntime,
-            recalibration.ControllerModel,
-            hand.ControllerSerial,
-            hand.TrackerSerial,
-            ProfileCalibrationPolicy.Auto,
-            mode,
-            result.SelectionReason,
-            TrackerToControllerTransform.FromRigidTransform(
-                result.TrackerToController),
-            hand.Lag.LagSeconds * 1000d,
-            new CalibrationProfileQuality(
-                quality.RotationRmsDegrees,
-                quality.PositionRmsMillimeters,
-                translationCondition,
-                inlierRatio),
-            createdUtc);
+        var profileName = $"LTB {hand.Hand.ToString().ToLowerInvariant()} Auto calibration";
+        var controllerHand = ToControllerHand(hand.Hand);
+        var transform = TrackerToControllerTransform.FromRigidTransform(
+            result.TrackerToController);
+        var persistedQuality = new CalibrationProfileQuality(
+            quality.RotationRmsDegrees,
+            quality.PositionRmsMillimeters,
+            translationCondition,
+            inlierRatio);
+        var persistentControllerIdentity = PersistentControllerIdentity(
+            recalibration,
+            hand.Hand,
+            hand.ControllerSerial);
+
+        return recalibration.ExpectedSchemaVersion switch
+        {
+            CalibrationProfileSchema.LegacyVersion => new CalibrationProfile(
+                CalibrationProfileSchema.LegacyVersion,
+                profileName,
+                controllerHand,
+                recalibration.ControllerRuntime,
+                recalibration.ControllerModel,
+                persistentControllerIdentity,
+                hand.TrackerSerial,
+                ProfileCalibrationPolicy.Auto,
+                mode,
+                result.SelectionReason,
+                transform,
+                hand.Lag.LagSeconds * 1000d,
+                persistedQuality,
+                createdUtc),
+            CalibrationProfileSchema.CurrentVersion => new CalibrationProfile(
+                CalibrationProfileSchema.CurrentVersion,
+                profileName,
+                controllerHand,
+                recalibration.ControllerRuntime,
+                recalibration.ControllerModel,
+                persistentControllerIdentity,
+                hand.TrackerSerial,
+                recalibration.DriverProfile
+                    ?? throw new InvalidOperationException(
+                        "Schema-version-2 calibration requires a driver profile."),
+                ProfileCalibrationPolicy.Auto,
+                mode,
+                result.SelectionReason,
+                transform,
+                hand.Lag.LagSeconds * 1000d,
+                persistedQuality,
+                createdUtc),
+            _ => throw new InvalidOperationException(
+                $"Cannot persist unsupported calibration profile schema version " +
+                $"{recalibration.ExpectedSchemaVersion}."),
+        };
     }
 
     internal static CalibrationWizardState FailureState(
@@ -373,7 +412,7 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
         new(
             profile.ProfileName,
             ToWizardHand(profile.Hand),
-            profile.ControllerSerial ?? string.Empty,
+            profile.ControllerIdentity,
             profile.TrackerSerial,
             profile.SelectedMode == ProfileCalibrationMode.FullSixDof
                 ? CalibrationModel.FullSixDof
@@ -389,13 +428,71 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
                 null,
                 profile.TrackerToController.TranslationMeters.Length())
             {
-                // Schema 1 persists one undifferentiated inlier ratio and no
+                // The persisted profile stores one undifferentiated inlier ratio and no
                 // percentile/split metrics. Do not fabricate richer values on reload.
                 RotationInlierRatio = double.NaN,
                 TranslationInlierRatio = double.NaN,
                 TranslationSplitDisagreementMillimeters = double.NaN,
             },
-            profile.CreatedUtc);
+            profile.CreatedUtc)
+        {
+            SchemaVersion = profile.SchemaVersion,
+            DriverProfile = profile.DriverProfile,
+        };
+
+    private static CalibrationProfile? FindReloadedProfile(
+        CalibrationProfileStore store,
+        CalibrationProfile expected)
+    {
+        if (!expected.IsLegacy)
+        {
+            return store.FindMatchingProfile(
+                expected.TrackerSerial,
+                expected.Hand,
+                expected.DriverProfile!,
+                expected.ControllerRuntime,
+                expected.ControllerModel,
+                expected.ControllerIdentity);
+        }
+
+        var candidate = store.FindCandidateProfile(expected.TrackerSerial, expected.Hand);
+        return candidate is { IsLegacy: true } &&
+            candidate.MatchesController(
+                expected.ControllerRuntime,
+                expected.ControllerModel) &&
+            string.Equals(
+                candidate.ControllerIdentity,
+                expected.ControllerIdentity,
+                StringComparison.Ordinal)
+            ? candidate
+            : null;
+    }
+
+    private static string? PersistentControllerIdentity(
+        CalibrationWizardDeviceSet devices,
+        ControllerHand hand)
+    {
+        var wizardHand = ToWizardHand(hand);
+        var captureStreamIdentity = hand switch
+        {
+            ControllerHand.Left => devices.LeftControllerSerial,
+            ControllerHand.Right => devices.RightControllerSerial,
+            _ => throw new ArgumentOutOfRangeException(nameof(hand)),
+        };
+        return PersistentControllerIdentity(
+            devices.Recalibration,
+            wizardHand,
+            captureStreamIdentity);
+    }
+
+    private static string? PersistentControllerIdentity(
+        CalibrationWizardRecalibrationObservations observations,
+        CalibrationWizardHand hand,
+        string captureStreamIdentity) =>
+        observations.ControllerIdentity(hand) ??
+        (observations.ExpectedSchemaVersion == CalibrationProfileSchema.LegacyVersion
+            ? captureStreamIdentity
+            : null);
 
     private static CalibrationWizardProfileLookup EmptyLookup(string diagnostic) =>
         new(Array.Empty<CalibrationWizardProfileView>(), diagnostic);

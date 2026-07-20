@@ -141,14 +141,24 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
 
             var persisted = CalibrationProfileFile.LoadStore(profilePath);
             Assert.Equal(2, persisted.Profiles.Count);
-            var persistedLeft = persisted.FindMatchingProfile(
+            var persistedLeft = persisted.FindCandidateProfile(
                 ScriptedCalibrationWizardRuntime.LeftTrackerSerial,
                 ControllerHand.Left);
-            var persistedRight = persisted.FindMatchingProfile(
+            var persistedRight = persisted.FindCandidateProfile(
                 ScriptedCalibrationWizardRuntime.RightTrackerSerial,
                 ControllerHand.Right);
             Assert.NotNull(persistedLeft);
             Assert.NotNull(persistedRight);
+            Assert.True(persistedLeft.IsLegacy);
+            Assert.True(persistedRight.IsLegacy);
+            Assert.Null(persistedLeft.DriverProfile);
+            Assert.Null(persistedRight.DriverProfile);
+            Assert.Equal(
+                ScriptedCalibrationWizardRuntime.LeftControllerSerial,
+                persistedLeft.ControllerIdentity);
+            Assert.Equal(
+                ScriptedCalibrationWizardRuntime.RightControllerSerial,
+                persistedRight.ControllerIdentity);
             Assert.Equal(ProfileCalibrationMode.FullSixDof, persistedLeft.SelectedMode);
             Assert.Equal(ProfileCalibrationMode.RotationOnly, persistedRight.SelectedMode);
             Assert.Equal(Vector3.Zero, persistedRight.TrackerToController.TranslationMeters);
@@ -242,7 +252,7 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
 
             var incompatible = File.ReadAllText(profilePath).Replace(
                 "\"schema_version\": 1",
-                "\"schema_version\": 2",
+                "\"schema_version\": 3",
                 StringComparison.Ordinal);
             File.WriteAllText(profilePath, incompatible);
             var schemaOutput = new RecordingWizardOutput();
@@ -262,7 +272,7 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
             Assert.All(
                 CalibrationProfileFile.LoadStore(profilePath).Profiles,
                 profile => Assert.Equal(
-                    CalibrationProfileSchema.CurrentVersion,
+                    CalibrationProfileSchema.LegacyVersion,
                     profile.SchemaVersion));
 
             File.WriteAllText(profilePath, "{\"profiles\":[");
@@ -276,6 +286,188 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
             Assert.Equal(CalibrationWizardState.Ready, malformedRun.FinalState);
             Assert.Empty(malformedRuntime.CapturedHands);
             Assert.Contains("could not be evaluated safely", malformedRun.Diagnostic);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SchemaVersionTwoProfilesPreserveAndMatchInternalDriverIdentity()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-two-hand-schema-two-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var profilePath = Path.Combine(directory, "profiles.json");
+        var observations = new CalibrationWizardRecalibrationObservations
+        {
+            ControllerRuntime = ControllerRuntimeIdentities.MetaLinkLibOvr,
+            ControllerModel = "Quest 2 Touch",
+            DriverProfile = CalibrationDriverProfiles.LtbTouch,
+            LeftControllerIdentity = ScriptedCalibrationWizardRuntime.LeftControllerSerial,
+            RightControllerIdentity = ScriptedCalibrationWizardRuntime.RightControllerSerial,
+            ExpectedSchemaVersion = CalibrationProfileSchema.CurrentVersion,
+            ObservedLeftTrackerSerial =
+                ScriptedCalibrationWizardRuntime.LeftTrackerSerial,
+            ObservedRightTrackerSerial =
+                ScriptedCalibrationWizardRuntime.RightTrackerSerial,
+        };
+
+        try
+        {
+            var firstOutput = new RecordingWizardOutput();
+            var first = await new TwoHandCalibrationWizard(
+                new ScriptedCalibrationWizardRuntime(firstOutput, observations),
+                new FileCalibrationWizardBackend(profilePath),
+                firstOutput).RunAsync();
+
+            Assert.True(first.Success, first.Diagnostic);
+            Assert.False(first.ReusedProfiles);
+            Assert.All(first.Profiles, profile =>
+            {
+                Assert.Equal(CalibrationProfileSchema.CurrentVersion, profile.SchemaVersion);
+                Assert.Equal(CalibrationDriverProfiles.LtbTouch, profile.DriverProfile);
+                Assert.Equal(profile.ControllerSerial, profile.ControllerIdentity);
+                Assert.False(string.IsNullOrWhiteSpace(profile.ControllerIdentity));
+            });
+
+            var persisted = CalibrationProfileFile.LoadStore(profilePath);
+            Assert.NotNull(persisted.FindMatchingProfile(
+                ScriptedCalibrationWizardRuntime.LeftTrackerSerial,
+                ControllerHand.Left,
+                CalibrationDriverProfiles.LtbTouch,
+                ControllerRuntimeIdentities.MetaLinkLibOvr,
+                "Quest 2 Touch",
+                ScriptedCalibrationWizardRuntime.LeftControllerSerial));
+            Assert.NotNull(persisted.FindMatchingProfile(
+                ScriptedCalibrationWizardRuntime.RightTrackerSerial,
+                ControllerHand.Right,
+                CalibrationDriverProfiles.LtbTouch,
+                ControllerRuntimeIdentities.MetaLinkLibOvr,
+                "Quest 2 Touch",
+                ScriptedCalibrationWizardRuntime.RightControllerSerial));
+
+            var secondOutput = new RecordingWizardOutput();
+            var second = await new TwoHandCalibrationWizard(
+                new ScriptedCalibrationWizardRuntime(secondOutput, observations),
+                new FileCalibrationWizardBackend(profilePath),
+                secondOutput).RunAsync();
+
+            Assert.True(second.Success, second.Diagnostic);
+            Assert.True(second.ReusedProfiles);
+            Assert.DoesNotContain(CalibrationWizardState.Recording, second.StateHistory);
+
+            var identityMismatch = new FileCalibrationWizardBackend(profilePath)
+                .FindReusableProfiles(ScriptedCalibrationWizardRuntime.Devices with
+                {
+                    Recalibration = observations with
+                    {
+                        LeftControllerIdentity = "DIFFERENT-CONTROLLER-IDENTITY",
+                    },
+                });
+            Assert.False(identityMismatch.HasCompletePair);
+            Assert.Contains(
+                nameof(RecalibrationTriggerKind.ControllerIdentityChanged),
+                identityMismatch.Diagnostic,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SchemaVersionTwoProfilesWithoutMetaIdentityCreateReuseAndStayHandTrackerBound()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-two-hand-schema-two-no-identity-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var profilePath = Path.Combine(directory, "profiles.json");
+        var observations = new CalibrationWizardRecalibrationObservations
+        {
+            ControllerRuntime = ControllerRuntimeIdentities.MetaLinkLibOvr,
+            ControllerModel = "Quest 2 Touch",
+            DriverProfile = CalibrationDriverProfiles.LtbTouch,
+            ExpectedSchemaVersion = CalibrationProfileSchema.CurrentVersion,
+            ObservedLeftTrackerSerial =
+                ScriptedCalibrationWizardRuntime.LeftTrackerSerial,
+            ObservedRightTrackerSerial =
+                ScriptedCalibrationWizardRuntime.RightTrackerSerial,
+        };
+
+        try
+        {
+            var firstOutput = new RecordingWizardOutput();
+            var first = await new TwoHandCalibrationWizard(
+                new ScriptedCalibrationWizardRuntime(firstOutput, observations),
+                new FileCalibrationWizardBackend(profilePath),
+                firstOutput).RunAsync();
+
+            Assert.True(first.Success, first.Diagnostic);
+            Assert.False(first.ReusedProfiles);
+            Assert.All(first.Profiles, profile => Assert.Null(profile.ControllerIdentity));
+
+            var persisted = CalibrationProfileFile.LoadStore(profilePath);
+            Assert.All(persisted.Profiles, profile =>
+            {
+                Assert.Equal(CalibrationProfileSchema.CurrentVersion, profile.SchemaVersion);
+                Assert.Equal(CalibrationDriverProfiles.LtbTouch, profile.DriverProfile);
+                Assert.Equal(ControllerRuntimeIdentities.MetaLinkLibOvr, profile.ControllerRuntime);
+                Assert.Null(profile.ControllerIdentity);
+            });
+
+            var secondOutput = new RecordingWizardOutput();
+            var second = await new TwoHandCalibrationWizard(
+                new ScriptedCalibrationWizardRuntime(secondOutput, observations),
+                new FileCalibrationWizardBackend(profilePath),
+                secondOutput).RunAsync();
+            Assert.True(second.Success, second.Diagnostic);
+            Assert.True(second.ReusedProfiles);
+            Assert.DoesNotContain(CalibrationWizardState.Recording, second.StateHistory);
+
+            var captureIdsChanged = new FileCalibrationWizardBackend(profilePath)
+                .FindReusableProfiles(ScriptedCalibrationWizardRuntime.Devices with
+                {
+                    LeftControllerSerial = "META-CAPTURE-LEFT-NEW-SESSION",
+                    RightControllerSerial = "META-CAPTURE-RIGHT-NEW-SESSION",
+                    Recalibration = observations,
+                });
+            Assert.True(captureIdsChanged.HasCompletePair, captureIdsChanged.Diagnostic);
+
+            var swappedTrackers = new FileCalibrationWizardBackend(profilePath)
+                .FindReusableProfiles(ScriptedCalibrationWizardRuntime.Devices with
+                {
+                    Recalibration = observations with
+                    {
+                        ObservedLeftTrackerSerial =
+                            ScriptedCalibrationWizardRuntime.RightTrackerSerial,
+                        ObservedRightTrackerSerial =
+                            ScriptedCalibrationWizardRuntime.LeftTrackerSerial,
+                    },
+                });
+            Assert.False(swappedTrackers.HasCompletePair);
+            Assert.Contains(
+                nameof(RecalibrationTriggerKind.TrackerHandAssociationChanged),
+                swappedTrackers.Diagnostic,
+                StringComparison.Ordinal);
+
+            var crossRuntime = new FileCalibrationWizardBackend(profilePath)
+                .FindReusableProfiles(ScriptedCalibrationWizardRuntime.Devices with
+                {
+                    Recalibration = observations with
+                    {
+                        ControllerRuntime = ControllerRuntimeIdentities.LegacyAlvr,
+                    },
+                });
+            Assert.False(crossRuntime.HasCompletePair);
+            Assert.Contains(
+                nameof(RecalibrationTriggerKind.ControllerIdentityChanged),
+                crossRuntime.Diagnostic,
+                StringComparison.Ordinal);
         }
         finally
         {
