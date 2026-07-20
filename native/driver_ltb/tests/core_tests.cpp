@@ -1,3 +1,4 @@
+#include "ltb_driver/peer_session.hpp"
 #include "ltb_driver/protocol.hpp"
 #include "ltb_driver/state_store.hpp"
 
@@ -21,6 +22,9 @@ using ltb::driver::ButtonValue;
 using ltb::driver::DecodeError;
 using ltb::driver::Hand;
 using ltb::driver::MessageType;
+using ltb::driver::PeerSessionAuthorization;
+using ltb::driver::PeerSessionLookupStatus;
+using ltb::driver::PeerSessionPacketGate;
 using ltb::driver::StateFlag;
 using ltb::driver::StateStore;
 using ltb::driver::TouchBit;
@@ -233,6 +237,147 @@ void LengthFailuresAreRejected() {
     packet = HandPacket();
     WriteInteger(packet, 12, static_cast<std::uint32_t>(115));
     Require(ltb::driver::DecodePacket(packet).error == DecodeError::BadLength, "bad payload length accepted");
+}
+
+void PeerSessionAuthorizationIsExactAndFailClosed() {
+    const auto verify = [](PeerSessionLookupStatus status, std::uint32_t client, std::uint32_t server) {
+        return ltb::driver::VerifyPeerSession({
+            .lookup_status = status,
+            .client_session_id = client,
+            .server_session_id = server,
+        });
+    };
+
+    Require(
+        verify(PeerSessionLookupStatus::Resolved, 7, 7) ==
+            PeerSessionAuthorization::Authorized,
+        "same Windows session was rejected");
+    Require(
+        verify(PeerSessionLookupStatus::Resolved, 7, 8) ==
+            PeerSessionAuthorization::SessionMismatch,
+        "different Windows sessions were authorized");
+    Require(
+        verify(PeerSessionLookupStatus::ClientProcessLookupFailed, 7, 7) ==
+            PeerSessionAuthorization::ClientProcessLookupFailed,
+        "client process lookup failure was authorized");
+    Require(
+        verify(PeerSessionLookupStatus::ClientSessionLookupFailed, 7, 7) ==
+            PeerSessionAuthorization::ClientSessionLookupFailed,
+        "client session lookup failure was authorized");
+    Require(
+        verify(PeerSessionLookupStatus::ServerSessionLookupFailed, 7, 7) ==
+            PeerSessionAuthorization::ServerSessionLookupFailed,
+        "server session lookup failure was authorized");
+    Require(
+        std::string(ltb::driver::PeerSessionAuthorizationDiagnostic(
+            PeerSessionAuthorization::ClientProcessLookupFailed)) ==
+            "driver_ltb: rejected named-pipe client: client process lookup failed\n",
+        "client process lookup diagnostic changed");
+    Require(
+        std::string(ltb::driver::PeerSessionAuthorizationDiagnostic(
+            PeerSessionAuthorization::ClientSessionLookupFailed)) ==
+            "driver_ltb: rejected named-pipe client: client session lookup failed\n",
+        "client session lookup diagnostic changed");
+    Require(
+        std::string(ltb::driver::PeerSessionAuthorizationDiagnostic(
+            PeerSessionAuthorization::ServerSessionLookupFailed)) ==
+            "driver_ltb: rejected named-pipe client: server session lookup failed\n",
+        "server session lookup diagnostic changed");
+    Require(
+        std::string(ltb::driver::PeerSessionAuthorizationDiagnostic(
+            PeerSessionAuthorization::SessionMismatch)) ==
+            "driver_ltb: rejected named-pipe client: Windows session mismatch\n",
+        "session mismatch diagnostic changed");
+}
+
+void AuthorizationPrecedesParsingAndStatePublication() {
+    StateStore store;
+    auto malformed = HandPacket();
+    malformed[0] ^= 0xffU;
+
+    const PeerSessionPacketGate lookup_failure_gate(store, {
+        .lookup_status = PeerSessionLookupStatus::ClientProcessLookupFailed,
+    });
+    Require(
+        lookup_failure_gate.ApplyPacket(malformed, 1'000) == ApplyError::PeerNotAuthorized,
+        "unauthorized malformed packet reached the parser");
+    Require(
+        !store.Snapshot(Hand::Left, 1'001).has_state,
+        "unauthorized malformed packet published state");
+    const PeerSessionPacketGate mismatched_gate(store, {
+        .lookup_status = PeerSessionLookupStatus::Resolved,
+        .client_session_id = 4,
+        .server_session_id = 5,
+    });
+    Require(
+        mismatched_gate.Authorization() == PeerSessionAuthorization::SessionMismatch,
+        "mismatched peer authorization result changed");
+    Require(
+        mismatched_gate.ApplyPacket(HandPacket(), 1'002) == ApplyError::PeerNotAuthorized,
+        "mismatched peer published a packet");
+    Require(
+        !store.Snapshot(Hand::Left, 1'003).has_state,
+        "mismatched peer published state");
+
+    const PeerSessionPacketGate authorized_gate(store, {
+        .lookup_status = PeerSessionLookupStatus::Resolved,
+        .client_session_id = 5,
+        .server_session_id = 5,
+    });
+    Require(authorized_gate.IsAuthorized(), "same-session packet gate remained closed");
+    Require(
+        authorized_gate.ApplyPacket(malformed, 1'004) == ApplyError::DecodeRejected,
+        "authorized malformed packet did not reach the parser");
+    Require(
+        !store.Snapshot(Hand::Left, 1'005).has_state,
+        "authorized malformed packet partially published state");
+    Require(
+        authorized_gate.ApplyPacket(HandPacket(), 1'006) == ApplyError::None,
+        "authorized valid packet was rejected");
+    Require(
+        store.Snapshot(Hand::Left, 1'007).has_state,
+        "authorized valid packet did not publish state");
+}
+
+void ReconnectRequiresFreshAuthorizationAndResetsProtocolSession() {
+    StateStore store;
+    {
+        const PeerSessionPacketGate first_connection(
+            store,
+            {PeerSessionLookupStatus::Resolved, 9, 9});
+        Require(first_connection.IsAuthorized(), "first connection authorization failed");
+        Require(
+            first_connection.ApplyPacket(HandPacket(1, 0, 100, Hand::Left), 1'000) ==
+                ApplyError::None,
+            "first connection state failed");
+    }
+
+    const PeerSessionPacketGate unauthorized_reconnect(
+        store,
+        {PeerSessionLookupStatus::ClientSessionLookupFailed, 9, 9});
+    Require(
+        unauthorized_reconnect.ApplyPacket(HandPacket(20, 0, 50, Hand::Right), 2'000) ==
+            ApplyError::PeerNotAuthorized,
+        "reconnected peer bypassed authorization");
+    Require(
+        store.Snapshot(Hand::Left, 2'001).has_state,
+        "unauthorized reconnect changed the prior protocol session");
+    const PeerSessionPacketGate reconnected(
+        store,
+        {PeerSessionLookupStatus::Resolved, 9, 9});
+    Require(reconnected.IsAuthorized(), "reconnected peer authorization failed");
+    Require(
+        reconnected.ApplyPacket(HandPacket(20, 0, 50, Hand::Right), 2'002) ==
+            ApplyError::None,
+        "authorized reconnect did not accept a zero-sequence session");
+    Require(
+        !store.Snapshot(Hand::Left, 2'003).has_state &&
+            store.Snapshot(Hand::Right, 2'003).has_state,
+        "authorized reconnect did not reset per-session state");
+    Require(
+        reconnected.ApplyPacket(HandPacket(1, 0, 25, Hand::Left), 2'004) ==
+            ApplyError::RetiredSession,
+        "authorized reconnect revived the retired protocol session");
 }
 
 void IdentityAndRangeFailuresAreRejected() {
@@ -540,6 +685,9 @@ int main() {
         {"golden packet decode", GoldenPacketDecodes},
         {"header rejection", HeaderFailuresAreRejected},
         {"length rejection", LengthFailuresAreRejected},
+        {"peer session authorization", PeerSessionAuthorizationIsExactAndFailClosed},
+        {"authorization before parsing", AuthorizationPrecedesParsingAndStatePublication},
+        {"authorized reconnect reset", ReconnectRequiresFreshAuthorizationAndResetsProtocolSession},
         {"identity and range rejection", IdentityAndRangeFailuresAreRejected},
         {"finite and quaternion rejection", NonFiniteAndQuaternionFailuresAreRejected},
         {"analog and battery rejection", AnalogAndBatteryFailuresAreRejected},
