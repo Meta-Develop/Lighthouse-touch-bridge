@@ -7,6 +7,7 @@ public enum RecalibrationTriggerKind
     TrackerHandAssociationChanged,
     MountMoved,
     ValidationThresholdExceeded,
+    DriverProfileChanged,
     ControllerIdentityChanged,
     TransformConventionChanged,
     SchemaVersionChanged,
@@ -26,6 +27,8 @@ public sealed record RecalibrationContext(
     string ControllerModel,
     bool MountMoved,
     bool ValidationThresholdExceeded,
+    string? DriverProfile = null,
+    string? ControllerIdentity = null,
     int ExpectedSchemaVersion = CalibrationProfileSchema.CurrentVersion,
     string ExpectedTransformConvention = CalibrationProfileSchema.TransformConvention);
 
@@ -55,6 +58,20 @@ public static class RecalibrationEvaluator
 
         var trackerSerial = ProfileValidation.RequireIdentity(context.TrackerSerial, nameof(context.TrackerSerial));
         ProfileValidation.RequireDefined(context.Hand, nameof(context.Hand));
+        var driverProfile = context.DriverProfile is null
+            ? null
+            : CalibrationDriverProfiles.RequireSupported(
+                context.DriverProfile,
+                nameof(context.DriverProfile));
+        var controllerRuntime = ProfileValidation.RequireIdentity(
+            context.ControllerRuntime,
+            nameof(context.ControllerRuntime));
+        var controllerModel = ProfileValidation.RequireText(
+            context.ControllerModel,
+            nameof(context.ControllerModel));
+        var controllerIdentity = ProfileValidation.OptionalIdentity(
+            context.ControllerIdentity,
+            nameof(context.ControllerIdentity));
         ProfileValidation.RequireText(context.ExpectedTransformConvention, nameof(context.ExpectedTransformConvention));
 
         var triggers = new List<RecalibrationTrigger>();
@@ -87,13 +104,23 @@ public static class RecalibrationEvaluator
                 "The current validation check exceeded its configured threshold."));
         }
 
-        if (!profile.MatchesController(
-                context.ControllerRuntime,
-                context.ControllerModel))
+        if (driverProfile is null ||
+            profile.IsLegacy ||
+            !string.Equals(driverProfile, profile.DriverProfile, StringComparison.Ordinal))
+        {
+            triggers.Add(new RecalibrationTrigger(
+                RecalibrationTriggerKind.DriverProfileChanged,
+                "The current driver profile differs from, or is absent in, the stored profile."));
+        }
+
+        if (!string.Equals(controllerRuntime, profile.ControllerRuntime, StringComparison.Ordinal) ||
+            !string.Equals(controllerModel, profile.ControllerModel, StringComparison.Ordinal) ||
+            (profile.ControllerIdentity is not null &&
+             !string.Equals(controllerIdentity, profile.ControllerIdentity, StringComparison.Ordinal)))
         {
             triggers.Add(new RecalibrationTrigger(
                 RecalibrationTriggerKind.ControllerIdentityChanged,
-                "The controller model or emulation runtime differs from the stored profile."));
+                "The controller runtime, model, or optional runtime identity differs from the stored profile."));
         }
 
         if (!string.Equals(
@@ -103,7 +130,7 @@ public static class RecalibrationEvaluator
         {
             triggers.Add(new RecalibrationTrigger(
                 RecalibrationTriggerKind.TransformConventionChanged,
-                "The expected transform convention differs from the schema-1 stored convention."));
+                "The expected transform convention differs from the stored profile convention."));
         }
 
         if (context.ExpectedSchemaVersion != profile.SchemaVersion)
