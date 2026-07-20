@@ -12,6 +12,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly IInternalDriverSessionFactory _sessionFactory;
     private readonly Action<Action> _dispatch;
+    private readonly Func<IInternalDriverRemover> _removerFactory;
     private readonly object _lifecycleSync = new();
     private readonly Dictionary<string, ReadinessRowViewModel> _rowByKey =
         new(StringComparer.Ordinal);
@@ -19,6 +20,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private long _nextRunGeneration;
     private long _presentedRunGeneration;
     private bool _runActive;
+    private bool _removeDriverActive;
     private bool _closing;
     private IInternalDriverSession? _session;
     private CancellationTokenSource? _runCancellation;
@@ -35,6 +37,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private bool _isRunning;
     private string _actionButtonText = "Start";
     private string _lastError = "None";
+    private string _removeDriverStatus =
+        "Removes the driver_ltb SteamVR registration; the session must be stopped first.";
     private string _feedState = "Stopped";
     private string _feedSession = "None";
     private string _feedSequence = "None";
@@ -45,16 +49,21 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public InternalDriverViewModel(
         IInternalDriverSessionFactory sessionFactory,
-        Action<Action> dispatch)
+        Action<Action> dispatch,
+        Func<IInternalDriverRemover>? removerFactory = null)
     {
         _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+        _removerFactory = removerFactory ?? (static () => InternalDriverRemoval.Create());
         ReadinessRows = new ReadOnlyObservableCollection<ReadinessRowViewModel>(_readinessRows);
         LeftHand = new InternalDriverHandViewModel("Left hand");
         RightHand = new InternalDriverHandViewModel("Right hand");
         ActionCommand = new RelayCommand(
             () => _ = ToggleAsync(),
             () => CanToggle);
+        RemoveDriverCommand = new RelayCommand(
+            () => _ = RemoveDriverAsync(),
+            () => CanRemoveDriver);
 
         var rows = new[]
         {
@@ -157,6 +166,23 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         private set => SetProperty(ref _lastError, value);
     }
 
+    public string RemoveDriverStatus
+    {
+        get => _removeDriverStatus;
+        private set => SetProperty(ref _removeDriverStatus, value);
+    }
+
+    public bool CanRemoveDriver
+    {
+        get
+        {
+            lock (_lifecycleSync)
+            {
+                return !_closing && !_runActive && !_removeDriverActive;
+            }
+        }
+    }
+
     public string FeedState
     {
         get => _feedState;
@@ -201,6 +227,64 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public RelayCommand ActionCommand { get; }
 
+    public RelayCommand RemoveDriverCommand { get; }
+
+    /// <summary>
+    /// Secondary maintenance action: transactionally removes the driver_ltb
+    /// registration through the restart-safe App removal boundary. It never
+    /// runs while a session is active and never alters the Start/Stop flow.
+    /// </summary>
+    public async Task RemoveDriverAsync()
+    {
+        lock (_lifecycleSync)
+        {
+            if (_closing || _runActive || _removeDriverActive)
+            {
+                return;
+            }
+
+            _removeDriverActive = true;
+        }
+
+        _dispatch(() =>
+        {
+            RemoveDriverStatus = "Removing the driver_ltb registration...";
+            PresentRemovalAvailability();
+        });
+
+        string status;
+        try
+        {
+            await using var remover = _removerFactory() ?? throw new InvalidOperationException(
+                "The internal-driver remover factory returned null.");
+            var result = await remover.RemoveAsync(CancellationToken.None).ConfigureAwait(false);
+            status = result.Diagnostic;
+        }
+        catch (Exception exception)
+        {
+            status = $"Driver removal failed: {exception.Message}";
+        }
+        finally
+        {
+            lock (_lifecycleSync)
+            {
+                _removeDriverActive = false;
+            }
+        }
+
+        _dispatch(() =>
+        {
+            RemoveDriverStatus = status;
+            PresentRemovalAvailability();
+        });
+    }
+
+    private void PresentRemovalAvailability()
+    {
+        OnPropertyChanged(nameof(CanRemoveDriver));
+        RemoveDriverCommand.RaiseCanExecuteChanged();
+    }
+
     public Task ToggleAsync()
     {
         lock (_lifecycleSync)
@@ -219,7 +303,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_lifecycleSync)
             {
-                if (_closing || _runActive)
+                if (_closing || _runActive || _removeDriverActive)
                 {
                     return;
                 }
@@ -258,6 +342,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             IsRunning = true;
             ActionButtonText = "Stop";
             ActionCommand.RaiseCanExecuteChanged();
+            PresentRemovalAvailability();
         });
 
         string? runError = null;
@@ -317,6 +402,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 IsRunning = false;
                 ActionButtonText = "Start";
                 ActionCommand.RaiseCanExecuteChanged();
+                PresentRemovalAvailability();
             });
             completion.TrySetResult();
         }
@@ -392,6 +478,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             OnPropertyChanged(nameof(CanToggle));
             ActionCommand.RaiseCanExecuteChanged();
+            PresentRemovalAvailability();
         });
         await StopAsync().ConfigureAwait(false);
     }
