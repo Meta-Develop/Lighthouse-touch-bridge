@@ -8,9 +8,10 @@ public sealed class MetaLinkRuntimeTests
         ["Initialize", "LastError", "Dispose"];
 
     [Theory]
-    [InlineData(MetaLinkReadiness.MetaRuntimeMissing)]
-    [InlineData(MetaLinkReadiness.RuntimeAbiUnsupported)]
-    [InlineData(MetaLinkReadiness.RuntimeIncompatible)]
+    [InlineData(MetaLinkReadiness.NotInstalled)]
+    [InlineData(MetaLinkReadiness.AbiUnavailable)]
+    [InlineData(MetaLinkReadiness.RuntimeStopped)]
+    [InlineData(MetaLinkReadiness.Faulted)]
     public void FactoryFailureMapsImmediatelyToBothHands(MetaLinkReadiness readiness)
     {
         var clock = new ManualClock(10d);
@@ -37,7 +38,7 @@ public sealed class MetaLinkRuntimeTests
 
         var snapshot = runtime.Poll();
 
-        Assert.Equal(MetaLinkReadiness.RuntimeAbiUnsupported, snapshot.Left.Readiness);
+        Assert.Equal(MetaLinkReadiness.AbiUnavailable, snapshot.Left.Readiness);
         Assert.Equal(InitializeFailureCalls, api.Calls);
     }
 
@@ -52,7 +53,7 @@ public sealed class MetaLinkRuntimeTests
 
         var noLink = noLinkRuntime.Poll();
 
-        Assert.Equal(MetaLinkReadiness.LinkNotConnected, noLink.Left.Readiness);
+        Assert.Equal(MetaLinkReadiness.HeadsetDisconnected, noLink.Left.Readiness);
 
         var sleepingApi = TestOvrApi.Live();
         sleepingApi.SessionStatus.HmdMounted = 0;
@@ -80,9 +81,10 @@ public sealed class MetaLinkRuntimeTests
         var snapshot = runtime.Poll();
 
         Assert.Equal(MetaLinkReadiness.ControllersUnavailable, snapshot.Left.Readiness);
-        Assert.Equal(MetaLinkReadiness.InputsLive, snapshot.Right.Readiness);
+        Assert.Equal(MetaLinkReadiness.Ready, snapshot.Right.Readiness);
         Assert.Null(snapshot.Left.Controller);
         Assert.NotNull(snapshot.Right.Controller);
+        Assert.Contains("Wake", snapshot.Left.Diagnostic, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -95,8 +97,8 @@ public sealed class MetaLinkRuntimeTests
 
         var snapshot = runtime.Poll();
 
-        Assert.Equal(MetaLinkReadiness.InputsLive, snapshot.Left.Readiness);
-        Assert.Equal(MetaLinkReadiness.InputsLive, snapshot.Right.Readiness);
+        Assert.Equal(MetaLinkReadiness.Ready, snapshot.Left.Readiness);
+        Assert.Equal(MetaLinkReadiness.Ready, snapshot.Right.Readiness);
         Assert.True(runtime.TryGetLatest(MetaLinkHand.Left, out var left));
         Assert.Same(snapshot.Left.Controller, left);
         Assert.False(left!.Battery.IsAvailable);
@@ -106,18 +108,102 @@ public sealed class MetaLinkRuntimeTests
     public void InputFailureIsControllerUnavailableWithoutDroppingSession()
     {
         var api = TestOvrApi.Live();
-        api.InputResult = -1007;
+        api.InputResult = OvrConstants.ErrorDeviceUnavailable;
+        var factory = new ScriptedFactory();
+        factory.EnqueueApi(api);
+        var clock = new ManualClock(10d);
+        using var runtime = Runtime(factory, clock);
+
+        var first = runtime.Poll();
+        api.InputResult = 0;
+        api.TimeSeconds = 101d;
+        api.Tracking.LeftHandPose.TimeInSeconds = 101d;
+        api.Tracking.RightHandPose.TimeInSeconds = 102d;
+        clock.Seconds = 11d;
+        var second = runtime.Poll();
+
+        Assert.Equal(MetaLinkReadiness.ControllersUnavailable, first.Left.Readiness);
+        Assert.Equal(MetaLinkReadiness.Ready, second.Left.Readiness);
+        Assert.Equal(1, factory.TryCreateCount);
+    }
+
+    [Theory]
+    [InlineData(OvrConstants.ErrorNoHmd, MetaLinkReadiness.HeadsetDisconnected, "Connect the Quest")]
+    [InlineData(OvrConstants.ErrorServiceConnection, MetaLinkReadiness.RuntimeStopped, "runtime service")]
+    [InlineData(OvrConstants.ErrorNotInitialized, MetaLinkReadiness.RuntimeStopped, "runtime service")]
+    public void CreateFailuresMapToActionableReadiness(
+        int result,
+        MetaLinkReadiness readiness,
+        string remediation)
+    {
+        var api = TestOvrApi.Live();
+        api.CreateResult = result;
         var factory = new ScriptedFactory();
         factory.EnqueueApi(api);
         using var runtime = Runtime(factory, new ManualClock(10d));
 
-        var first = runtime.Poll();
-        api.InputResult = 0;
-        var second = runtime.Poll();
+        var snapshot = runtime.Poll();
 
-        Assert.Equal(MetaLinkReadiness.ControllersUnavailable, first.Left.Readiness);
-        Assert.Equal(MetaLinkReadiness.InputsLive, second.Left.Readiness);
-        Assert.Equal(1, factory.TryCreateCount);
+        Assert.Equal(readiness, snapshot.Left.Readiness);
+        Assert.Contains(remediation, snapshot.Left.Diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(snapshot.Left.Controller);
+    }
+
+    [Fact]
+    public void ReadinessLossAtomicallyClearsPreviouslyLiveControllers()
+    {
+        var api = TestOvrApi.Live();
+        var factory = new ScriptedFactory();
+        factory.EnqueueApi(api);
+        using var runtime = Runtime(factory, new ManualClock(10d));
+
+        Assert.Equal(MetaLinkReadiness.Ready, runtime.Poll().Left.Readiness);
+        Assert.True(runtime.TryGetLatest(MetaLinkHand.Left, out _));
+
+        api.SessionStatus.HmdPresent = 0;
+        var lost = runtime.Poll();
+
+        Assert.Equal(MetaLinkReadiness.HeadsetDisconnected, lost.Left.Readiness);
+        Assert.False(runtime.TryGetLatest(MetaLinkHand.Left, out var neutral));
+        Assert.Null(neutral);
+    }
+
+    [Fact]
+    public void InvalidClockFaultAndResetCannotExposeStaleInput()
+    {
+        var api = TestOvrApi.Live();
+        var factory = new ScriptedFactory();
+        factory.EnqueueApi(api);
+        var clock = new ManualClock(10d);
+        using var runtime = Runtime(factory, clock);
+
+        Assert.Equal(MetaLinkReadiness.Ready, runtime.Poll().Left.Readiness);
+        clock.Seconds = double.NaN;
+
+        var faulted = runtime.Poll();
+
+        Assert.Equal(MetaLinkReadiness.Faulted, faulted.Left.Readiness);
+        Assert.False(runtime.TryGetLatest(MetaLinkHand.Left, out var afterFault));
+        Assert.Null(afterFault);
+
+        runtime.Reset();
+
+        Assert.False(runtime.TryGetLatest(MetaLinkHand.Left, out var afterReset));
+        Assert.Null(afterReset);
+    }
+
+    [Fact]
+    public void UnexpectedFactoryFailureNeutralizesLatestStateAsFaulted()
+    {
+        var clock = new ManualClock(10d);
+        var factory = new ThrowingFactory();
+        using var runtime = Runtime(factory, clock);
+
+        var snapshot = runtime.Poll();
+
+        Assert.Equal(MetaLinkReadiness.Faulted, snapshot.Left.Readiness);
+        Assert.False(runtime.TryGetLatest(MetaLinkHand.Left, out var latest));
+        Assert.Null(latest);
     }
 
     [Fact]
@@ -125,7 +211,7 @@ public sealed class MetaLinkRuntimeTests
     {
         var clock = new ManualClock(10d);
         var factory = new ScriptedFactory();
-        factory.EnqueueFailure(MetaLinkReadiness.MetaRuntimeMissing, "not installed");
+        factory.EnqueueFailure(MetaLinkReadiness.NotInstalled, "not installed");
         factory.EnqueueApi(TestOvrApi.Live());
         using var runtime = Runtime(factory, clock);
 
@@ -134,9 +220,9 @@ public sealed class MetaLinkRuntimeTests
         clock.Seconds = 10.25d;
         var reconnected = runtime.Poll();
 
-        Assert.Equal(MetaLinkReadiness.MetaRuntimeMissing, first.Left.Readiness);
+        Assert.Equal(MetaLinkReadiness.NotInstalled, first.Left.Readiness);
         Assert.Contains("delayed", delayed.Left.Diagnostic, StringComparison.Ordinal);
-        Assert.Equal(MetaLinkReadiness.InputsLive, reconnected.Left.Readiness);
+        Assert.Equal(MetaLinkReadiness.Ready, reconnected.Left.Readiness);
         Assert.Equal(2, factory.TryCreateCount);
     }
 
@@ -154,6 +240,8 @@ public sealed class MetaLinkRuntimeTests
 
         Assert.True(api.Calls.IndexOf("Destroy") < api.Calls.IndexOf("Shutdown"));
         Assert.True(api.Calls.IndexOf("Shutdown") < api.Calls.IndexOf("Dispose"));
+        Assert.False(runtime.TryGetLatest(MetaLinkHand.Left, out var resetLeft));
+        Assert.Null(resetLeft);
         runtime.Dispose();
         runtime.Dispose();
         Assert.True(runtime.IsDisposed);
@@ -172,11 +260,11 @@ public sealed class MetaLinkRuntimeTests
 
         var snapshot = runtime.Poll();
 
-        Assert.Equal(MetaLinkReadiness.MetaRuntimeMissing, snapshot.Left.Readiness);
-        Assert.Contains("Windows-only", snapshot.Left.Diagnostic, StringComparison.Ordinal);
+        Assert.Equal(MetaLinkReadiness.AbiUnavailable, snapshot.Left.Readiness);
+        Assert.Contains("Windows x64", snapshot.Left.Diagnostic, StringComparison.Ordinal);
     }
 
-    private static MetaLinkRuntime Runtime(ScriptedFactory factory, ManualClock clock) => new(
+    private static MetaLinkRuntime Runtime(IOvrNativeApiFactory factory, ManualClock clock) => new(
         factory,
         clock,
         new ExponentialMetaLinkReconnectPolicy(
@@ -209,13 +297,23 @@ public sealed class MetaLinkRuntimeTests
             {
                 api = null;
                 failure = new OvrRuntimeLoadFailure(
-                    MetaLinkReadiness.MetaRuntimeMissing,
+                    MetaLinkReadiness.NotInstalled,
                     "script exhausted");
                 return false;
             }
 
             (api, failure) = _results.Dequeue();
             return api is not null;
+        }
+    }
+
+    private sealed class ThrowingFactory : IOvrNativeApiFactory
+    {
+        public bool TryCreate(out IOvrNativeApi? api, out OvrRuntimeLoadFailure? failure)
+        {
+            api = null;
+            failure = null;
+            throw new InvalidOperationException("synthetic factory fault");
         }
     }
 
