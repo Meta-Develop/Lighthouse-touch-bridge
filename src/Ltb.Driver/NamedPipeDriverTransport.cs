@@ -37,29 +37,36 @@ public sealed class NamedPipeDriverTransportFactory : IDriverTransportFactory
 public sealed class NamedPipeDriverTransport : IDriverTransport
 {
     private readonly string _pipeName;
+    private readonly INamedPipePeerSessionVerifier _peerSessionVerifier;
     private NamedPipeClientStream? _pipe;
     private bool _disposed;
 
     public NamedPipeDriverTransport(string pipeName)
+        : this(pipeName, new NamedPipePeerSessionVerifier())
+    {
+    }
+
+    internal NamedPipeDriverTransport(
+        string pipeName,
+        INamedPipePeerSessionVerifier peerSessionVerifier)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pipeName);
         _pipeName = pipeName;
+        _peerSessionVerifier = peerSessionVerifier ??
+            throw new ArgumentNullException(nameof(peerSessionVerifier));
     }
+
+    internal bool IsConnected => _pipe?.IsConnected == true;
 
     public async ValueTask ConnectAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new PlatformNotSupportedException(
-                "The production driver transport requires Windows named pipes.");
-        }
-
         if (_pipe is not null)
         {
             throw new InvalidOperationException("The transport has already been connected.");
         }
 
+        _peerSessionVerifier.EnsureSupported();
         var pipe = new NamedPipeClientStream(
             ".",
             _pipeName,
@@ -68,6 +75,7 @@ public sealed class NamedPipeDriverTransport : IDriverTransport
         try
         {
             await pipe.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            _peerSessionVerifier.Verify(pipe.SafePipeHandle);
             _pipe = pipe;
         }
         catch
