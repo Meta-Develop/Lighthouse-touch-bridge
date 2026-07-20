@@ -1,4 +1,5 @@
 using Ltb.Core;
+using Ltb.Configuration;
 using Ltb.Driver;
 using Ltb.MetaLink;
 using Ltb.OpenVr;
@@ -59,34 +60,142 @@ public enum InternalDriverProfileReadiness
 }
 
 /// <summary>One loaded first-party controller's stable serial and runtime build marker.</summary>
-public sealed record InternalDriverLoadedControllerEvidence(
-    string SerialNumber,
-    string RuntimeBuildIdentity);
+public sealed record InternalDriverLoadedControllerEvidence
+{
+    public InternalDriverLoadedControllerEvidence(
+        string serialNumber,
+        string runtimeBuildIdentity)
+    {
+        SerialNumber = InternalDriverEvidenceValidation.RequireNonblank(
+            serialNumber,
+            nameof(serialNumber));
+        RuntimeBuildIdentity = InternalDriverEvidenceValidation.RequireNonblank(
+            runtimeBuildIdentity,
+            nameof(runtimeBuildIdentity));
+    }
+
+    public string SerialNumber { get; }
+
+    public string RuntimeBuildIdentity { get; }
+}
 
 /// <summary>
 /// Staged and point-in-time loaded first-party driver identity. Loaded controller
 /// evidence remains absent until the exact runtime topology passes validation.
 /// </summary>
-public sealed record InternalDriverDriverEvidence(string StagedBuildIdentity)
+public sealed record InternalDriverDriverEvidence
 {
-    public InternalDriverLoadedControllerEvidence? LeftController { get; init; }
+    public InternalDriverDriverEvidence(
+        string stagedBuildIdentity,
+        InternalDriverLoadedControllerEvidence? leftController = null,
+        InternalDriverLoadedControllerEvidence? rightController = null)
+    {
+        StagedBuildIdentity = InternalDriverEvidenceValidation.RequireNonblank(
+            stagedBuildIdentity,
+            nameof(stagedBuildIdentity));
+        if ((leftController is null) != (rightController is null))
+        {
+            throw new ArgumentException(
+                "Loaded controller evidence must be absent for both hands or present for both hands.");
+        }
 
-    public InternalDriverLoadedControllerEvidence? RightController { get; init; }
+        if (leftController is not null)
+        {
+            RequireController(
+                leftController,
+                InternalDriverLoadedReadiness.LeftControllerSerial,
+                StagedBuildIdentity,
+                nameof(leftController));
+            RequireController(
+                rightController!,
+                InternalDriverLoadedReadiness.RightControllerSerial,
+                StagedBuildIdentity,
+                nameof(rightController));
+        }
+
+        LeftController = leftController;
+        RightController = rightController;
+    }
+
+    public string StagedBuildIdentity { get; }
+
+    public InternalDriverLoadedControllerEvidence? LeftController { get; }
+
+    public InternalDriverLoadedControllerEvidence? RightController { get; }
 
     public bool ExactLoadedBuildReady => LeftController is not null && RightController is not null;
+
+    private static void RequireController(
+        InternalDriverLoadedControllerEvidence controller,
+        string expectedSerial,
+        string expectedBuild,
+        string parameterName)
+    {
+        if (!string.Equals(controller.SerialNumber, expectedSerial, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Loaded controller evidence must use exact serial '{expectedSerial}'.",
+                parameterName);
+        }
+
+        if (!string.Equals(
+                controller.RuntimeBuildIdentity,
+                expectedBuild,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "Loaded controller runtime build must exactly match the staged build identity.",
+                parameterName);
+        }
+    }
 }
 
 /// <summary>
 /// Stable identity and runtime metadata for the sole validated Lighthouse HMD.
 /// No transient OpenVR device index is exposed as identity.
 /// </summary>
-public sealed record InternalDriverLighthouseHmdEvidence(
-    string StableDeviceId,
-    string DevicePath,
-    string DriverId,
-    string? TrackingSystemName,
-    string? ManufacturerName,
-    string? ModelNumber);
+public sealed record InternalDriverLighthouseHmdEvidence
+{
+    public InternalDriverLighthouseHmdEvidence(
+        string stableDeviceId,
+        string devicePath,
+        string driverId,
+        string? trackingSystemName,
+        string? manufacturerName,
+        string? modelNumber)
+    {
+        StableDeviceId = InternalDriverEvidenceValidation.RequireNonblank(
+            stableDeviceId,
+            nameof(stableDeviceId));
+        DevicePath = InternalDriverEvidenceValidation.RequireNonblank(
+            devicePath,
+            nameof(devicePath));
+        DriverId = InternalDriverEvidenceValidation.RequireNonblank(
+            driverId,
+            nameof(driverId));
+        TrackingSystemName = InternalDriverEvidenceValidation.RequireOptionalNonblank(
+            trackingSystemName,
+            nameof(trackingSystemName));
+        ManufacturerName = InternalDriverEvidenceValidation.RequireOptionalNonblank(
+            manufacturerName,
+            nameof(manufacturerName));
+        ModelNumber = InternalDriverEvidenceValidation.RequireOptionalNonblank(
+            modelNumber,
+            nameof(modelNumber));
+    }
+
+    public string StableDeviceId { get; }
+
+    public string DevicePath { get; }
+
+    public string DriverId { get; }
+
+    public string? TrackingSystemName { get; }
+
+    public string? ManufacturerName { get; }
+
+    public string? ModelNumber { get; }
+}
 
 /// <summary>Calibration model selected in an exact retained schema-2 profile.</summary>
 public enum InternalDriverCalibrationMode
@@ -96,36 +205,253 @@ public enum InternalDriverCalibrationMode
 }
 
 /// <summary>Held-out calibration quality with units explicit in property names.</summary>
-public sealed record InternalDriverCalibrationQualityEvidence(
-    double RotationRmsDegrees,
-    double? PositionRmsMillimeters,
-    double? TranslationConditionNumber,
-    double InlierRatio);
+public sealed record InternalDriverCalibrationQualityEvidence
+{
+    public InternalDriverCalibrationQualityEvidence(
+        double rotationRmsDegrees,
+        double? positionRmsMillimeters,
+        double? translationConditionNumber,
+        double inlierRatio)
+    {
+        RotationRmsDegrees = InternalDriverEvidenceValidation.RequireFiniteNonnegative(
+            rotationRmsDegrees,
+            nameof(rotationRmsDegrees));
+        PositionRmsMillimeters = InternalDriverEvidenceValidation.RequireOptionalFiniteNonnegative(
+            positionRmsMillimeters,
+            nameof(positionRmsMillimeters));
+        TranslationConditionNumber = InternalDriverEvidenceValidation.RequireOptionalFiniteNonnegative(
+            translationConditionNumber,
+            nameof(translationConditionNumber));
+        InlierRatio = InternalDriverEvidenceValidation.RequireUnitInterval(
+            inlierRatio,
+            nameof(inlierRatio));
+    }
+
+    public double RotationRmsDegrees { get; }
+
+    public double? PositionRmsMillimeters { get; }
+
+    public double? TranslationConditionNumber { get; }
+
+    public double InlierRatio { get; }
+}
 
 /// <summary>Typed evidence copied from an exact retained schema-2 profile.</summary>
-public sealed record InternalDriverCalibrationEvidence(
-    int SchemaVersion,
-    InternalDriverCalibrationMode SelectedMode,
-    string SelectionReason,
-    double EstimatedLagMilliseconds,
-    InternalDriverCalibrationQualityEvidence Quality,
-    DateTimeOffset CreatedUtc);
+public sealed record InternalDriverCalibrationEvidence
+{
+    public InternalDriverCalibrationEvidence(
+        int schemaVersion,
+        InternalDriverCalibrationMode selectedMode,
+        string selectionReason,
+        double estimatedLagMilliseconds,
+        InternalDriverCalibrationQualityEvidence quality,
+        DateTimeOffset createdUtc)
+    {
+        if (schemaVersion != CalibrationProfileSchema.CurrentVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(schemaVersion),
+                schemaVersion,
+                $"Calibration evidence requires schema {CalibrationProfileSchema.CurrentVersion}.");
+        }
+
+        if (!Enum.IsDefined(selectedMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(selectedMode));
+        }
+
+        if (!double.IsFinite(estimatedLagMilliseconds))
+        {
+            throw new ArgumentOutOfRangeException(nameof(estimatedLagMilliseconds));
+        }
+
+        if (createdUtc == default)
+        {
+            throw new ArgumentException("Calibration creation time must be set.", nameof(createdUtc));
+        }
+
+        var validatedQuality = quality ?? throw new ArgumentNullException(nameof(quality));
+        if (selectedMode == InternalDriverCalibrationMode.FullSixDof &&
+            (validatedQuality.PositionRmsMillimeters is null ||
+             validatedQuality.TranslationConditionNumber is null))
+        {
+            throw new ArgumentException(
+                "Full-6DoF calibration evidence requires position RMS and translation-condition metrics.",
+                nameof(quality));
+        }
+
+        SchemaVersion = schemaVersion;
+        SelectedMode = selectedMode;
+        SelectionReason = InternalDriverEvidenceValidation.RequireNonblank(
+            selectionReason,
+            nameof(selectionReason));
+        EstimatedLagMilliseconds = estimatedLagMilliseconds;
+        Quality = validatedQuality;
+        CreatedUtc = createdUtc.ToUniversalTime();
+    }
+
+    public int SchemaVersion { get; }
+
+    public InternalDriverCalibrationMode SelectedMode { get; }
+
+    public string SelectionReason { get; }
+
+    public double EstimatedLagMilliseconds { get; }
+
+    public InternalDriverCalibrationQualityEvidence Quality { get; }
+
+    public DateTimeOffset CreatedUtc { get; }
+}
 
 /// <summary>
 /// Motion and validity evidence calculated from strictly monotonic real Meta
 /// pose samples. Fractions and progress values are in the range [0, 1].
 /// </summary>
-public sealed record InternalDriverCaptureEvidence(
-    int SampleCount,
-    double TrackingValidityFraction,
-    double OrientationValidityFraction,
-    double PositionValidityFraction,
-    double MotionAxisCoverage,
-    double TotalRotationDegrees,
-    double RotationProgress,
-    double PositionProgress,
-    bool RotationReady,
-    bool PositionReady);
+public sealed record InternalDriverCaptureEvidence
+{
+    public InternalDriverCaptureEvidence(
+        int sampleCount,
+        double trackingValidityFraction,
+        double orientationValidityFraction,
+        double positionValidityFraction,
+        double motionAxisCoverage,
+        double totalRotationDegrees,
+        double rotationProgress,
+        double positionProgress,
+        bool rotationReady,
+        bool positionReady)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(sampleCount);
+        SampleCount = sampleCount;
+        TrackingValidityFraction = InternalDriverEvidenceValidation.RequireUnitInterval(
+            trackingValidityFraction,
+            nameof(trackingValidityFraction));
+        OrientationValidityFraction = InternalDriverEvidenceValidation.RequireUnitInterval(
+            orientationValidityFraction,
+            nameof(orientationValidityFraction));
+        PositionValidityFraction = InternalDriverEvidenceValidation.RequireUnitInterval(
+            positionValidityFraction,
+            nameof(positionValidityFraction));
+        MotionAxisCoverage = InternalDriverEvidenceValidation.RequireFiniteNonnegative(
+            motionAxisCoverage,
+            nameof(motionAxisCoverage));
+        TotalRotationDegrees = InternalDriverEvidenceValidation.RequireFiniteNonnegative(
+            totalRotationDegrees,
+            nameof(totalRotationDegrees));
+        RotationProgress = InternalDriverEvidenceValidation.RequireUnitInterval(
+            rotationProgress,
+            nameof(rotationProgress));
+        PositionProgress = InternalDriverEvidenceValidation.RequireUnitInterval(
+            positionProgress,
+            nameof(positionProgress));
+        if (rotationReady != (rotationProgress == 1d))
+        {
+            throw new ArgumentException(
+                "Rotation readiness must exactly match complete rotation progress.",
+                nameof(rotationReady));
+        }
+
+        if (positionReady != (positionProgress == 1d))
+        {
+            throw new ArgumentException(
+                "Position readiness must exactly match complete position progress.",
+                nameof(positionReady));
+        }
+
+        if (sampleCount == 0 &&
+            (trackingValidityFraction != 0d ||
+             orientationValidityFraction != 0d ||
+             positionValidityFraction != 0d ||
+             motionAxisCoverage != 0d ||
+             totalRotationDegrees != 0d ||
+             rotationProgress != 0d ||
+             positionProgress != 0d ||
+             rotationReady ||
+             positionReady))
+        {
+            throw new ArgumentException("An empty capture cannot contain motion or readiness evidence.");
+        }
+
+        RotationReady = rotationReady;
+        PositionReady = positionReady;
+    }
+
+    public int SampleCount { get; }
+
+    public double TrackingValidityFraction { get; }
+
+    public double OrientationValidityFraction { get; }
+
+    public double PositionValidityFraction { get; }
+
+    public double MotionAxisCoverage { get; }
+
+    public double TotalRotationDegrees { get; }
+
+    public double RotationProgress { get; }
+
+    public double PositionProgress { get; }
+
+    public bool RotationReady { get; }
+
+    public bool PositionReady { get; }
+
+    internal static InternalDriverCaptureEvidence Empty { get; } = new(
+        0,
+        0d,
+        0d,
+        0d,
+        0d,
+        0d,
+        0d,
+        0d,
+        rotationReady: false,
+        positionReady: false);
+}
+
+internal static class InternalDriverEvidenceValidation
+{
+    public static string RequireNonblank(string value, string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
+        return value;
+    }
+
+    public static string? RequireOptionalNonblank(string? value, string parameterName)
+    {
+        if (value is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
+        }
+
+        return value;
+    }
+
+    public static double RequireFiniteNonnegative(double value, string parameterName)
+    {
+        if (!double.IsFinite(value) || value < 0d)
+        {
+            throw new ArgumentOutOfRangeException(parameterName);
+        }
+
+        return value;
+    }
+
+    public static double? RequireOptionalFiniteNonnegative(double? value, string parameterName) =>
+        value is { } present
+            ? RequireFiniteNonnegative(present, parameterName)
+            : null;
+
+    public static double RequireUnitInterval(double value, string parameterName)
+    {
+        if (!double.IsFinite(value) || value is < 0d or > 1d)
+        {
+            throw new ArgumentOutOfRangeException(parameterName);
+        }
+
+        return value;
+    }
+}
 
 /// <summary>Typed readiness conjunction for the first-party production path.</summary>
 public sealed record InternalDriverSessionReadiness(

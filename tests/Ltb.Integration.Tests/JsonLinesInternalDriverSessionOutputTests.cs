@@ -232,15 +232,14 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
             "Both hands are publishing.",
             "No remediation is required.")
         {
-            Driver = new InternalDriverDriverEvidence("driver_ltb-test")
-            {
-                LeftController = new InternalDriverLoadedControllerEvidence(
+            Driver = new InternalDriverDriverEvidence(
+                "driver_ltb-test",
+                new InternalDriverLoadedControllerEvidence(
                     "LTB-TOUCH-LEFT",
                     "driver_ltb-test"),
-                RightController = new InternalDriverLoadedControllerEvidence(
+                new InternalDriverLoadedControllerEvidence(
                     "LTB-TOUCH-RIGHT",
-                    "driver_ltb-test"),
-            },
+                    "driver_ltb-test")),
             LighthouseHmd = new InternalDriverLighthouseHmdEvidence(
                 "HMD-LIGHTHOUSE",
                 "/devices/HMD-LIGHTHOUSE",
@@ -266,26 +265,26 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
             "The hand is publishing.")
         {
             Calibration = new InternalDriverCalibrationEvidence(
-                SchemaVersion: 2,
+                2,
                 InternalDriverCalibrationMode.RotationOnly,
                 "held-out rotation evidence accepted",
-                EstimatedLagMilliseconds: 8.5d,
+                8.5d,
                 new InternalDriverCalibrationQualityEvidence(
-                    RotationRmsDegrees: 1.2d,
-                    PositionRmsMillimeters: null,
-                    TranslationConditionNumber: null,
-                    InlierRatio: 0.94d),
+                    1.2d,
+                    null,
+                    null,
+                    0.94d),
                 new DateTimeOffset(2026, 7, 21, 0, 0, 0, TimeSpan.Zero)),
             Capture = new InternalDriverCaptureEvidence(
-                SampleCount: 24,
-                TrackingValidityFraction: 1d,
-                OrientationValidityFraction: 1d,
-                PositionValidityFraction: 0.9d,
-                MotionAxisCoverage: 0.6d,
-                TotalRotationDegrees: 210d,
-                RotationProgress: 1d,
-                PositionProgress: 1d,
-                RotationReady: true,
-                PositionReady: true),
+                24,
+                1d,
+                1d,
+                0.9d,
+                0.6d,
+                210d,
+                1d,
+                1d,
+                true,
+                true),
         };
 }
