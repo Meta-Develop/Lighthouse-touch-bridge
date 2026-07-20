@@ -375,6 +375,8 @@ public sealed class InternalDriverSessionTests
         Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
             motionAxisCoverage: -0.1d));
         Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
+            motionAxisCoverage: 1.1d));
+        Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
             totalRotationDegrees: double.PositiveInfinity));
         Assert.ThrowsAny<ArgumentException>(() => CaptureEvidenceWith(
             rotationProgress: 1d,
