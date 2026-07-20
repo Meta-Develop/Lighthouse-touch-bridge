@@ -118,6 +118,8 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
 
     public int? FailOnWriteNumber { get; init; }
 
+    public Exception? WriteFailure { get; init; }
+
     public bool IsConnected { get; private set; }
 
     public bool IsDisposed { get; private set; }
@@ -149,7 +151,7 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
         if (writeNumber == FailOnWriteNumber)
         {
             IsConnected = false;
-            throw new IOException("Scripted write failure.");
+            throw WriteFailure ?? new IOException("Scripted write failure.");
         }
 
         Packets.Enqueue(packet.ToArray());
