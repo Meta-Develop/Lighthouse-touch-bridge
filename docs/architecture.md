@@ -62,8 +62,9 @@ is documented in [Internal Drivers](internal-drivers.md).
 
 The milestone sections below retain the implemented ALVR, VMT, and
 `TrackingOverrides` architecture as a buildable fallback only. It receives no
-new configuration or orchestration automation and remains supported only until
-the Meta Link and `driver_ltb` path passes its documented Windows exit gates.
+new configuration or orchestration automation, remains runnable only behind
+warning-gated `legacy-*` commands until the Meta Link and `driver_ltb` path
+passes its documented Windows exit gates, and is then scheduled for removal.
 
 ## Milestone 0 boundary
 

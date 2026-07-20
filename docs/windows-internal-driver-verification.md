@@ -7,8 +7,9 @@ records the required evidence.
 
 Use [Internal driver operations](internal-drivers.md) for the supported setup
 and discovery contract. The older
-[ALVR/VMT Windows checklist](windows-verification.md) is compile-only migration
-history and cannot satisfy any item here.
+[ALVR/VMT Windows checklist](windows-verification.md) is legacy migration
+history for paths that run only behind warning-gated `legacy-*` commands and
+cannot satisfy any item here.
 
 ## Evidence record
 
@@ -72,9 +73,15 @@ history and cannot satisfy any item here.
 - [ ] Record the exact nonblank build identity in the staged
   `driver_ltb/build-id.txt` and confirm the staged manifest and x64 DLL are from
   the same package.
-- [ ] From an unregistered state, press **Start** and confirm LTB registers the
+- [ ] From an unregistered state with SteamVR stopped (the recommended
+  first-registration flow), press **Start** and confirm LTB registers the
   exact staged driver root transactionally, preserves unrelated external
   drivers, enables `activateMultipleDrivers`, and requests one SteamVR restart.
+- [ ] In a controlled test, register for the first time while SteamVR is
+  running and confirm the documented behavior: SteamVR's own shutdown rewrite
+  of `steamvr.vrsettings`/`openvrpaths.vrpath` may revert the registration,
+  the next run re-registers idempotently, and `driver_ltb` loads after at most
+  a second SteamVR restart.
 - [ ] Confirm readiness remains blocked while restart is required; restart
   SteamVR, press **Start** again, and confirm the restart-required gate clears.
 - [ ] Confirm the loaded left controller has the exact stable serial
@@ -88,9 +95,17 @@ history and cannot satisfy any item here.
 - [ ] Force a registration failure and confirm the prior external-driver list
   and prior `activateMultipleDrivers` value are restored without deleting an
   unrelated driver.
-- [ ] Remove `driver_ltb` through the supported lifecycle and confirm prior
-  LTB-owned registration/settings state is restored and a required SteamVR
-  restart is reported.
+- [ ] Remove `driver_ltb` with the **Remove driver** button in the **Driver
+  registration maintenance** panel (session stopped) and confirm only the
+  exact canonical LTB path is removed, the recorded prior
+  `activateMultipleDrivers` presence and value is restored, unrelated drivers
+  and settings are untouched, and a required SteamVR restart is reported.
+- [ ] After a full application restart, register and then remove with
+  `Ltb.App.exe remove-driver` and confirm the persisted registration receipt
+  at `%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json`
+  supplies the removal authority; record exit code `0` for removed or nothing
+  to remove, `2` for refused or failed with completed rollback, and `4` for an
+  incomplete rollback in forced-failure tests.
 
 ## Per-hand association and calibration evidence
 
