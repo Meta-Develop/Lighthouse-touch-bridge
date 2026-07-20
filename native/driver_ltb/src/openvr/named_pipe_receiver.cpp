@@ -1,5 +1,6 @@
 #include "named_pipe_receiver.hpp"
 
+#include "ltb_driver/peer_session.hpp"
 #include "monotonic_clock.hpp"
 
 #include <windows.h>
@@ -123,6 +124,29 @@ bool WaitForIo(
     return false;
 }
 
+PeerSessionEvidence ResolvePeerSession(HANDLE pipe) noexcept {
+    ULONG client_process_id = 0;
+    if (GetNamedPipeClientProcessId(pipe, &client_process_id) == FALSE) {
+        return {.lookup_status = PeerSessionLookupStatus::ClientProcessLookupFailed};
+    }
+
+    DWORD client_session_id = 0;
+    if (ProcessIdToSessionId(static_cast<DWORD>(client_process_id), &client_session_id) == FALSE) {
+        return {.lookup_status = PeerSessionLookupStatus::ClientSessionLookupFailed};
+    }
+
+    DWORD server_session_id = 0;
+    if (ProcessIdToSessionId(GetCurrentProcessId(), &server_session_id) == FALSE) {
+        return {.lookup_status = PeerSessionLookupStatus::ServerSessionLookupFailed};
+    }
+
+    return {
+        .lookup_status = PeerSessionLookupStatus::Resolved,
+        .client_session_id = client_session_id,
+        .server_session_id = server_session_id,
+    };
+}
+
 }  // namespace
 
 std::uint64_t MonotonicNanoseconds() noexcept {
@@ -208,6 +232,14 @@ void NamedPipeReceiver::Run() noexcept {
             continue;
         }
 
+        const PeerSessionPacketGate packet_gate(store_, ResolvePeerSession(pipe.Get()));
+        const auto authorization = packet_gate.Authorization();
+        if (authorization != PeerSessionAuthorization::Authorized) {
+            OutputDebugStringA(PeerSessionAuthorizationDiagnostic(authorization));
+            DisconnectNamedPipe(pipe.Get());
+            continue;
+        }
+
         while (!stop_requested_.load(std::memory_order_acquire)) {
             std::array<std::uint8_t, kHandStatePacketSize> buffer{};
             const LocalHandle read_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -234,7 +266,7 @@ void NamedPipeReceiver::Run() noexcept {
             if (!read_ok || bytes_read == 0) {
                 break;
             }
-            store_.ApplyPacket(
+            packet_gate.ApplyPacket(
                 std::span<const std::uint8_t>(buffer.data(), bytes_read),
                 MonotonicNanoseconds());
         }
