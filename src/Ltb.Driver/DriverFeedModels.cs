@@ -51,8 +51,14 @@ public sealed record DriverFeedOptions
     }
 }
 
+/// <summary>
+/// A final composed hand sample ready for the SteamVR driver. The sample
+/// timestamp is the mapped pose-sample time in the app monotonic/QPC-derived
+/// nanosecond domain, not the time at which the packet is sent.
+/// </summary>
 public readonly record struct DriverHandState(
     ProtocolHand Hand,
+    ulong SampleMonotonicNanoseconds,
     ProtocolPresence Presence,
     ProtocolDriverPose DriverSpacePose,
     ProtocolMotion Motion,
@@ -62,9 +68,13 @@ public readonly record struct DriverHandState(
     internal ProtocolHandState ToProtocolMessage(ProtocolOrdering ordering) =>
         new(ordering, Hand, Presence, DriverSpacePose, Motion, Input, BatteryLevel);
 
-    public static DriverHandState Neutral(ProtocolHand hand, bool connected = false) =>
+    public static DriverHandState Neutral(
+        ProtocolHand hand,
+        ulong sampleMonotonicNanoseconds,
+        bool connected = false) =>
         new(
             hand,
+            sampleMonotonicNanoseconds,
             connected ? ProtocolPresence.Connected : ProtocolPresence.None,
             new ProtocolDriverPose(ProtocolVector3.Zero, ProtocolQuaternion.Identity),
             new ProtocolMotion(ProtocolVector3.Zero, ProtocolVector3.Zero),

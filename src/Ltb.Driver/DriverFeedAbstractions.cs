@@ -8,6 +8,11 @@ public interface IDriverFeed : IAsyncDisposable
 
     ValueTask StartAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Publishes a final hand state while preserving its mapped pose-sample
+    /// timestamp. Samples must be non-regressing independently for each hand
+    /// within the current protocol session.
+    /// </summary>
     ValueTask PublishAsync(DriverHandState state, CancellationToken cancellationToken = default);
 
     ValueTask StopAsync(CancellationToken cancellationToken = default);
