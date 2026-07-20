@@ -58,6 +58,75 @@ public enum InternalDriverProfileReadiness
     Incompatible,
 }
 
+/// <summary>One loaded first-party controller's stable serial and runtime build marker.</summary>
+public sealed record InternalDriverLoadedControllerEvidence(
+    string SerialNumber,
+    string RuntimeBuildIdentity);
+
+/// <summary>
+/// Staged and point-in-time loaded first-party driver identity. Loaded controller
+/// evidence remains absent until the exact runtime topology passes validation.
+/// </summary>
+public sealed record InternalDriverDriverEvidence(string StagedBuildIdentity)
+{
+    public InternalDriverLoadedControllerEvidence? LeftController { get; init; }
+
+    public InternalDriverLoadedControllerEvidence? RightController { get; init; }
+
+    public bool ExactLoadedBuildReady => LeftController is not null && RightController is not null;
+}
+
+/// <summary>
+/// Stable identity and runtime metadata for the sole validated Lighthouse HMD.
+/// No transient OpenVR device index is exposed as identity.
+/// </summary>
+public sealed record InternalDriverLighthouseHmdEvidence(
+    string StableDeviceId,
+    string DevicePath,
+    string DriverId,
+    string? TrackingSystemName,
+    string? ManufacturerName,
+    string? ModelNumber);
+
+/// <summary>Calibration model selected in an exact retained schema-2 profile.</summary>
+public enum InternalDriverCalibrationMode
+{
+    RotationOnly = 0,
+    FullSixDof = 1,
+}
+
+/// <summary>Held-out calibration quality with units explicit in property names.</summary>
+public sealed record InternalDriverCalibrationQualityEvidence(
+    double RotationRmsDegrees,
+    double? PositionRmsMillimeters,
+    double? TranslationConditionNumber,
+    double InlierRatio);
+
+/// <summary>Typed evidence copied from an exact retained schema-2 profile.</summary>
+public sealed record InternalDriverCalibrationEvidence(
+    int SchemaVersion,
+    InternalDriverCalibrationMode SelectedMode,
+    string SelectionReason,
+    double EstimatedLagMilliseconds,
+    InternalDriverCalibrationQualityEvidence Quality,
+    DateTimeOffset CreatedUtc);
+
+/// <summary>
+/// Motion and validity evidence calculated from strictly monotonic real Meta
+/// pose samples. Fractions and progress values are in the range [0, 1].
+/// </summary>
+public sealed record InternalDriverCaptureEvidence(
+    int SampleCount,
+    double TrackingValidityFraction,
+    double OrientationValidityFraction,
+    double PositionValidityFraction,
+    double MotionAxisCoverage,
+    double TotalRotationDegrees,
+    double RotationProgress,
+    double PositionProgress,
+    bool RotationReady,
+    bool PositionReady);
+
 /// <summary>Typed readiness conjunction for the first-party production path.</summary>
 public sealed record InternalDriverSessionReadiness(
     bool PlatformSupported,
@@ -102,7 +171,14 @@ public sealed record InternalDriverHandSnapshot(
     TimeSpan? PoseAge,
     bool IsPublishing,
     InternalDriverNeutralReason NeutralReason,
-    string Diagnostic);
+    string Diagnostic)
+{
+    /// <summary>Exact retained schema-2 profile evidence, when one exists for this run.</summary>
+    public InternalDriverCalibrationEvidence? Calibration { get; init; }
+
+    /// <summary>Latest real guided-capture evidence for this hand in this run.</summary>
+    public InternalDriverCaptureEvidence? Capture { get; init; }
+}
 
 /// <summary>Managed feed ordering, freshness, and reconnect evidence.</summary>
 public sealed record InternalDriverFeedSnapshot(
@@ -135,6 +211,12 @@ public sealed record InternalDriverSessionSnapshot(
     string Diagnostic,
     string Remediation)
 {
+    /// <summary>Staged and exact loaded first-party controller build evidence.</summary>
+    public InternalDriverDriverEvidence? Driver { get; init; }
+
+    /// <summary>The sole validated active Lighthouse HMD, identified without an OpenVR index.</summary>
+    public InternalDriverLighthouseHmdEvidence? LighthouseHmd { get; init; }
+
     internal static InternalDriverSessionSnapshot Initial { get; } = new(
         InternalDriverSessionState.Stopped,
         InternalDriverSessionReadiness.Empty,
@@ -247,7 +329,10 @@ internal sealed record InternalDriverHandProfile(
     string TrackerSerial,
     RigidTransform TrackerFromController,
     InternalDriverProfileReadiness Readiness,
-    string Diagnostic);
+    string Diagnostic)
+{
+    public InternalDriverCalibrationEvidence? Calibration { get; init; }
+}
 
 internal sealed record InternalDriverProfilePair(
     InternalDriverHandProfile Left,
@@ -264,7 +349,10 @@ internal sealed record InternalDriverProfilePair(
 internal delegate void InternalDriverProgress(
     InternalDriverSessionState state,
     string diagnostic,
-    string remediation);
+    string remediation,
+    InternalDriverCaptureEvidence? leftCapture = null,
+    InternalDriverCaptureEvidence? rightCapture = null,
+    InternalDriverRuntimeObservation? observation = null);
 
 internal interface IInternalDriverSessionRuntime : IAsyncDisposable
 {
