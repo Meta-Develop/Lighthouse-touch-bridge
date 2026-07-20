@@ -1,64 +1,179 @@
-# Internal Driver Bridge Design Contract
+# First-Party Internal Driver Operations
 
-## Status and goal
+## Status and support boundary
 
-This document defines a **target design**, not a claim that the internal bridge
-is implemented or hardware-verified. The supported deployment is Windows;
-SteamVR and official Meta Quest Link are its only external runtime dependencies.
-Standalone-headset modes are out of scope.
+This is the operational reference for the current LTB default. The first-party
+implementation and automated tests are present, but the Windows hardware and
+runtime gates have not been recorded as passed. Use the fully unchecked
+[Windows internal-driver verification checklist](windows-internal-driver-verification.md)
+before making any Windows compatibility or release claim.
+
+The supported deployment is Windows x64. Its only accepted external runtime
+dependencies are SteamVR and the official Meta Horizon Link PC runtime. LTB
+does not depend on ALVR, VMT, or SteamVR `TrackingOverrides`, does not install a
+headset application, carries no video, and does not register Quest as a
+SteamVR HMD or controller provider.
 
 ```text
 Quest + Touch
-  -> Meta Quest Link runtime
+  -> official Meta Horizon Link runtime
   -> Ltb.MetaLink
-  -> C# bridge composition
-  -> local named pipe
+  -> Ltb.App calibration and pose composition
+  -> same-user local named pipe
   -> driver_ltb
   -> SteamVR
 ```
 
-Quest Link only keeps Touch controllers connected and exposes their state. LTB
-installs no headset app, carries no video, and never registers Quest as the
-SteamVR HMD. SteamVR receives exactly two controller devices: Meta inputs with
-runtime poses from the paired Lighthouse trackers.
+SteamVR must receive exactly two LTB controller devices. Their inputs come from
+the Meta runtime; their runtime poses come from the paired Lighthouse trackers.
+The intended Lighthouse HMD remains SteamVR's sole HMD.
+
+## Default desktop workflow
+
+The packaged `Ltb.Gui.exe` starts directly in the **First-party internal
+driver** view. Its **Start** button creates a fresh application session and
+runs typed checks for Windows, SteamVR, driver registration and loaded build,
+Meta Link, the sole Lighthouse HMD, both Touch hands, exactly two physical
+trackers, calibration profiles, and the driver feed. It never starts the legacy
+ALVR/VMT/`TrackingOverrides` wizard.
+
+Before pressing **Start**:
+
+1. Start the official Meta Horizon Link PC application and establish Quest
+   Link or Air Link.
+2. Keep the headset and both Touch controllers awake.
+3. Start SteamVR with the intended Lighthouse HMD as the sole HMD.
+4. Power on exactly two physical Lighthouse trackers and wait until their raw
+   poses are valid.
+5. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
+
+LTB transactionally registers the staged `driver_ltb` directory beside the
+application. If registration changed, the GUI reports **Restart required**.
+Stop LTB, restart SteamVR once, and press **Start** again so the runtime loads
+the staged build. Readiness does not pass until the loaded left and right
+controllers both report the exact staged build identity.
+
+On a first run or after a recalibration trigger, LTB captures the hands
+separately. Move only the requested mounted controller continuously through
+pitch, yaw, and roll; add moderate translation while keeping the controller
+visible to the Quest cameras if full 6DoF is desired. LTB associates the two
+trackers from real motion, estimates residual lag, validates rotation, attempts
+translation only when observable, saves schema-2 profiles, then starts a fresh
+IPC feed. No position or poor translation observability may validly select
+rotation-only; bad rotation coverage or quality is a failure.
+
+The GUI presents readiness, per-hand tracker/input/publication state, neutral
+reasons, the shared calibration phase, and feed health. The structured JSONL
+log is the durable evidence surface for exact staged/loaded identities, stable
+HMD metadata, per-hand capture measurements, selected calibration mode and
+reason, lag, and quality metrics.
+
+Use **Stop** before changing runtime or hardware state. Closing the window also
+requests the same bounded fail-safe stop and waits for session cleanup. A
+stopped or closed session is never reused; the next **Start** creates a new
+session.
+
+## Automatic paths
+
+The supported desktop flow has no editable device-index or integration-path
+fields. From a packaged build, the default paths are:
+
+| Purpose | Path |
+|---|---|
+| Staged SteamVR driver | `driver_ltb` beside `Ltb.Gui.exe` |
+| Settings | `%LOCALAPPDATA%\LighthouseTouchBridge\settings\internal-driver.json` |
+| Calibration profiles | `%LOCALAPPDATA%\LighthouseTouchBridge\profiles\calibration-profiles.json` |
+| Structured log | `%LOCALAPPDATA%\LighthouseTouchBridge\logs\internal-driver.jsonl` |
+
+The log appends JSON records, rotates at its configured bound, and may include
+hardware identities. Redact stable identities and owner-local paths before
+sharing evidence.
+
+## Exact Meta Horizon Link discovery
+
+`Ltb.MetaLink` resolves the installed runtime from this exact 32-bit registry
+contract on 64-bit Windows:
+
+```text
+Key:   HKLM\SOFTWARE\WOW6432Node\Oculus VR, LLC\Oculus
+Value: Base
+```
+
+A current Meta Horizon-branded installation may register:
+
+```text
+Base = C:\Program Files\Meta Horizon\
+```
+
+The x64 runtime must then exist at:
+
+```text
+<Base>Support\oculus-runtime\LibOVRRT64_1.dll
+```
+
+For the example above, that resolves to
+`C:\Program Files\Meta Horizon\Support\oculus-runtime\LibOVRRT64_1.dll`.
+LTB loads that complete resolved path and requests the public LibOVR ABI 1.64
+(minor version 64).
+
+Both older Oculus-branded and current Meta Horizon-branded install roots are
+supported only when the installer records their absolute root in the registry
+`Base` value. LTB does not probe or fall back to
+`C:\Program Files\Oculus`, `C:\Program Files\Meta Horizon`, the current
+directory, `PATH`, or a filename-only DLL load.
+
+Discovery failures are readiness failures with direct remediation:
+
+- a missing, blank, or non-absolute `Base` value reports `NotInstalled` and
+  asks the user to install or repair Meta Horizon Link registration;
+- a registered root without
+  `Support\oculus-runtime\LibOVRRT64_1.dll` reports `NotInstalled` and asks
+  the user to repair Meta Horizon Link; and
+- an incompatible or unloadable registered DLL reports `AbiUnavailable` with
+  an install/repair/update diagnostic.
+
+Do not copy a DLL into the LTB directory or hand-edit a fallback path. Repair
+the official installation and its registration, then run a fresh session.
+
+## Manual headset and controller wake guidance
+
+LTB automates no ADB operation. It does not run ADB, change headset power or
+proximity-sensor settings, install a headset component, or promise to keep the
+headset or controllers awake.
+
+For a controlled calibration or verification session:
+
+- establish Quest Link or Air Link while the headset is awake, and confirm
+  both controllers respond in the Meta runtime before starting LTB;
+- keep the headset in the state required by the current official Link workflow
+  and periodically move or use both controllers so their input state remains
+  available;
+- if the proximity sensor or automatic sleep interrupts Link, use only the
+  supported headset, Meta Horizon Link, or Meta Quest Developer Hub (MQDH) UI
+  controls documented for the installed versions to adjust the behavior
+  manually; and
+- record any temporary keep-awake or proximity-sensor change and restore it
+  after the test.
+
+MQDH is optional and is not an LTB dependency. Its UI and available device
+controls can change between releases, so follow current official Meta guidance.
+This project intentionally supplies no ADB command and does not recommend
+inventing one from old forum instructions.
 
 ## Modules and dependency boundaries
 
-| Module | Target responsibility | Allowed dependencies |
+| Module | Responsibility | Allowed dependencies |
 |---|---|---|
-| `Ltb.MetaLink` | Load the Meta PC runtime and sample Touch state | Meta native ABI and narrow .NET interop only |
+| `Ltb.MetaLink` | Load registered LibOVR and sample Touch state | Meta native ABI and narrow .NET interop only |
 | `Ltb.Protocol` | Encode, decode, and validate IPC v1 | BCL only; no runtime SDK dependency |
 | `Ltb.Driver` | Publish the C# feed and own transport, readiness, and registration | `Ltb.Protocol` plus narrow OS and OpenVR registration boundaries |
 | `native/driver_ltb` | Expose two SteamVR controller devices and consume IPC | OpenVR driver API and C++ protocol code |
 
-`Ltb.App` owns hand pairing, mount calibration, pose composition, and feed
-publication through these modules. `Ltb.Calibration` remains portable and
-deterministic. It must not depend on Meta, OpenVR, SteamVR, the driver, pipes,
-UI, or application composition. Platform integrations stay behind narrow
-interfaces; ABI structs must not leak into calibration models.
-
-## Meta Link ABI and readiness
-
-- The supported baseline is the official Meta PC package version `32.0.0`,
-  which exposes C ABI `1.64`.
-- `Ltb.MetaLink` targets `LibOVRRT64_1.dll` and requests minor ABI version `64`.
-- Load the DLL from the complete installation path derived from the Meta runtime
-  registry entry, never the search path, current directory, or filename alone.
-- Meta runtime binaries are not redistributed. A compatible user-installed
-  Quest Link runtime is a prerequisite.
-- Each hand uses its own `ovrPoseStatef.TimeInSeconds` as the pose timestamp.
-  `SensorSampleTime` must not substitute for the per-hand timestamp.
-- Startup and periodic paired samples map Meta time to `Stopwatch`/QPC time;
-  interpolation and IPC timestamps use that monotonic mapping, never wall time.
-- Controller battery data is unavailable through this ABI and is transmitted
-  as not present.
-- Automatic keep-awake behavior is out of scope. The UI may instruct the user
-  to keep Quest Link and the controllers awake manually.
-
-Readiness is explicit: `NotInstalled`, `AbiUnavailable`, `RuntimeStopped`,
-`HeadsetDisconnected`, `ControllersUnavailable`, `Ready`, and `Faulted`. Only
-`Ready` permits publication. Losing readiness neutralizes inputs and marks the
-devices untracked until recovery starts a new session.
+`Ltb.App` owns tracker-to-hand association, mount calibration, pose
+composition, and feed publication. `Ltb.Gui` is a presentation layer over the
+typed application session; it does not sequence runtimes itself.
+`Ltb.Calibration` remains portable and deterministic and has no UI, SteamVR,
+OpenVR, Meta Link, driver, pipe, or application dependency.
 
 ## Frame, transform, and clock contract
 
@@ -73,71 +188,49 @@ devices untracked until recovery starts a new session.
 | Driver pose time | Monotonic nanoseconds mapped from `Stopwatch`/QPC |
 | Clock alignment | Paired Meta-time and QPC samples establish and refresh the mapping |
 
-The bridge must name the parent and child frames at every conversion boundary.
-No implicit handedness flip, quaternion reordering, unit scaling, or transform
-order change is permitted.
+Each hand uses its own `ovrPoseStatef.TimeInSeconds`. `SensorSampleTime` is not
+a substitute. Wall time is used only for human-readable provenance.
 
-## Local IPC v1
+## Local IPC and fail-safe behavior
 
-All fields are little-endian. The message header and hand-state payload are
-fixed-layout and versioned; unknown message types are rejected.
+IPC v1 is a fixed-layout, little-endian protocol over a local Windows named
+pipe. The pipe admits only the owning Windows session. Each producer start uses
+a new unpredictable session identifier and sequence zero. Both endpoints
+reject malformed, non-finite, out-of-range, replayed, or time-regressing data
+without partially updating device state.
 
-| Segment | Fields |
-|---|---|
-| Header | magic, version, message type, payload length |
-| Ordering | session identifier, sequence number, monotonic nanoseconds |
-| Identity | hand, presence and tracking flags |
-| Pose | position `(x,y,z)`, quaternion `(x,y,z,w)` |
-| Motion | linear velocity `(x,y,z)`, angular velocity `(x,y,z)` |
-| Digital input | buttons bitset, capacitive touches bitset |
-| Analog input | trigger, grip, stick `(x,y)` |
-| Optional telemetry | battery-present flag, battery value |
+The producer sends heartbeats even when state does not change. After 500 ms
+without a valid state or heartbeat, `driver_ltb` marks both devices untracked
+and neutralizes every input. Reconnect uses a new session; it never resumes a
+stale session or frozen pose. Loss of one associated tracker neutralizes only
+that hand while exact-serial reacquisition is attempted. Loss of Meta readiness
+or an invalid tracker topology neutralizes both hands.
 
-The transport is a local Windows named pipe. Its ACL permits only the owning
-user; remote clients are rejected.
-The producer sends heartbeats even when state is unchanged. Each producer
-start creates a new unpredictable session identifier and resets sequence to
-zero; sequence ordering applies only within that session.
+`driver_ltb` performs no calibration or Meta access. It publishes exactly two
+stable left/right controller roles with the LTB input profile. Haptics are not
+advertised and LibOVR controller battery state is reported as absent.
 
-Both endpoints reject bad magic/version/type/length, truncated messages,
-non-finite values, invalid enum or bit ranges, out-of-range analog values,
-non-unit/degenerate quaternions, replayed sequences, and regressing timestamps.
-Bounds are defined once in the shared protocol tests. No rejected packet may
-partially update device state.
+## Registration and verification
 
-After 500 ms without a valid state or heartbeat, both devices become untracked
-and every button, touch, trigger, grip, and stick value becomes neutral. A
-fresh valid state may recover only under the current session and ordering
-rules; reconnecting with a new session starts from sequence zero.
+Driver registration snapshots the external-driver state, registers the exact
+staged path, enables `activateMultipleDrivers`, verifies the result, and rolls
+back on failure. Removal restores the prior LTB-owned state without deleting
+unrelated drivers and restores the previous `activateMultipleDrivers` value.
 
-## Driver and registration contract
-
-`driver_ltb` is a thin consumer: it validates protocol and freshness and
-publishes SteamVR properties/inputs, but performs no calibration or Meta access.
-It registers exactly two devices with stable left/right roles and a dedicated
-LTB profile. Haptics are unsupported and must not be advertised.
-
-Installation uses `vrpathreg`/`openvrpaths.vrpath` through a transactional tool.
-It snapshots the external-driver state, verifies the new path, and rolls back
-on failure. Removal restores prior state without deleting unrelated drivers.
-The target is `activateMultipleDrivers = true`; rollback/uninstall also restores
-its previous value.
-
-## Verification gates and legacy fallback
-
-Linux CI uses a fake Meta source and fake pipe plus managed and C++ protocol
-tests covering golden bytes, cross-language decoding, frame/quaternion rules,
+Linux automation and portable C++ tests cover protocol, fake Meta input,
+registration transactions, cross-language decoding, frame/quaternion rules,
 session rollover, malformed/range/NaN/replay cases, timeout, and neutral safety.
+They are not Windows runtime or hardware evidence. Complete and retain the
+[Windows internal-driver verification checklist](windows-internal-driver-verification.md)
+on the target machine.
 
-Windows release gates require loading the installed Meta DLL by its resolved
-path, proving ABI `1.64`, observing per-hand timestamps under Quest Link,
-exercising reconnect/readiness transitions, loading `driver_ltb` in SteamVR,
-checking both roles/profile/inputs/poses, and proving registration rollback.
-These are hardware/runtime gates and cannot be replaced by Linux fakes.
+## Legacy compile-only migration material
 
-The existing ALVR, VMT, and SteamVR `TrackingOverrides` path remains a buildable
-fallback only until the Meta Link and `driver_ltb` path passes every Windows
-gate above. It receives no new configuration or orchestration automation and is
-not a verified operational fallback until its own Windows hardware checklist
-passes. The internal path likewise remains target/design until every Windows
-gate records evidence.
+The ALVR, VMT, and SteamVR `TrackingOverrides` implementation remains
+compile-only historical migration material. It receives no new setup,
+configuration, recovery, packaging, or daily-use support and is not invoked by
+the first-party GUI **Start** button. Existing detail is preserved in the
+[legacy setup reference](setup.md),
+[legacy troubleshooting reference](troubleshooting.md), and
+[legacy Windows checklist](windows-verification.md); none of those documents
+defines the supported first-party path.

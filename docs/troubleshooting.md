@@ -1,4 +1,12 @@
-# Troubleshooting
+# Legacy ALVR/VMT Troubleshooting Reference
+
+> [!IMPORTANT]
+> This document preserves compile-only ALVR, VMT, and SteamVR
+> `TrackingOverrides` migration diagnostics. It does not troubleshoot the
+> supported first-party desktop **Start** path. Use
+> [First-party internal driver operations](internal-drivers.md) for current
+> readiness and fail-safe behavior, and keep live results in the
+> [Windows internal-driver checklist](windows-internal-driver-verification.md).
 
 This guide starts from the state or symptom visible to the operator. Preserve
 the structured event code, application state, and redacted context when a
