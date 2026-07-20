@@ -7,8 +7,7 @@ using Ltb.Gui.ViewModels;
 namespace Ltb.Gui;
 
 /// <summary>
-/// Composition root for the desktop shell. It parses editable launch defaults
-/// and wires the shared session factory; it contains no wizard policy.
+/// Composition root for the first-party internal-driver desktop flow.
 /// </summary>
 public partial class App : Application
 {
@@ -18,18 +17,8 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            var profileStorePath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "LighthouseTouchBridge",
-                "wizard-demo-profiles.json");
-            var options = GuiCommandLineOptions.Parse(
-                desktop.Args ?? Array.Empty<string>(),
-                profileStorePath,
-                out var startupDiagnostic);
-            var viewModel = new CalibrationWizardViewModel(
-                new CalibrationWizardSessionFactory(),
-                options,
-                startupDiagnostic,
+            var viewModel = new InternalDriverViewModel(
+                new InternalDriverSessionFactory(),
                 action => Dispatcher.UIThread.Post(action));
             var window = new MainWindow
             {
@@ -38,18 +27,17 @@ public partial class App : Application
             var cleanupCompletedClose = false;
             window.Closing += async (_, eventArgs) =>
             {
-                if (cleanupCompletedClose || !viewModel.IsRunning)
+                if (cleanupCompletedClose)
                 {
                     return;
                 }
 
                 eventArgs.Cancel = true;
-                await viewModel.StopAsync();
+                await viewModel.CloseAsync();
                 cleanupCompletedClose = true;
                 window.Close();
             };
             desktop.MainWindow = window;
-            desktop.Exit += (_, _) => viewModel.Dispose();
         }
 
         base.OnFrameworkInitializationCompleted();
