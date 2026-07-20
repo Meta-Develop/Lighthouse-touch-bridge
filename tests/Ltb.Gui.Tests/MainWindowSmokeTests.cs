@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.VisualTree;
 using Ltb.App;
 using Ltb.Gui.ViewModels;
 
@@ -8,11 +9,11 @@ namespace Ltb.Gui.Tests;
 public sealed class MainWindowSmokeTests
 {
     [AvaloniaFact]
-    public void MainWindowConstructsAndPropagatesStateBinding()
+    public void MainWindowDefaultsToInternalDriverBindingsAndRequiredSurface()
     {
-        using var viewModel = new CalibrationWizardViewModel(
+        var viewModel = new InternalDriverViewModel(
             new IdleSessionFactory(),
-            new GuiCommandLineOptions { ProfileStorePath = "profiles.json" });
+            action => action());
         var window = new MainWindow
         {
             DataContext = viewModel,
@@ -20,57 +21,116 @@ public sealed class MainWindowSmokeTests
         try
         {
             window.Show();
-            var stateText = window.FindControl<TextBlock>("StateText");
-            var diagnosticText = window.FindControl<TextBlock>("DiagnosticText");
-            var eventList = window.FindControl<ListBox>("EventList");
-            var scriptedMode = window.FindControl<RadioButton>("ScriptedModeButton");
-            var productionMode = window.FindControl<RadioButton>("ProductionModeButton");
-            var productionOptions = window.FindControl<StackPanel>("ProductionOptionsPanel");
-            Assert.NotNull(stateText);
-            Assert.NotNull(diagnosticText);
-            Assert.NotNull(eventList);
-            Assert.NotNull(scriptedMode);
-            Assert.NotNull(productionMode);
-            Assert.NotNull(productionOptions);
-            Assert.Equal(nameof(CalibrationWizardState.Stopped), stateText!.Text);
-            Assert.Equal(0, eventList!.ItemCount);
-            Assert.True(scriptedMode!.IsChecked);
-            Assert.False(productionOptions!.IsVisible);
 
-            viewModel.IsProductionMode = true;
-            Assert.True(productionMode!.IsChecked);
-            Assert.True(productionOptions.IsVisible);
-
-            ICalibrationWizardOutput output = viewModel;
-            output.OnStateChanged(CalibrationWizardState.Recording, "smoke transition");
-
-            Assert.Equal(nameof(CalibrationWizardState.Recording), stateText.Text);
-            Assert.Equal("smoke transition", diagnosticText!.Text);
-            Assert.Equal(1, eventList.ItemCount);
+            Assert.Same(viewModel, window.DataContext);
+            Assert.Equal("Stopped", window.FindControl<TextBlock>("PhaseText")!.Text);
+            Assert.Equal("Start", window.FindControl<Button>("ActionButton")!.Content);
+            var readiness = window.FindControl<ListBox>("ReadinessList");
+            Assert.NotNull(readiness);
+            Assert.Equal(12, readiness!.ItemCount);
+            Assert.Equal(
+                [
+                    "Windows x64",
+                    "SteamVR",
+                    "Driver registration",
+                    "Loaded controllers / build",
+                    "Meta Link",
+                    "Left input",
+                    "Right input",
+                    "Lighthouse HMD",
+                    "Tracker 1 / left",
+                    "Tracker 2 / right",
+                    "Profiles / calibration",
+                    "Driver feed",
+                ],
+                viewModel.ReadinessRows.Select(row => row.Title));
+            Assert.NotNull(window.FindControl<TextBlock>("DiagnosticText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RemediationText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftTrackerText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightTrackerText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftPoseText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightPoseText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftNeutralReasonText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightNeutralReasonText"));
+            Assert.NotNull(window.FindControl<ProgressBar>("LeftCalibrationProgress"));
+            Assert.NotNull(window.FindControl<ProgressBar>("RightCalibrationProgress"));
+            Assert.Equal(
+                2,
+                window.GetVisualDescendants()
+                    .OfType<TextBlock>()
+                    .Count(text => text.Text == "Global calibration phase estimate (shared)"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCalibrationModeText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCalibrationModeText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCalibrationQualityText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCalibrationQualityText"));
+            Assert.NotNull(window.FindControl<TextBlock>("FeedStateText"));
+            Assert.NotNull(window.FindControl<TextBlock>("FeedSessionText"));
+            Assert.NotNull(window.FindControl<TextBlock>("FeedSequenceText"));
+            Assert.NotNull(window.FindControl<TextBlock>("FeedHeartbeatText"));
+            Assert.NotNull(window.FindControl<TextBlock>("FeedReconnectText"));
+            Assert.NotNull(window.FindControl<TextBlock>("FeedErrorText"));
         }
         finally
         {
             window.Close();
+            viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }
 
-    private sealed class IdleSession : ICalibrationWizardSession
+    [AvaloniaFact]
+    public void MainWindowHasNoEditableLegacyTargetsAndLabelsCompileOnlyPath()
     {
-        public Task<CalibrationWizardResult> RunAsync(
-            ICalibrationWizardOutput output,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException("The smoke test never starts a wizard run.");
+        var viewModel = new InternalDriverViewModel(
+            new IdleSessionFactory(),
+            action => action());
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+        };
+        try
+        {
+            window.Show();
+
+            Assert.Empty(window.GetVisualDescendants().OfType<TextBox>());
+            Assert.Null(window.FindControl<TextBox>("LeftSlotTextBox"));
+            Assert.Null(window.FindControl<TextBox>("RightSlotTextBox"));
+            Assert.Null(window.FindControl<TextBox>("SteamVrSettingsTextBox"));
+
+            var notice = window.FindControl<TextBlock>("LegacyNotice");
+            Assert.NotNull(notice);
+            Assert.Contains("Unsupported compile-only migration code", notice!.Text);
+            Assert.Contains("ALVR / VMT / TrackingOverrides", notice.Text);
+            Assert.Contains("not used by Start", notice.Text);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
     }
 
-    private sealed class IdleSessionFactory : ICalibrationWizardSessionFactory
+    private sealed class IdleSessionFactory : IInternalDriverSessionFactory
     {
-        private readonly ICalibrationWizardSession _session = new IdleSession();
+        public IInternalDriverSession Create() => new IdleSession();
+    }
 
-        public ICalibrationWizardSession CreateScripted(
-            string profileStorePath,
-            string? logPath) => _session;
+    private sealed class IdleSession : IInternalDriverSession
+    {
+        public event EventHandler<InternalDriverSessionSnapshot>? SnapshotChanged
+        {
+            add { }
+            remove { }
+        }
 
-        public ICalibrationWizardSession CreateProduction(
-            ProductionCalibrationWizardSessionOptions options) => _session;
+        public InternalDriverSessionSnapshot CurrentSnapshot =>
+            throw new NotSupportedException("The smoke test never starts a session.");
+
+        public Task RunAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("The smoke test never starts a session.");
+
+        public ValueTask StopAsync(CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }
