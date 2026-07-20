@@ -6,7 +6,7 @@ namespace Ltb.MetaLink;
 /// <summary>
 /// Serialized Windows LibOVR adapter. Construction and polling are safe on
 /// non-Windows hosts: Windows discovery and native loading happen only from a
-/// guarded poll attempt and report MetaRuntimeMissing there.
+/// guarded poll attempt and report AbiUnavailable there.
 /// </summary>
 public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSource
 {
@@ -54,8 +54,8 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
         _latest = FailureSnapshot(
             0,
             now,
-            MetaLinkReadiness.MetaRuntimeMissing,
-            "Meta runtime has not been probed yet.");
+            MetaLinkReadiness.RuntimeStopped,
+            "Meta runtime has not been probed yet. Poll the runtime to begin discovery.");
     }
 
     public bool IsDisposed { get; private set; }
@@ -65,54 +65,64 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
         lock (_sync)
         {
             ThrowIfDisposed();
-            var now = ReadClock();
             _sequence++;
-
-            if (_session == IntPtr.Zero)
+            double now;
+            try
             {
-                if (now < _nextAttemptSeconds && _lastFailure is not null)
-                {
-                    _latest = FailureSnapshot(
-                        _sequence,
-                        now,
-                        _lastFailure.Readiness,
-                        $"{_lastFailure.Diagnostic} Retry is delayed by the reconnect policy.");
-                    return _latest;
-                }
-
-                var connectionFailure = TryConnect(now);
-                if (connectionFailure is not null)
-                {
-                    _latest = FailureSnapshot(
-                        _sequence,
-                        now,
-                        connectionFailure.Readiness,
-                        connectionFailure.Diagnostic);
-                    return _latest;
-                }
+                now = ReadClock();
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                _latest = FailureSnapshot(
+                    _sequence,
+                    _latest.ObservedAtMonotonicSeconds,
+                    MetaLinkReadiness.Faulted,
+                    $"Application monotonic clock failed: {exception.Message} Reset LTB and inspect clock diagnostics.");
+                CloseNative();
+                return _latest;
             }
 
             try
             {
+                if (_session == IntPtr.Zero)
+                {
+                    if (now < _nextAttemptSeconds && _lastFailure is not null)
+                    {
+                        _latest = FailureSnapshot(
+                            _sequence,
+                            now,
+                            _lastFailure.Readiness,
+                            $"{_lastFailure.Diagnostic} Retry is delayed by the reconnect policy.");
+                        return _latest;
+                    }
+
+                    var connectionFailure = TryConnect(now);
+                    if (connectionFailure is not null)
+                    {
+                        _latest = FailureSnapshot(
+                            _sequence,
+                            now,
+                            connectionFailure.Readiness,
+                            connectionFailure.Diagnostic);
+                        return _latest;
+                    }
+                }
+
                 _latest = PollConnected(now);
                 return _latest;
             }
-            catch (Exception exception) when (
-                exception is InvalidOperationException or
-                ExternalException or
-                ArgumentException or
-                OverflowException)
+            catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 var failure = new OvrRuntimeLoadFailure(
-                    MetaLinkReadiness.RuntimeIncompatible,
-                    $"LibOVR polling failed: {exception.Message}");
-                ScheduleFailure(now, failure);
-                CloseNative();
+                    MetaLinkReadiness.Faulted,
+                    $"LibOVR polling failed unexpectedly: {exception.Message} Reset LTB and inspect runtime diagnostics.");
                 _latest = FailureSnapshot(
                     _sequence,
                     now,
                     failure.Readiness,
                     failure.Diagnostic);
+                ScheduleFailure(now, failure);
+                CloseNative();
                 return _latest;
             }
         }
@@ -133,6 +143,11 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
         lock (_sync)
         {
             ThrowIfDisposed();
+            _latest = FailureSnapshot(
+                _sequence,
+                _latest.ObservedAtMonotonicSeconds,
+                MetaLinkReadiness.RuntimeStopped,
+                "Meta Link runtime was reset and inputs were neutralized. Poll to reconnect.");
             CloseNative();
             _clockMapper.Reset();
             _consecutiveFailures = 0;
@@ -160,8 +175,8 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
         if (!_apiFactory.TryCreate(out var api, out var loadFailure))
         {
             var failure = loadFailure ?? new OvrRuntimeLoadFailure(
-                MetaLinkReadiness.RuntimeIncompatible,
-                "Meta runtime factory did not provide a diagnostic.");
+                MetaLinkReadiness.Faulted,
+                "Meta runtime factory did not provide a diagnostic. Restart LTB and inspect runtime diagnostics.");
             ScheduleFailure(now, failure);
             return failure;
         }
@@ -173,11 +188,11 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             var initializeResult = _api.Initialize(ref parameters);
             if (!OvrConstants.Succeeded(initializeResult))
             {
-                var failure = new OvrRuntimeLoadFailure(
-                    OvrConstants.IsVersionFailure(initializeResult)
-                        ? MetaLinkReadiness.RuntimeAbiUnsupported
-                        : MetaLinkReadiness.RuntimeIncompatible,
-                    _api.GetLastErrorDiagnostic(initializeResult));
+                var failure = NativeFailure(
+                    initializeResult,
+                    "LibOVR initialization",
+                    _api.GetLastErrorDiagnostic(initializeResult),
+                    MetaLinkReadiness.Faulted);
                 _api.Dispose();
                 _api = null;
                 ScheduleFailure(now, failure);
@@ -188,11 +203,11 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             var createResult = _api.Create(out _session, out _);
             if (!OvrConstants.Succeeded(createResult) || _session == IntPtr.Zero)
             {
-                var failure = new OvrRuntimeLoadFailure(
-                    OvrConstants.IsVersionFailure(createResult)
-                        ? MetaLinkReadiness.RuntimeAbiUnsupported
-                        : MetaLinkReadiness.RuntimeIncompatible,
-                    _api.GetLastErrorDiagnostic(createResult));
+                var failure = NativeFailure(
+                    createResult,
+                    "LibOVR session creation",
+                    _api.GetLastErrorDiagnostic(createResult),
+                    MetaLinkReadiness.Faulted);
                 CloseNative();
                 ScheduleFailure(now, failure);
                 return failure;
@@ -208,8 +223,8 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             exception is InvalidOperationException or ExternalException or ArgumentException)
         {
             var failure = new OvrRuntimeLoadFailure(
-                MetaLinkReadiness.RuntimeIncompatible,
-                $"LibOVR session initialization failed: {exception.Message}");
+                MetaLinkReadiness.Faulted,
+                $"LibOVR session initialization failed unexpectedly: {exception.Message} Reset LTB and inspect runtime diagnostics.");
             CloseNative();
             ScheduleFailure(now, failure);
             return failure;
@@ -224,17 +239,24 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             return FailConnected(observedAt, statusResult, "session status");
         }
 
-        if (sessionStatus.DisplayLost != 0 || sessionStatus.ShouldQuit != 0)
+        if (sessionStatus.DisplayLost != 0)
         {
-            var diagnostic = sessionStatus.DisplayLost != 0
-                ? "Meta runtime reports the Link display lost."
-                : "Meta runtime requested session shutdown.";
             var failure = new OvrRuntimeLoadFailure(
-                MetaLinkReadiness.RuntimeIncompatible,
-                diagnostic);
+                MetaLinkReadiness.HeadsetDisconnected,
+                "Meta runtime reports the Link display lost. Reconnect the Quest and start Link or Air Link.");
             ScheduleFailure(observedAt, failure);
             CloseNative();
-            return FailureSnapshot(_sequence, observedAt, failure.Readiness, diagnostic);
+            return FailureSnapshot(_sequence, observedAt, failure.Readiness, failure.Diagnostic);
+        }
+
+        if (sessionStatus.ShouldQuit != 0)
+        {
+            var failure = new OvrRuntimeLoadFailure(
+                MetaLinkReadiness.RuntimeStopped,
+                "Meta runtime requested session shutdown. Restart Meta Horizon Link, then retry.");
+            ScheduleFailure(observedAt, failure);
+            CloseNative();
+            return FailureSnapshot(_sequence, observedAt, failure.Readiness, failure.Diagnostic);
         }
 
         if (sessionStatus.HmdPresent == 0)
@@ -242,8 +264,17 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             return FailureSnapshot(
                 _sequence,
                 observedAt,
-                MetaLinkReadiness.LinkNotConnected,
-                "Meta runtime is available, but no Quest Link or Air Link headset is connected.");
+                MetaLinkReadiness.HeadsetDisconnected,
+                "Meta runtime is available, but no Quest is connected. Connect the headset and start Link or Air Link.");
+        }
+
+        if (sessionStatus.HmdMounted == 0)
+        {
+            return FailureSnapshot(
+                _sequence,
+                observedAt,
+                MetaLinkReadiness.ControllersUnavailable,
+                "Quest Link is connected, but the headset or Touch controllers appear asleep. Wake the headset and both controllers.");
         }
 
         var appBefore = ReadClock();
@@ -258,23 +289,24 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             OvrConstants.ControllerTouch,
             out var input);
 
-        if (sessionStatus.HmdMounted == 0)
-        {
-            return FailureSnapshot(
-                _sequence,
-                observedAt,
-                MetaLinkReadiness.ControllersUnavailable,
-                "Quest Link is connected, but the headset appears unmounted or asleep; Touch availability is heuristic.");
-        }
-
         if (!OvrConstants.Succeeded(inputResult))
         {
-            var diagnostic = _api.GetLastErrorDiagnostic(inputResult);
+            var failure = NativeFailure(
+                inputResult,
+                "Touch input query",
+                _api.GetLastErrorDiagnostic(inputResult),
+                MetaLinkReadiness.ControllersUnavailable);
+            if (failure.Readiness != MetaLinkReadiness.ControllersUnavailable)
+            {
+                ScheduleFailure(observedAt, failure);
+                CloseNative();
+            }
+
             return FailureSnapshot(
                 _sequence,
                 observedAt,
-                MetaLinkReadiness.ControllersUnavailable,
-                $"Touch input state is unavailable: {diagnostic}");
+                failure.Readiness,
+                failure.Diagnostic);
         }
 
         var left = MapHand(MetaLinkHand.Left, tracking, input, controllerTypes);
@@ -287,13 +319,14 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
         int result,
         string operation)
     {
-        var diagnostic = $"LibOVR {operation} failed: {_api!.GetLastErrorDiagnostic(result)}";
-        var failure = new OvrRuntimeLoadFailure(
-            MetaLinkReadiness.RuntimeIncompatible,
-            diagnostic);
+        var failure = NativeFailure(
+            result,
+            $"LibOVR {operation}",
+            _api!.GetLastErrorDiagnostic(result),
+            MetaLinkReadiness.Faulted);
         ScheduleFailure(observedAt, failure);
         CloseNative();
-        return FailureSnapshot(_sequence, observedAt, failure.Readiness, diagnostic);
+        return FailureSnapshot(_sequence, observedAt, failure.Readiness, failure.Diagnostic);
     }
 
     private MetaLinkHandSnapshot MapHand(
@@ -314,14 +347,44 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             return new MetaLinkHandSnapshot(
                 hand,
                 MetaLinkReadiness.ControllersUnavailable,
-                diagnostic);
+                $"{diagnostic} Wake and move the {hand} Touch controller, then retry.");
         }
 
         return new MetaLinkHandSnapshot(
             hand,
-            MetaLinkReadiness.InputsLive,
+            MetaLinkReadiness.Ready,
             diagnostic,
             snapshot);
+    }
+
+    private static OvrRuntimeLoadFailure NativeFailure(
+        int result,
+        string operation,
+        string nativeDiagnostic,
+        MetaLinkReadiness fallback)
+    {
+        var readiness = OvrConstants.IsVersionFailure(result)
+            ? MetaLinkReadiness.AbiUnavailable
+            : OvrConstants.IsRuntimeStoppedFailure(result)
+                ? MetaLinkReadiness.RuntimeStopped
+                : OvrConstants.IsHeadsetDisconnectedFailure(result)
+                    ? MetaLinkReadiness.HeadsetDisconnected
+                    : fallback;
+        var remediation = readiness switch
+        {
+            MetaLinkReadiness.AbiUnavailable =>
+                "Repair or update Meta Horizon Link to a LibOVR ABI compatible with SDK 32.0.0.",
+            MetaLinkReadiness.RuntimeStopped =>
+                "Start or restart the Meta Horizon Link runtime service, then retry.",
+            MetaLinkReadiness.HeadsetDisconnected =>
+                "Connect the Quest and start Link or Air Link, then retry.",
+            MetaLinkReadiness.ControllersUnavailable =>
+                "Wake and move both Touch controllers, then retry.",
+            _ => "Reset LTB and inspect the Meta runtime diagnostics before retrying.",
+        };
+        return new OvrRuntimeLoadFailure(
+            readiness,
+            $"{operation} failed: {nativeDiagnostic} {remediation}");
     }
 
     private void ScheduleFailure(double now, OvrRuntimeLoadFailure failure)
@@ -374,8 +437,18 @@ public sealed class MetaLinkRuntime : IMetaLinkRuntime, IMetaLinkControllerSourc
             }
         }
 
-        api.Dispose();
-        _api = null;
+        try
+        {
+            api.Dispose();
+        }
+        catch (Exception)
+        {
+            // The latest snapshot is neutral before cleanup; never restore stale input.
+        }
+        finally
+        {
+            _api = null;
+        }
     }
 
     private static MetaLinkRuntimeSnapshot FailureSnapshot(

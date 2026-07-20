@@ -47,13 +47,27 @@ internal static class OvrConstants
     internal const uint TouchLThumbUp = 0x00004000;
 
     internal const int ErrorUnsupported = -1009;
+    internal const int ErrorNotInitialized = -1004;
+    internal const int ErrorServiceError = -1006;
+    internal const int ErrorNoHmd = -1007;
+    internal const int ErrorDeviceUnavailable = -1010;
     internal const int ErrorLibVersion = -3002;
+    internal const int ErrorServiceConnection = -3003;
     internal const int ErrorServiceVersion = -3004;
+    internal const int ErrorServerStart = -3007;
 
     internal static bool Succeeded(int result) => result >= 0;
 
     internal static bool IsVersionFailure(int result) =>
         result is ErrorUnsupported or ErrorLibVersion or ErrorServiceVersion;
+
+    internal static bool IsRuntimeStoppedFailure(int result) =>
+        result is ErrorNotInitialized or
+        ErrorServiceError or
+        ErrorServiceConnection or
+        ErrorServerStart;
+
+    internal static bool IsHeadsetDisconnectedFailure(int result) => result == ErrorNoHmd;
 }
 
 [StructLayout(LayoutKind.Explicit, Size = 1)]
