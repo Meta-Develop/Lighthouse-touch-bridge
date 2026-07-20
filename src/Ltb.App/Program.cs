@@ -38,7 +38,8 @@ internal static class Program
         Func<InternalDriverSessionOptions?, IInternalDriverSession> createInternalDriverSession,
         TextWriter output,
         TextWriter errorOutput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<IInternalDriverRemover>? createInternalDriverRemover = null)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(createInternalDriverSession);
@@ -76,6 +77,15 @@ internal static class Program
                 return await InternalDriverAsync(
                     createInternalDriverSession,
                     output,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            if (options.Command == AppCommand.RemoveDriver)
+            {
+                return await RemoveDriverAsync(
+                    createInternalDriverRemover ?? (static () => InternalDriverRemoval.Create()),
+                    output,
+                    errorOutput,
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -166,6 +176,42 @@ internal static class Program
         }
     }
 
+    private static async Task<int> RemoveDriverAsync(
+        Func<IInternalDriverRemover> createRemover,
+        TextWriter output,
+        TextWriter errorOutput,
+        CancellationToken cancellationToken)
+    {
+        await using var remover = createRemover() ?? throw new InvalidOperationException(
+            "The internal-driver remover factory returned null.");
+        output.WriteLine("Lighthouse Touch Bridge - Remove First-Party Driver Registration");
+        output.WriteLine("removal: transactional driver_ltb unregistration with verification and rollback");
+        output.WriteLine("scope: only the LTB driver path and LTB's recorded activateMultipleDrivers change");
+        try
+        {
+            var result = await remover.RemoveAsync(cancellationToken).ConfigureAwait(false);
+            output.WriteLine(
+                $"changed={result.Changed.ToString().ToLowerInvariant()} " +
+                $"restart_required={result.RestartRequired.ToString().ToLowerInvariant()}");
+            output.WriteLine($"diagnostic={result.Diagnostic}");
+            return 0;
+        }
+        catch (Ltb.Driver.SteamVrDriverLifecycleException exception)
+        {
+            errorOutput.WriteLine(
+                $"Driver removal failed ({exception.DiagnosticCode}): {exception.Message}");
+            return exception.DiagnosticCode ==
+                Ltb.Driver.SteamVrDriverDiagnosticCode.RollbackFailed
+                    ? 4
+                    : 2;
+        }
+        catch (InvalidDataException exception)
+        {
+            errorOutput.WriteLine($"Driver removal failed: {exception.Message}");
+            return 2;
+        }
+    }
+
     private static void WriteInternalDriverSnapshot(
         TextWriter output,
         InternalDriverSessionSnapshot snapshot)
@@ -180,8 +226,9 @@ internal static class Program
     private static void WriteLegacyWarning(TextWriter errorOutput, AppCommand command)
     {
         errorOutput.WriteLine(
-            $"WARNING: legacy-{LegacyCommandName(command)} is an unsupported legacy " +
-            "compile-only ALVR/VMT/TrackingOverrides-era path and is not part of production support.");
+            $"WARNING: legacy-{LegacyCommandName(command)} runs the unsupported legacy " +
+            "ALVR/VMT/TrackingOverrides-era path, retained only until the Windows exit gates pass " +
+            "and then scheduled for removal; it is not part of production support.");
     }
 
     private static string LegacyCommandName(AppCommand command) => command switch
@@ -1176,6 +1223,20 @@ internal sealed record AppCommandLineOptions(
             return true;
         }
 
+        if (command == AppCommand.RemoveDriver)
+        {
+            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified ||
+                wizardLiveOptionSpecified || dailyOptionSpecified)
+            {
+                error = "The remove-driver command accepts no options; " +
+                    "paths and runtime discovery are automatic.";
+                return false;
+            }
+
+            options = Empty with { Command = command };
+            return true;
+        }
+
         if (command == AppCommand.Devices)
         {
             if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified ||
@@ -1498,8 +1559,11 @@ internal sealed record AppCommandLineOptions(
         writer.WriteLine("Production usage (zero setup arguments):");
         writer.WriteLine("  dotnet run --project src/Ltb.App");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- run");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- remove-driver");
         writer.WriteLine("Production automatically discovers OpenVR, uses per-user LocalApplicationData settings/profiles, and stages driver_ltb beside the application.");
         writer.WriteLine("Production never requires ALVR, VMT slots, TrackingOverrides, or a steamvr.vrsettings path.");
+        writer.WriteLine("remove-driver transactionally unregisters driver_ltb using the registration receipt persisted at registration, restores the recorded prior activateMultipleDrivers state, verifies the result, and never modifies unrelated drivers.");
+        writer.WriteLine("remove-driver works after application restarts; a SteamVR restart completes the removal. Exit codes: 0 removed or nothing to remove, 2 refused/failed with rollback, 4 incomplete rollback.");
         writer.WriteLine();
         writer.WriteLine("Unsupported legacy compile-only commands (not part of production or release support):");
         writer.WriteLine("  dotnet run --project src/Ltb.App -- legacy-devices");
@@ -1542,6 +1606,7 @@ internal sealed record AppCommandLineOptions(
         command = value switch
         {
             "run" => AppCommand.InternalDriver,
+            "remove-driver" => AppCommand.RemoveDriver,
             "legacy-devices" => AppCommand.Devices,
             "legacy-record" => AppCommand.Record,
             "legacy-bridge" => AppCommand.Bridge,
@@ -1632,6 +1697,7 @@ internal sealed record AppCommandLineOptions(
 internal enum AppCommand
 {
     InternalDriver,
+    RemoveDriver,
     Devices,
     Record,
     Bridge,
