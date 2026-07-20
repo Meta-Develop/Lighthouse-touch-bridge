@@ -69,6 +69,18 @@ if(LTB_BUILD_TESTS)
     endif()
     add_test(NAME ltb_driver_core_tests COMMAND ltb_driver_core_tests)
 
+    add_executable(ltb_driver_retry_backoff_tests tests/retry_backoff_tests.cpp)
+    target_link_libraries(ltb_driver_retry_backoff_tests PRIVATE ltb_driver_core)
+    target_compile_features(ltb_driver_retry_backoff_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(
+            ltb_driver_retry_backoff_tests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(
+            ltb_driver_retry_backoff_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME ltb_driver_retry_backoff_tests COMMAND ltb_driver_retry_backoff_tests)
+
     add_executable(ltb_driver_build_identity_tests tests/build_identity_tests.cpp)
     target_link_libraries(ltb_driver_build_identity_tests PRIVATE ltb_driver_core)
     target_compile_features(ltb_driver_build_identity_tests PRIVATE cxx_std_20)

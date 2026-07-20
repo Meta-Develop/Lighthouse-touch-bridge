@@ -1,6 +1,7 @@
 #include "named_pipe_receiver.hpp"
 
 #include "ltb_driver/peer_session.hpp"
+#include "ltb_driver/retry_backoff.hpp"
 #include "monotonic_clock.hpp"
 
 #include <windows.h>
@@ -9,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <span>
 #include <string>
 #include <vector>
@@ -17,6 +19,35 @@ namespace ltb::driver::openvr {
 namespace {
 
 constexpr wchar_t kPipeName[] = LR"(\\.\pipe\lighthouse-touch-bridge-v1)";
+
+constexpr std::uint32_t kSetupRetryInitialDelayMs = 1'000;
+constexpr std::uint32_t kSetupRetryMaximumDelayMs = 30'000;
+
+void LogPipeSetupFailure(
+    const char* stage, DWORD error, std::uint32_t retry_delay_ms) noexcept {
+    char message[160];
+    std::snprintf(
+        message,
+        sizeof(message),
+        "driver_ltb: named pipe receiver: %s failed (Win32 error %lu); "
+        "retrying in %u ms\n",
+        stage,
+        static_cast<unsigned long>(error),
+        static_cast<unsigned>(retry_delay_ms));
+    OutputDebugStringA(message);
+}
+
+void WaitBeforeRetry(
+    std::uint32_t delay_ms, const std::atomic<bool>& stop_requested) noexcept {
+    constexpr std::uint32_t kSliceMs = 100;
+    std::uint32_t waited_ms = 0;
+    while (waited_ms < delay_ms && !stop_requested.load(std::memory_order_acquire)) {
+        const std::uint32_t remaining_ms = delay_ms - waited_ms;
+        const std::uint32_t slice_ms = remaining_ms < kSliceMs ? remaining_ms : kSliceMs;
+        Sleep(static_cast<DWORD>(slice_ms));
+        waited_ms += slice_ms;
+    }
+}
 
 class LocalHandle final {
 public:
@@ -189,10 +220,15 @@ void NamedPipeReceiver::Stop() noexcept {
 }
 
 void NamedPipeReceiver::Run() noexcept {
+    RetryBackoff setup_backoff(kSetupRetryInitialDelayMs, kSetupRetryMaximumDelayMs);
     while (!stop_requested_.load(std::memory_order_acquire)) {
         LocalMemory security_descriptor;
         if (!CurrentUserSecurityDescriptor(security_descriptor)) {
-            return;
+            const DWORD error = GetLastError();
+            const std::uint32_t retry_delay_ms = setup_backoff.NextDelayMilliseconds();
+            LogPipeSetupFailure("security descriptor setup", error, retry_delay_ms);
+            WaitBeforeRetry(retry_delay_ms, stop_requested_);
+            continue;
         }
         SECURITY_ATTRIBUTES security_attributes{};
         security_attributes.nLength = sizeof(security_attributes);
@@ -209,13 +245,22 @@ void NamedPipeReceiver::Run() noexcept {
             0,
             &security_attributes));
         if (!pipe.Valid()) {
-            return;
+            const DWORD error = GetLastError();
+            const std::uint32_t retry_delay_ms = setup_backoff.NextDelayMilliseconds();
+            LogPipeSetupFailure("CreateNamedPipeW", error, retry_delay_ms);
+            WaitBeforeRetry(retry_delay_ms, stop_requested_);
+            continue;
         }
 
         const LocalHandle connect_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!connect_event.Valid()) {
-            return;
+            const DWORD error = GetLastError();
+            const std::uint32_t retry_delay_ms = setup_backoff.NextDelayMilliseconds();
+            LogPipeSetupFailure("CreateEventW (connect event)", error, retry_delay_ms);
+            WaitBeforeRetry(retry_delay_ms, stop_requested_);
+            continue;
         }
+        setup_backoff.Reset();
         OVERLAPPED connect_overlapped{};
         connect_overlapped.hEvent = connect_event.Get();
         bool connected = ConnectNamedPipe(pipe.Get(), &connect_overlapped) != FALSE;
