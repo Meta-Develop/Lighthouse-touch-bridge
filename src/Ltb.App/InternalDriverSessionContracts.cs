@@ -332,7 +332,7 @@ public sealed record InternalDriverCaptureEvidence
         PositionValidityFraction = InternalDriverEvidenceValidation.RequireUnitInterval(
             positionValidityFraction,
             nameof(positionValidityFraction));
-        MotionAxisCoverage = InternalDriverEvidenceValidation.RequireFiniteNonnegative(
+        MotionAxisCoverage = InternalDriverEvidenceValidation.RequireUnitInterval(
             motionAxisCoverage,
             nameof(motionAxisCoverage));
         TotalRotationDegrees = InternalDriverEvidenceValidation.RequireFiniteNonnegative(
