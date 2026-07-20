@@ -10,11 +10,6 @@ namespace Ltb.Gui.ViewModels;
 /// </summary>
 public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 {
-    private const string UnavailableCalibrationMode =
-        "Not exposed by the current Ltb.App snapshot.";
-    private const string UnavailableCalibrationQuality =
-        "Not exposed by the current Ltb.App snapshot.";
-
     private readonly IInternalDriverSessionFactory _sessionFactory;
     private readonly Action<Action> _dispatch;
     private readonly object _lifecycleSync = new();
@@ -28,6 +23,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private IInternalDriverSession? _session;
     private CancellationTokenSource? _runCancellation;
     private TaskCompletionSource? _runCompletion;
+    private Task? _stopOperation;
+    private long _activeRunGeneration;
     private InternalDriverSessionState _currentPhase = InternalDriverSessionState.Stopped;
     private string _phaseText = "Stopped";
     private string _diagnostic = "Internal-driver session has not started.";
@@ -236,6 +233,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 _session = session;
                 _runCancellation = cancellation;
                 _runCompletion = completion;
+                _stopOperation = null;
+                _activeRunGeneration = generation;
                 _runActive = true;
             }
         }
@@ -250,7 +249,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         session.SnapshotChanged += snapshotHandler;
         _dispatch(() =>
         {
-            PresentGeneration(generation, session.CurrentSnapshot);
+            if (!PresentGeneration(generation, session.CurrentSnapshot))
+            {
+                return;
+            }
+
             LastError = "None";
             IsRunning = true;
             ActionButtonText = "Stop";
@@ -291,6 +294,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                     _session = null;
                     _runCancellation = null;
                     _runCompletion = null;
+                    _activeRunGeneration = 0;
                     _runActive = false;
                 }
             }
@@ -298,7 +302,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             var finalSnapshot = session.CurrentSnapshot;
             _dispatch(() =>
             {
-                PresentGeneration(generation, finalSnapshot);
+                if (!PresentGeneration(generation, finalSnapshot))
+                {
+                    return;
+                }
+
                 var finalError = disposeError ?? runError;
                 if (finalError is not null)
                 {
@@ -314,23 +322,39 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    public async Task StopAsync()
+    public Task StopAsync()
     {
         IInternalDriverSession? session;
         CancellationTokenSource? cancellation;
         Task? completion;
+        long generation;
         lock (_lifecycleSync)
         {
+            if (_stopOperation is not null)
+            {
+                return _stopOperation;
+            }
+
             session = _session;
             cancellation = _runCancellation;
             completion = _runCompletion?.Task;
-        }
+            generation = _activeRunGeneration;
+            if (session is null || completion is null)
+            {
+                return Task.CompletedTask;
+            }
 
-        if (session is null || completion is null)
-        {
-            return;
+            _stopOperation = StopRunAsync(session, cancellation, completion, generation);
+            return _stopOperation;
         }
+    }
 
+    private async Task StopRunAsync(
+        IInternalDriverSession session,
+        CancellationTokenSource? cancellation,
+        Task completion,
+        long generation)
+    {
         try
         {
             cancellation?.Cancel();
@@ -353,7 +377,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         await completion.ConfigureAwait(false);
         if (stopError is not null)
         {
-            DispatchError(stopError);
+            DispatchError(stopError, generation);
         }
     }
 
@@ -384,18 +408,19 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private void DispatchSnapshot(long generation, InternalDriverSessionSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        _dispatch(() => PresentGeneration(generation, snapshot));
+        _dispatch(() => _ = PresentGeneration(generation, snapshot));
     }
 
-    private void PresentGeneration(long generation, InternalDriverSessionSnapshot snapshot)
+    private bool PresentGeneration(long generation, InternalDriverSessionSnapshot snapshot)
     {
         if (generation < _presentedRunGeneration)
         {
-            return;
+            return false;
         }
 
         _presentedRunGeneration = generation;
         ApplySnapshot(snapshot);
+        return true;
     }
 
     private void ApplySnapshot(InternalDriverSessionSnapshot snapshot)
@@ -415,8 +440,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             _ => "Waiting",
         };
 
-        LeftHand.Update(snapshot.Left, snapshot.State);
-        RightHand.Update(snapshot.Right, snapshot.State);
+        LeftHand.Update(snapshot.Left);
+        RightHand.Update(snapshot.Right);
         UpdateRows(snapshot);
         UpdateFeed(snapshot);
     }
@@ -424,6 +449,12 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private void UpdateRows(InternalDriverSessionSnapshot snapshot)
     {
         var readiness = snapshot.Readiness;
+        var driver = snapshot.Driver;
+        var registrationReady = readiness.DriverRegistered && driver is not null &&
+            !snapshot.RestartRequired;
+        var loadedDriverReady = readiness.DriverLoaded && driver?.ExactLoadedBuildReady == true &&
+            !snapshot.RestartRequired;
+        var hmdReady = snapshot.LighthouseHmd is not null && !snapshot.RestartRequired;
         Row("platform").Update(
             readiness.PlatformSupported,
             readiness.PlatformSupported
@@ -435,16 +466,16 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 ? "The typed App snapshot reports SteamVR running."
                 : "Start SteamVR and wait for its runtime to become available.");
         Row("driver-registration").Update(
-            readiness.DriverRegistered && !snapshot.RestartRequired,
+            registrationReady,
             snapshot.RestartRequired
                 ? "Registration changed; restart SteamVR before this gate can be ready."
-                : "Registration readiness is supplied by Ltb.App.",
+                : driver is { } staged
+                    ? $"Staged first-party driver build: {staged.StagedBuildIdentity}."
+                    : "No staged first-party driver evidence is available.",
             snapshot.RestartRequired ? "Restart required" : null);
         Row("loaded-driver").Update(
-            readiness.DriverLoaded && !snapshot.RestartRequired,
-            readiness.DriverLoaded
-                ? "Ltb.App reports its loaded controller topology/build gate passed; exact identity is not separately exposed."
-                : "Wait for Ltb.App to verify the first-party loaded-driver topology.",
+            loadedDriverReady,
+            DriverDetail(driver),
             snapshot.RestartRequired ? "Restart required" : null);
         Row("meta-link").Update(
             readiness.MetaBothHandsReady,
@@ -458,8 +489,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             snapshot.Right.MetaInputsValid,
             $"Meta state: {snapshot.Right.MetaReadiness}; inputs valid: {Flag(snapshot.Right.MetaInputsValid)}.");
         Row("lighthouse-hmd").Update(
-            readiness.DriverLoaded && !snapshot.RestartRequired,
-            "HMD identity is not separately exposed by the App snapshot; this row follows the typed loaded-readiness gate that includes topology validation.",
+            hmdReady,
+            HmdDetail(snapshot.LighthouseHmd),
             snapshot.RestartRequired ? "Restart required" : null);
         Row("left-tracker").Update(
             readiness.TwoDistinctTrackersReady &&
@@ -473,8 +504,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             $"{TrackerDetail(snapshot.Right)} Distinct-pair gate: {Flag(readiness.TwoDistinctTrackersReady)}.");
         Row("profiles").Update(
             readiness.ProfilesReady,
-            $"Left: {snapshot.Left.ProfileReadiness}; right: {snapshot.Right.ProfileReadiness}. " +
-            "Selected calibration mode and quality metrics are not exposed by the current App snapshot.");
+            $"Left: {ProfileDetail(snapshot.Left)} Right: {ProfileDetail(snapshot.Right)}");
         Row("feed").Update(
             readiness.FeedReady,
             $"Feed state: {snapshot.Feed.Readiness}; reconnect attempts: {snapshot.Feed.ReconnectAttempts}.");
@@ -498,9 +528,14 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     private ReadinessRowViewModel Row(string key) => _rowByKey[key];
 
-    private void DispatchError(string message) =>
+    private void DispatchError(string message, long? generation = null) =>
         _dispatch(() =>
         {
+            if (generation is { } expected && expected < _presentedRunGeneration)
+            {
+                return;
+            }
+
             LastError = message;
             OverallStatus = "Action required";
         });
@@ -508,6 +543,57 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private static string TrackerDetail(InternalDriverHandSnapshot hand) =>
         $"Serial: {hand.TrackerSerial ?? "not assigned"}; connected: {Flag(hand.TrackerConnected)}; " +
         $"tracked: {Flag(hand.TrackerTracked)}; pose age: {FormatAge(hand.PoseAge)}.";
+
+    private static string DriverDetail(InternalDriverDriverEvidence? driver)
+    {
+        if (driver is null)
+        {
+            return "No staged or loaded first-party driver evidence is available.";
+        }
+
+        if (driver.LeftController is not { } left ||
+            driver.RightController is not { } right)
+        {
+            return $"Staged build: {driver.StagedBuildIdentity}; exact loaded left/right controller evidence is unavailable.";
+        }
+
+        return $"Staged build: {driver.StagedBuildIdentity}; " +
+            $"left serial: {left.SerialNumber}, runtime build: {left.RuntimeBuildIdentity}; " +
+            $"right serial: {right.SerialNumber}, runtime build: {right.RuntimeBuildIdentity}.";
+    }
+
+    private static string HmdDetail(InternalDriverLighthouseHmdEvidence? hmd)
+    {
+        if (hmd is null)
+        {
+            return "No validated Lighthouse HMD evidence is available.";
+        }
+
+        return $"Stable ID: {hmd.StableDeviceId}; device path: {hmd.DevicePath}; " +
+            $"driver: {hmd.DriverId}; tracking system: {Optional(hmd.TrackingSystemName)}; " +
+            $"manufacturer: {Optional(hmd.ManufacturerName)}; model: {Optional(hmd.ModelNumber)}.";
+    }
+
+    private static string ProfileDetail(InternalDriverHandSnapshot hand) =>
+        hand.Calibration is { } calibration
+            ? $"{hand.ProfileReadiness}, {FormatCalibrationMode(calibration.SelectedMode)}, " +
+              $"created {FormatCreated(calibration.CreatedUtc)}."
+            : $"{hand.ProfileReadiness}, no retained calibration evidence.";
+
+    private static string Optional(string? value) => value ?? "unavailable";
+
+    private static string FormatCalibrationMode(InternalDriverCalibrationMode mode) => mode switch
+    {
+        InternalDriverCalibrationMode.RotationOnly => "Rotation only",
+        InternalDriverCalibrationMode.FullSixDof => "Full 6DoF",
+        _ => mode.ToString(),
+    };
+
+    private static string FormatCreated(DateTimeOffset createdUtc) =>
+        createdUtc.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+
+    private static string FormatPercent(double value) =>
+        (value * 100d).ToString("F1", CultureInfo.InvariantCulture) + "%";
 
     private static string FormatAge(TimeSpan? age) => age is { } value
         ? string.Create(CultureInfo.InvariantCulture, $"{value.TotalMilliseconds:F1} ms")
@@ -536,33 +622,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         return new string([.. characters]);
     }
 
-    internal static double GlobalCalibrationPhaseEstimateFor(
-        InternalDriverSessionState state,
-        InternalDriverProfileReadiness profileReadiness)
-    {
-        if (profileReadiness is InternalDriverProfileReadiness.Reused or
-            InternalDriverProfileReadiness.Calibrated)
-        {
-            return 1d;
-        }
-
-        return state switch
-        {
-            InternalDriverSessionState.Recording => 0.15d,
-            InternalDriverSessionState.Association => 0.30d,
-            InternalDriverSessionState.TimeAlignment => 0.45d,
-            InternalDriverSessionState.RotationSolve => 0.60d,
-            InternalDriverSessionState.TranslationAttempt => 0.72d,
-            InternalDriverSessionState.Validation => 0.85d,
-            InternalDriverSessionState.SaveProfile => 0.95d,
-            _ => 0d,
-        };
-    }
-
     public sealed class InternalDriverHandViewModel : ObservableObject
     {
-        private readonly string _calibrationMode = UnavailableCalibrationMode;
-        private readonly string _calibrationQuality = UnavailableCalibrationQuality;
         private string _trackerSerial = "Not assigned";
         private string _trackerStatus = "Disconnected";
         private string _poseStatus = "Unavailable";
@@ -572,7 +633,18 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         private string _publishingStatus = "Neutral";
         private string _neutralReason = "Session stopped";
         private string _diagnostic = "No active hand session.";
-        private double _globalCalibrationPhaseEstimate;
+        private string _calibrationMode = "Unavailable";
+        private string _calibrationReason = "Unavailable";
+        private string _calibrationLag = "Unavailable";
+        private string _calibrationQuality = "Unavailable";
+        private string _calibrationCreated = "Unavailable";
+        private string _captureSamples = "Unavailable";
+        private string _captureValidity = "Unavailable";
+        private string _captureMotion = "Unavailable";
+        private double _rotationProgress;
+        private string _rotationProgressStatus = "Unavailable";
+        private double _positionProgress;
+        private string _positionProgressStatus = "Unavailable";
 
         internal InternalDriverHandViewModel(string title)
         {
@@ -635,23 +707,79 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             private set => SetProperty(ref _diagnostic, value);
         }
 
-        /// <summary>
-        /// A session-wide phase estimate rendered in both hand cards. This is
-        /// not measured per-hand progress or motion-coverage evidence.
-        /// </summary>
-        public double GlobalCalibrationPhaseEstimate
+        public string CalibrationMode
         {
-            get => _globalCalibrationPhaseEstimate;
-            private set => SetProperty(ref _globalCalibrationPhaseEstimate, value);
+            get => _calibrationMode;
+            private set => SetProperty(ref _calibrationMode, value);
         }
 
-        public string CalibrationMode => _calibrationMode;
+        public string CalibrationReason
+        {
+            get => _calibrationReason;
+            private set => SetProperty(ref _calibrationReason, value);
+        }
 
-        public string CalibrationQuality => _calibrationQuality;
+        public string CalibrationLag
+        {
+            get => _calibrationLag;
+            private set => SetProperty(ref _calibrationLag, value);
+        }
 
-        internal void Update(
-            InternalDriverHandSnapshot snapshot,
-            InternalDriverSessionState state)
+        public string CalibrationQuality
+        {
+            get => _calibrationQuality;
+            private set => SetProperty(ref _calibrationQuality, value);
+        }
+
+        public string CalibrationCreated
+        {
+            get => _calibrationCreated;
+            private set => SetProperty(ref _calibrationCreated, value);
+        }
+
+        public string CaptureSamples
+        {
+            get => _captureSamples;
+            private set => SetProperty(ref _captureSamples, value);
+        }
+
+        public string CaptureValidity
+        {
+            get => _captureValidity;
+            private set => SetProperty(ref _captureValidity, value);
+        }
+
+        public string CaptureMotion
+        {
+            get => _captureMotion;
+            private set => SetProperty(ref _captureMotion, value);
+        }
+
+        public double RotationProgress
+        {
+            get => _rotationProgress;
+            private set => SetProperty(ref _rotationProgress, value);
+        }
+
+        public string RotationProgressStatus
+        {
+            get => _rotationProgressStatus;
+            private set => SetProperty(ref _rotationProgressStatus, value);
+        }
+
+        public double PositionProgress
+        {
+            get => _positionProgress;
+            private set => SetProperty(ref _positionProgress, value);
+        }
+
+        public string PositionProgressStatus
+        {
+            get => _positionProgressStatus;
+            private set => SetProperty(ref _positionProgressStatus, value);
+        }
+
+        internal void Update(InternalDriverHandSnapshot snapshot)
         {
             ArgumentNullException.ThrowIfNull(snapshot);
             TrackerSerial = snapshot.TrackerSerial ?? "Not assigned";
@@ -667,8 +795,75 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             PublishingStatus = snapshot.IsPublishing ? "Publishing" : "Neutral";
             NeutralReason = SplitPascalCase(snapshot.NeutralReason.ToString());
             Diagnostic = snapshot.Diagnostic;
-            GlobalCalibrationPhaseEstimate =
-                GlobalCalibrationPhaseEstimateFor(state, snapshot.ProfileReadiness);
+            UpdateCalibration(snapshot.Calibration);
+            UpdateCapture(snapshot.Capture);
         }
+
+        private void UpdateCalibration(InternalDriverCalibrationEvidence? calibration)
+        {
+            if (calibration is null)
+            {
+                CalibrationMode = "Unavailable";
+                CalibrationReason = "Unavailable";
+                CalibrationLag = "Unavailable";
+                CalibrationQuality = "Unavailable";
+                CalibrationCreated = "Unavailable";
+                return;
+            }
+
+            var quality = calibration.Quality;
+            var positionRms = quality.PositionRmsMillimeters is { } position
+                ? position.ToString("F2", CultureInfo.InvariantCulture) + " mm"
+                : "unavailable";
+            var translationCondition = quality.TranslationConditionNumber is { } condition
+                ? condition.ToString("F2", CultureInfo.InvariantCulture)
+                : "unavailable";
+            CalibrationMode = FormatCalibrationMode(calibration.SelectedMode);
+            CalibrationReason = calibration.SelectionReason;
+            CalibrationLag = calibration.EstimatedLagMilliseconds.ToString(
+                "F1",
+                CultureInfo.InvariantCulture) + " ms";
+            CalibrationQuality = string.Create(
+                CultureInfo.InvariantCulture,
+                $"rotation RMS {quality.RotationRmsDegrees:F2} deg; " +
+                $"position RMS {positionRms}; translation condition {translationCondition}; " +
+                $"inliers {FormatPercent(quality.InlierRatio)}");
+            CalibrationCreated = FormatCreated(calibration.CreatedUtc);
+        }
+
+        private void UpdateCapture(InternalDriverCaptureEvidence? capture)
+        {
+            if (capture is null)
+            {
+                CaptureSamples = "Unavailable";
+                CaptureValidity = "Unavailable";
+                CaptureMotion = "Unavailable";
+                RotationProgress = 0d;
+                RotationProgressStatus = "Unavailable";
+                PositionProgress = 0d;
+                PositionProgressStatus = "Unavailable";
+                return;
+            }
+
+            CaptureSamples = capture.SampleCount.ToString(CultureInfo.InvariantCulture);
+            CaptureValidity = $"tracking {FormatPercent(capture.TrackingValidityFraction)}; " +
+                $"orientation {FormatPercent(capture.OrientationValidityFraction)}; " +
+                $"position {FormatPercent(capture.PositionValidityFraction)}";
+            CaptureMotion = string.Create(
+                CultureInfo.InvariantCulture,
+                $"axis coverage {FormatPercent(capture.MotionAxisCoverage)}; " +
+                $"total rotation {capture.TotalRotationDegrees:F1} deg");
+            RotationProgress = capture.RotationProgress;
+            RotationProgressStatus = FormatCaptureProgress(
+                capture.RotationProgress,
+                capture.RotationReady);
+            PositionProgress = capture.PositionProgress;
+            PositionProgressStatus = FormatCaptureProgress(
+                capture.PositionProgress,
+                capture.PositionReady);
+        }
+
+        private static string FormatCaptureProgress(double progress, bool ready) =>
+            $"{FormatPercent(progress)} - {(ready ? "ready" : "collecting")}";
     }
 }

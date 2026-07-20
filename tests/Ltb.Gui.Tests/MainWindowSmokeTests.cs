@@ -52,17 +52,44 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<TextBlock>("RightPoseText"));
             Assert.NotNull(window.FindControl<TextBlock>("LeftNeutralReasonText"));
             Assert.NotNull(window.FindControl<TextBlock>("RightNeutralReasonText"));
-            Assert.NotNull(window.FindControl<ProgressBar>("LeftCalibrationProgress"));
-            Assert.NotNull(window.FindControl<ProgressBar>("RightCalibrationProgress"));
-            Assert.Equal(
-                2,
-                window.GetVisualDescendants()
-                    .OfType<TextBlock>()
-                    .Count(text => text.Text == "Global calibration phase estimate (shared)"));
             Assert.NotNull(window.FindControl<TextBlock>("LeftCalibrationModeText"));
             Assert.NotNull(window.FindControl<TextBlock>("RightCalibrationModeText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCalibrationReasonText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCalibrationReasonText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCalibrationLagText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCalibrationLagText"));
             Assert.NotNull(window.FindControl<TextBlock>("LeftCalibrationQualityText"));
             Assert.NotNull(window.FindControl<TextBlock>("RightCalibrationQualityText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCalibrationCreatedText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCalibrationCreatedText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCaptureSamplesText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCaptureSamplesText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCaptureValidityText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCaptureValidityText"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftCaptureMotionText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightCaptureMotionText"));
+            Assert.NotNull(window.FindControl<ProgressBar>("LeftRotationProgress"));
+            Assert.NotNull(window.FindControl<ProgressBar>("RightRotationProgress"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftRotationProgressText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightRotationProgressText"));
+            Assert.NotNull(window.FindControl<ProgressBar>("LeftPositionProgress"));
+            Assert.NotNull(window.FindControl<ProgressBar>("RightPositionProgress"));
+            Assert.NotNull(window.FindControl<TextBlock>("LeftPositionProgressText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightPositionProgressText"));
+            var visibleText = window.GetVisualDescendants()
+                .OfType<TextBlock>()
+                .Select(text => text.Text ?? string.Empty)
+                .ToArray();
+            Assert.Equal(2, visibleText.Count(text => text == "Calibration evidence"));
+            Assert.Equal(2, visibleText.Count(text => text == "Capture evidence"));
+            Assert.Equal(2, visibleText.Count(text => text == "Rotation progress"));
+            Assert.Equal(2, visibleText.Count(text => text == "Position progress"));
+            Assert.DoesNotContain(
+                visibleText,
+                text => text.Contains("Global calibration phase estimate", StringComparison.Ordinal));
+            Assert.DoesNotContain(
+                visibleText,
+                text => text.Contains("Not exposed", StringComparison.Ordinal));
             Assert.NotNull(window.FindControl<TextBlock>("FeedStateText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedSessionText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedSequenceText"));

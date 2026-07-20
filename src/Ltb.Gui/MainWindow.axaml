@@ -114,17 +114,43 @@
               <TextBlock x:Name="LeftNeutralReasonText"
                          Text="{Binding LeftHand.NeutralReason, StringFormat='Neutral reason: {0}'}"
                          TextWrapping="Wrap" />
-              <TextBlock Text="Global calibration phase estimate (shared)" />
-              <ProgressBar x:Name="LeftCalibrationProgress"
-                           Minimum="0"
-                           Maximum="1"
-                           Value="{Binding LeftHand.GlobalCalibrationPhaseEstimate}" />
+              <TextBlock FontWeight="Bold" Text="Calibration evidence" />
               <TextBlock x:Name="LeftCalibrationModeText"
                          Text="{Binding LeftHand.CalibrationMode, StringFormat='Mode: {0}'}"
                          TextWrapping="Wrap" />
+              <TextBlock x:Name="LeftCalibrationReasonText"
+                         Text="{Binding LeftHand.CalibrationReason, StringFormat='Selection reason: {0}'}"
+                         TextWrapping="Wrap" />
+              <TextBlock x:Name="LeftCalibrationLagText"
+                         Text="{Binding LeftHand.CalibrationLag, StringFormat='Estimated lag: {0}'}" />
               <TextBlock x:Name="LeftCalibrationQualityText"
                          Text="{Binding LeftHand.CalibrationQuality, StringFormat='Quality: {0}'}"
                          TextWrapping="Wrap" />
+              <TextBlock x:Name="LeftCalibrationCreatedText"
+                         Text="{Binding LeftHand.CalibrationCreated, StringFormat='Created: {0}'}" />
+              <TextBlock FontWeight="Bold" Text="Capture evidence" />
+              <TextBlock x:Name="LeftCaptureSamplesText"
+                         Text="{Binding LeftHand.CaptureSamples, StringFormat='Samples: {0}'}" />
+              <TextBlock x:Name="LeftCaptureValidityText"
+                         Text="{Binding LeftHand.CaptureValidity, StringFormat='Validity: {0}'}"
+                         TextWrapping="Wrap" />
+              <TextBlock x:Name="LeftCaptureMotionText"
+                         Text="{Binding LeftHand.CaptureMotion, StringFormat='Motion: {0}'}"
+                         TextWrapping="Wrap" />
+              <TextBlock Text="Rotation progress" />
+              <ProgressBar x:Name="LeftRotationProgress"
+                           Minimum="0"
+                           Maximum="1"
+                           Value="{Binding LeftHand.RotationProgress}" />
+              <TextBlock x:Name="LeftRotationProgressText"
+                         Text="{Binding LeftHand.RotationProgressStatus}" />
+              <TextBlock Text="Position progress" />
+              <ProgressBar x:Name="LeftPositionProgress"
+                           Minimum="0"
+                           Maximum="1"
+                           Value="{Binding LeftHand.PositionProgress}" />
+              <TextBlock x:Name="LeftPositionProgressText"
+                         Text="{Binding LeftHand.PositionProgressStatus}" />
               <TextBlock Text="{Binding LeftHand.Diagnostic}"
                          TextWrapping="Wrap" />
             </StackPanel>
@@ -149,17 +175,43 @@
               <TextBlock x:Name="RightNeutralReasonText"
                          Text="{Binding RightHand.NeutralReason, StringFormat='Neutral reason: {0}'}"
                          TextWrapping="Wrap" />
-              <TextBlock Text="Global calibration phase estimate (shared)" />
-              <ProgressBar x:Name="RightCalibrationProgress"
-                           Minimum="0"
-                           Maximum="1"
-                           Value="{Binding RightHand.GlobalCalibrationPhaseEstimate}" />
+              <TextBlock FontWeight="Bold" Text="Calibration evidence" />
               <TextBlock x:Name="RightCalibrationModeText"
                          Text="{Binding RightHand.CalibrationMode, StringFormat='Mode: {0}'}"
                          TextWrapping="Wrap" />
+              <TextBlock x:Name="RightCalibrationReasonText"
+                         Text="{Binding RightHand.CalibrationReason, StringFormat='Selection reason: {0}'}"
+                         TextWrapping="Wrap" />
+              <TextBlock x:Name="RightCalibrationLagText"
+                         Text="{Binding RightHand.CalibrationLag, StringFormat='Estimated lag: {0}'}" />
               <TextBlock x:Name="RightCalibrationQualityText"
                          Text="{Binding RightHand.CalibrationQuality, StringFormat='Quality: {0}'}"
                          TextWrapping="Wrap" />
+              <TextBlock x:Name="RightCalibrationCreatedText"
+                         Text="{Binding RightHand.CalibrationCreated, StringFormat='Created: {0}'}" />
+              <TextBlock FontWeight="Bold" Text="Capture evidence" />
+              <TextBlock x:Name="RightCaptureSamplesText"
+                         Text="{Binding RightHand.CaptureSamples, StringFormat='Samples: {0}'}" />
+              <TextBlock x:Name="RightCaptureValidityText"
+                         Text="{Binding RightHand.CaptureValidity, StringFormat='Validity: {0}'}"
+                         TextWrapping="Wrap" />
+              <TextBlock x:Name="RightCaptureMotionText"
+                         Text="{Binding RightHand.CaptureMotion, StringFormat='Motion: {0}'}"
+                         TextWrapping="Wrap" />
+              <TextBlock Text="Rotation progress" />
+              <ProgressBar x:Name="RightRotationProgress"
+                           Minimum="0"
+                           Maximum="1"
+                           Value="{Binding RightHand.RotationProgress}" />
+              <TextBlock x:Name="RightRotationProgressText"
+                         Text="{Binding RightHand.RotationProgressStatus}" />
+              <TextBlock Text="Position progress" />
+              <ProgressBar x:Name="RightPositionProgress"
+                           Minimum="0"
+                           Maximum="1"
+                           Value="{Binding RightHand.PositionProgress}" />
+              <TextBlock x:Name="RightPositionProgressText"
+                         Text="{Binding RightHand.PositionProgressStatus}" />
               <TextBlock Text="{Binding RightHand.Diagnostic}"
                          TextWrapping="Wrap" />
             </StackPanel>
