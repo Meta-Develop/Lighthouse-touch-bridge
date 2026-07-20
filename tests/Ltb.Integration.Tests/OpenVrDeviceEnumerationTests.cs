@@ -30,7 +30,8 @@ public sealed class OpenVrDeviceEnumerationTests
                         "Oculus",
                         "Miramar (Left Controller)",
                         "oculus_touch",
-                        "/drivers/oculus/resources/input/oculus_touch_profile.json")),
+                        "/drivers/oculus/resources/input/oculus_touch_profile.json",
+                        "driver-build-42")),
             ]);
         var enumerator = new OpenVrDeviceEnumeratorAdapter(runtime);
 
@@ -53,6 +54,7 @@ public sealed class OpenVrDeviceEnumerationTests
                 Assert.Equal(
                     "/drivers/oculus/resources/input/oculus_touch_profile.json",
                     controller.Metadata?.InputProfilePath);
+                Assert.Equal("driver-build-42", controller.Metadata?.DriverVersion);
                 Assert.True(controller.Capabilities.HasPosition);
                 Assert.Equal(
                     SteamVrControllerFamily.MetaTouch,
@@ -87,10 +89,20 @@ public sealed class OpenVrDeviceEnumerationTests
     }
 
     [Fact]
-    public void LegacyAndExtendedPublicConstructorAritiesRemainAvailable()
+    public void LegacyExtendedAndVersionedPublicConstructorAritiesRemainAvailable()
     {
         Assert.NotNull(typeof(SteamVrDeviceMetadata).GetConstructor(
         [
+            typeof(string),
+            typeof(string),
+            typeof(string),
+            typeof(string),
+            typeof(string),
+        ]));
+        Assert.NotNull(typeof(SteamVrDeviceMetadata).GetConstructor(
+        [
+            typeof(string),
+            typeof(string),
             typeof(string),
             typeof(string),
             typeof(string),
@@ -139,6 +151,14 @@ public sealed class OpenVrDeviceEnumerationTests
             "Generic Tracker",
             controllerType: null,
             inputProfilePath: null);
+        var versionedMetadata = new SteamVrDeviceMetadata(
+            "lighthouse",
+            "lighthouse",
+            "Tracker Vendor",
+            "Generic Tracker",
+            controllerType: null,
+            inputProfilePath: null,
+            driverVersion: "  build-identity-42  ");
         var identity = new SteamVrDeviceIdentity(
             "TRACKER-COMPAT",
             "/devices/lighthouse/TRACKER-COMPAT");
@@ -166,6 +186,9 @@ public sealed class OpenVrDeviceEnumerationTests
 
         Assert.Null(defaultMetadataDescriptor.Metadata);
         Assert.Equal(legacyMetadata, extendedMetadata);
+        Assert.Null(legacyMetadata.DriverVersion);
+        Assert.Null(extendedMetadata.DriverVersion);
+        Assert.Equal("build-identity-42", versionedMetadata.DriverVersion);
         Assert.Equal(legacyDescriptor.Metadata, extendedDescriptor.Metadata);
         Assert.Equal(legacyDescriptor.Capabilities, extendedDescriptor.Capabilities);
         Assert.True(legacyDescriptor.CanUseAsPhysicalPoseSource);
