@@ -81,7 +81,7 @@ public sealed class ProtocolAcceptanceTrackerTests
     }
 
     [Fact]
-    public void NewSessionRequiresTimestampNewerThanPriorSession()
+    public void NewSessionMayRestartWithOlderNonzeroTimestamp()
     {
         var tracker = new ProtocolAcceptanceTracker();
         Assert.True(tracker.TryAccept(
@@ -89,12 +89,12 @@ public sealed class ProtocolAcceptanceTrackerTests
             out _));
 
         var accepted = tracker.TryAccept(
-            new ProtocolHeartbeat(ProtocolTestData.Ordering(0, 100, ProtocolTestData.SessionB)),
+            new ProtocolHeartbeat(ProtocolTestData.Ordering(0, 50, ProtocolTestData.SessionB)),
             out var reason);
 
-        Assert.False(accepted);
-        Assert.Equal(ProtocolRejectionReason.RegressingTimestamp, reason);
-        Assert.Equal(ProtocolTestData.SessionA, tracker.Snapshot.SessionId);
+        Assert.True(accepted);
+        Assert.Equal(ProtocolRejectionReason.None, reason);
+        Assert.Equal(ProtocolTestData.SessionB, tracker.Snapshot.SessionId);
     }
 
     [Fact]
@@ -138,5 +138,41 @@ public sealed class ProtocolAcceptanceTrackerTests
         Assert.Equal(ProtocolRejectionReason.InvalidMessage, reason);
         Assert.Equal(rightBefore, tracker.Snapshot.LastRightHand);
         Assert.Null(tracker.Snapshot.LastLeftHand);
+    }
+
+    [Fact]
+    public void TimestampOrderingIsIndependentForHeartbeatAndEachHand()
+    {
+        var tracker = new ProtocolAcceptanceTracker();
+        Assert.True(tracker.TryAccept(
+            new ProtocolHeartbeat(ProtocolTestData.Ordering(0, 1_000)),
+            out _));
+        Assert.True(tracker.TryAccept(
+            ProtocolTestData.HandState(
+                ProtocolTestData.Ordering(1, 100),
+                ProtocolHand.Left),
+            out _));
+        Assert.True(tracker.TryAccept(
+            ProtocolTestData.HandState(
+                ProtocolTestData.Ordering(2, 50),
+                ProtocolHand.Right),
+            out _));
+        Assert.True(tracker.TryAccept(
+            ProtocolTestData.HandState(
+                ProtocolTestData.Ordering(3, 100),
+                ProtocolHand.Left),
+            out _));
+
+        var regressingLeft = tracker.TryAccept(
+            ProtocolTestData.HandState(
+                ProtocolTestData.Ordering(4, 99),
+                ProtocolHand.Left),
+            out var reason);
+
+        Assert.False(regressingLeft);
+        Assert.Equal(ProtocolRejectionReason.RegressingTimestamp, reason);
+        Assert.Equal(100UL, tracker.Snapshot.LastLeftHand?.ProducerMonotonicNanoseconds);
+        Assert.Equal(50UL, tracker.Snapshot.LastRightHand?.ProducerMonotonicNanoseconds);
+        Assert.Equal(1_000UL, tracker.Snapshot.LastHeartbeat?.ProducerMonotonicNanoseconds);
     }
 }

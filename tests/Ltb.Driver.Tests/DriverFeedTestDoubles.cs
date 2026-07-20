@@ -207,9 +207,12 @@ internal static class DriverTestData
 
     public static ProtocolSessionId SessionB { get; } = new(3, 4);
 
-    public static DriverHandState State(ProtocolHand hand = ProtocolHand.Left) =>
+    public static DriverHandState State(
+        ProtocolHand hand = ProtocolHand.Left,
+        ulong sampleMonotonicNanoseconds = 10) =>
         new(
             hand,
+            sampleMonotonicNanoseconds,
             ProtocolPresence.Connected |
             ProtocolPresence.OrientationValid |
             ProtocolPresence.PositionValid |

@@ -21,6 +21,10 @@ public readonly record struct ProtocolAcceptanceSnapshot(
     ProtocolAcceptedOrder? LastLeftHand,
     ProtocolAcceptedOrder? LastRightHand);
 
+/// <summary>
+/// Applies global sequence ordering within a session and independent timestamp
+/// ordering for heartbeat, left-hand, and right-hand streams.
+/// </summary>
 public sealed class ProtocolAcceptanceTracker
 {
     private const int RetiredSessionLimit = 16;
@@ -78,13 +82,6 @@ public sealed class ProtocolAcceptanceTracker
                     return false;
                 }
 
-                if (_lastAccepted is { } previousSessionLast &&
-                    ordering.ProducerMonotonicNanoseconds <= previousSessionLast.ProducerMonotonicNanoseconds)
-                {
-                    rejectionReason = ProtocolRejectionReason.RegressingTimestamp;
-                    return false;
-                }
-
                 BeginSession(ordering.SessionId);
             }
             else if (_lastAccepted is { } lastAccepted)
@@ -94,12 +91,14 @@ public sealed class ProtocolAcceptanceTracker
                     rejectionReason = ProtocolRejectionReason.ReplayedOrOutOfOrderSequence;
                     return false;
                 }
+            }
 
-                if (ordering.ProducerMonotonicNanoseconds < lastAccepted.ProducerMonotonicNanoseconds)
-                {
-                    rejectionReason = ProtocolRejectionReason.RegressingTimestamp;
-                    return false;
-                }
+            var lastForStream = GetLastForStream(message);
+            if (lastForStream is { } lastStreamOrder &&
+                ordering.ProducerMonotonicNanoseconds < lastStreamOrder.ProducerMonotonicNanoseconds)
+            {
+                rejectionReason = ProtocolRejectionReason.RegressingTimestamp;
+                return false;
             }
 
             var accepted = new ProtocolAcceptedOrder(
@@ -123,6 +122,15 @@ public sealed class ProtocolAcceptanceTracker
             return true;
         }
     }
+
+    private ProtocolAcceptedOrder? GetLastForStream(ProtocolMessage message) =>
+        message switch
+        {
+            ProtocolHeartbeat => _lastHeartbeat,
+            ProtocolHandState { Hand: ProtocolHand.Left } => _lastLeftHand,
+            ProtocolHandState { Hand: ProtocolHand.Right } => _lastRightHand,
+            _ => null,
+        };
 
     private void BeginSession(ProtocolSessionId sessionId)
     {
