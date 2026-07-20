@@ -19,6 +19,9 @@ public sealed class DriverFeed : IDriverFeed
     private ulong _nextSequence;
     private ulong? _lastSuccessfulSequence;
     private ulong? _lastSuccessfulSendNanoseconds;
+    private ulong? _lastHeartbeatTimestampNanoseconds;
+    private ulong? _lastLeftHandSampleNanoseconds;
+    private ulong? _lastRightHandSampleNanoseconds;
     private ulong? _startedNanoseconds;
     private int _consecutiveReconnectAttempts;
     private string? _lastError;
@@ -91,6 +94,8 @@ public sealed class DriverFeed : IDriverFeed
             {
                 await SendAsync(
                     ordering => new ProtocolHeartbeat(ordering),
+                    null,
+                    null,
                     linkedCancellation.Token).ConfigureAwait(false);
                 _heartbeatTask = HeartbeatLoopAsync(runCancellation.Token);
             }
@@ -118,6 +123,9 @@ public sealed class DriverFeed : IDriverFeed
         DriverHandState state,
         CancellationToken cancellationToken = default)
     {
+        ArgumentOutOfRangeException.ThrowIfZero(
+            state.SampleMonotonicNanoseconds,
+            nameof(state.SampleMonotonicNanoseconds));
         var runCancellation = _runCancellation ??
             throw new InvalidOperationException("The driver feed has not been started.");
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -125,6 +133,8 @@ public sealed class DriverFeed : IDriverFeed
             runCancellation.Token);
         await SendAsync(
             ordering => state.ToProtocolMessage(ordering),
+            state.Hand,
+            state.SampleMonotonicNanoseconds,
             linkedCancellation.Token).ConfigureAwait(false);
     }
 
@@ -206,6 +216,8 @@ public sealed class DriverFeed : IDriverFeed
                 await _clock.DelayAsync(_options.HeartbeatInterval, cancellationToken).ConfigureAwait(false);
                 await SendAsync(
                     ordering => new ProtocolHeartbeat(ordering),
+                    null,
+                    null,
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -224,6 +236,8 @@ public sealed class DriverFeed : IDriverFeed
 
     private async ValueTask SendAsync(
         Func<ProtocolOrdering, ProtocolMessage> createMessage,
+        ProtocolHand? sampleHand,
+        ulong? sampleTimestampNanoseconds,
         CancellationToken cancellationToken)
     {
         await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -242,18 +256,25 @@ public sealed class DriverFeed : IDriverFeed
 
                     var transport = _transport ?? throw new InvalidOperationException(
                         "The driver transport did not connect.");
-                    var timestamp = GetNextMessageTimestamp();
+                    var timestamp = sampleTimestampNanoseconds is { } sampleTimestamp
+                        ? GetHandSampleTimestamp(
+                            sampleHand ?? throw new InvalidOperationException(
+                                "A hand sample timestamp requires a hand identifier."),
+                            sampleTimestamp)
+                        : GetNextHeartbeatTimestamp();
                     var sessionId = _sessionId ?? throw new InvalidOperationException(
                         "The connected transport has no protocol session.");
                     var sequence = _nextSequence;
-                    var packet = ProtocolCodec.Encode(createMessage(
-                        new ProtocolOrdering(sessionId, sequence, timestamp)));
+                    var message = createMessage(new ProtocolOrdering(sessionId, sequence, timestamp));
+                    var packet = ProtocolCodec.Encode(message);
                     await transport.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
+                    var successfulSendTimestamp = Math.Max(1UL, _clock.GetMonotonicNanoseconds());
 
                     lock (_healthGate)
                     {
                         _lastSuccessfulSequence = sequence;
-                        _lastSuccessfulSendNanoseconds = timestamp;
+                        _lastSuccessfulSendNanoseconds = successfulSendTimestamp;
+                        RecordStreamTimestamp(message, timestamp);
                         _consecutiveReconnectAttempts = 0;
                         _lastError = null;
                         _readiness = DriverFeedReadiness.Ready;
@@ -301,6 +322,12 @@ public sealed class DriverFeed : IDriverFeed
             _transport = transport;
             _sessionId = sessionId;
             _nextSequence = 0;
+            lock (_healthGate)
+            {
+                _lastHeartbeatTimestampNanoseconds = null;
+                _lastLeftHandSampleNanoseconds = null;
+                _lastRightHandSampleNanoseconds = null;
+            }
         }
         catch
         {
@@ -333,27 +360,49 @@ public sealed class DriverFeed : IDriverFeed
 
     private static ulong ElapsedNanoseconds(ulong now, ulong then) => now >= then ? now - then : 0;
 
-    private ulong GetNextMessageTimestamp()
+    private ulong GetNextHeartbeatTimestamp()
     {
         var timestamp = Math.Max(1UL, _clock.GetMonotonicNanoseconds());
         lock (_healthGate)
         {
-            if (_lastSuccessfulSendNanoseconds is not { } lastTimestamp)
+            return _lastHeartbeatTimestampNanoseconds is { } lastTimestamp
+                ? Math.Max(timestamp, lastTimestamp)
+                : timestamp;
+        }
+    }
+
+    private ulong GetHandSampleTimestamp(ProtocolHand hand, ulong sampleTimestampNanoseconds)
+    {
+        lock (_healthGate)
+        {
+            var lastTimestamp = hand switch
             {
-                return timestamp;
+                ProtocolHand.Left => _lastLeftHandSampleNanoseconds,
+                ProtocolHand.Right => _lastRightHandSampleNanoseconds,
+                _ => throw new ProtocolException("The hand identifier is invalid."),
+            };
+            if (lastTimestamp is { } previous && sampleTimestampNanoseconds < previous)
+            {
+                throw new ProtocolException("The hand pose sample timestamp regresses within its session.");
             }
 
-            if (_nextSequence == 0)
-            {
-                if (lastTimestamp == ulong.MaxValue)
-                {
-                    throw new InvalidOperationException("The protocol timestamp space is exhausted.");
-                }
+            return sampleTimestampNanoseconds;
+        }
+    }
 
-                return Math.Max(timestamp, lastTimestamp + 1);
-            }
-
-            return Math.Max(timestamp, lastTimestamp);
+    private void RecordStreamTimestamp(ProtocolMessage message, ulong timestamp)
+    {
+        switch (message)
+        {
+            case ProtocolHeartbeat:
+                _lastHeartbeatTimestampNanoseconds = timestamp;
+                break;
+            case ProtocolHandState { Hand: ProtocolHand.Left }:
+                _lastLeftHandSampleNanoseconds = timestamp;
+                break;
+            case ProtocolHandState { Hand: ProtocolHand.Right }:
+                _lastRightHandSampleNanoseconds = timestamp;
+                break;
         }
     }
 

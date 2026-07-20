@@ -18,8 +18,84 @@ public sealed class DriverFeedTests
         var heartbeat = Assert.IsType<ProtocolHeartbeat>(ProtocolCodec.Decode(packet));
         Assert.Equal(DriverTestData.SessionA, heartbeat.Ordering.SessionId);
         Assert.Equal(0UL, heartbeat.Ordering.Sequence);
+        Assert.Equal(clock.GetMonotonicNanoseconds(), heartbeat.Ordering.ProducerMonotonicNanoseconds);
         Assert.Equal(DriverFeedReadiness.Ready, feed.Health.Readiness);
         Assert.False(feed.Health.IsStale);
+    }
+
+    [Fact]
+    public async Task PublishPreservesFinalPoseSampleTimestampInsteadOfSendTime()
+    {
+        var transport = new ScriptedDriverTransport();
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(transport, clock, DriverTestData.SessionA);
+        await feed.StartAsync();
+        await DriverTestData.WaitUntilAsync(() => clock.PendingDelayCount > 0);
+        clock.Advance(TimeSpan.FromMilliseconds(100));
+        await DriverTestData.WaitUntilAsync(() => transport.Packets.Count == 2);
+        clock.SetTime(1_000_000_000);
+
+        await feed.PublishAsync(DriverTestData.State(sampleMonotonicNanoseconds: 123));
+
+        var precedingHeartbeat = Assert.IsType<ProtocolHeartbeat>(
+            ProtocolCodec.Decode(transport.Packets.ElementAt(1)));
+        var state = Assert.IsType<ProtocolHandState>(
+            ProtocolCodec.Decode(transport.Packets.Last()));
+        Assert.True(precedingHeartbeat.Ordering.ProducerMonotonicNanoseconds > 123UL);
+        Assert.Equal(123UL, state.Ordering.ProducerMonotonicNanoseconds);
+        Assert.Equal(1_000_000_000UL, feed.Health.LastSuccessfulSendNanoseconds);
+    }
+
+    [Fact]
+    public async Task HeartbeatUsesSendTimeIndependentOfNewerHandSampleTime()
+    {
+        var transport = new ScriptedDriverTransport();
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(transport, clock, DriverTestData.SessionA);
+        await feed.StartAsync();
+        await DriverTestData.WaitUntilAsync(() => clock.PendingDelayCount > 0);
+        await feed.PublishAsync(DriverTestData.State(sampleMonotonicNanoseconds: 500_000_000));
+
+        clock.Advance(TimeSpan.FromMilliseconds(100));
+        await DriverTestData.WaitUntilAsync(() => transport.Packets.Count == 3);
+
+        var heartbeat = Assert.IsType<ProtocolHeartbeat>(
+            ProtocolCodec.Decode(transport.Packets.Last()));
+        Assert.Equal(clock.GetMonotonicNanoseconds(), heartbeat.Ordering.ProducerMonotonicNanoseconds);
+        Assert.True(heartbeat.Ordering.ProducerMonotonicNanoseconds < 500_000_000UL);
+    }
+
+    [Fact]
+    public async Task HandSampleTimestampOrderingIsIndependentPerHand()
+    {
+        var transport = new ScriptedDriverTransport();
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(transport, clock, DriverTestData.SessionA);
+        await feed.StartAsync();
+        await feed.PublishAsync(DriverTestData.State(ProtocolHand.Left, 100));
+        await feed.PublishAsync(DriverTestData.State(ProtocolHand.Right, 50));
+        await feed.PublishAsync(DriverTestData.State(ProtocolHand.Left, 100));
+
+        await Assert.ThrowsAsync<ProtocolException>(() =>
+            feed.PublishAsync(DriverTestData.State(ProtocolHand.Left, 99)).AsTask());
+        await Assert.ThrowsAsync<ProtocolException>(() =>
+            feed.PublishAsync(DriverTestData.State(ProtocolHand.Right, 49)).AsTask());
+
+        Assert.Equal(4, transport.Packets.Count);
+    }
+
+    [Fact]
+    public async Task ZeroHandSampleTimestampIsRejectedBeforeWrite()
+    {
+        var transport = new ScriptedDriverTransport();
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(transport, clock, DriverTestData.SessionA);
+        await feed.StartAsync();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            feed.PublishAsync(DriverTestData.State(sampleMonotonicNanoseconds: 0)).AsTask());
+
+        Assert.Single(transport.Packets);
     }
 
     [Fact]
@@ -203,11 +279,7 @@ public sealed class DriverFeedTests
             ProtocolCodec.Decode(Assert.Single(second.Packets)));
         Assert.Equal(DriverTestData.SessionB, restarted.Ordering.SessionId);
         Assert.Equal(0UL, restarted.Ordering.Sequence);
-        var firstStart = Assert.IsType<ProtocolHeartbeat>(
-            ProtocolCodec.Decode(Assert.Single(first.Packets)));
-        Assert.True(
-            restarted.Ordering.ProducerMonotonicNanoseconds >
-            firstStart.Ordering.ProducerMonotonicNanoseconds);
+        Assert.NotEqual(0UL, restarted.Ordering.ProducerMonotonicNanoseconds);
     }
 
     private static DriverFeed CreateFeed(
