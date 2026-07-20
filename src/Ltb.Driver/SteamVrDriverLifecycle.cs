@@ -1,6 +1,7 @@
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace Ltb.Driver;
 
@@ -8,6 +9,7 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
 {
     public const string DriverManifestRelativePath = "driver.vrdrivermanifest";
     public const string DriverBinaryRelativePath = "bin/win64/driver_ltb.dll";
+    public const string DriverBuildIdRelativePath = "build-id.txt";
     private const string SteamVrSectionName = "steamvr";
     private const string ActivateMultipleDriversName = "activateMultipleDrivers";
     private static readonly JsonDocumentOptions DocumentOptions = new()
@@ -19,6 +21,9 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
     {
         WriteIndented = true,
     };
+    private static readonly Regex BuildIdPattern = new(
+        @"\Adriver_ltb-[0-9]+\.[0-9]+\.[0-9]+-ipc-[0-9]+\.[0-9]+\z",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private readonly ISteamVrFileSystem _fileSystem;
     private readonly ISteamVrProcessRunner _processRunner;
     private readonly SteamVrPathDiscovery _pathDiscovery;
@@ -51,6 +56,49 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
         return _pathDiscovery.DiscoverAsync(cancellationToken);
     }
 
+    public async ValueTask<SteamVrDriverInspection> InspectAsync(
+        string stagedDriverRoot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagedDriverRoot);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var paths = await DiscoverAsync(cancellationToken).ConfigureAwait(false);
+            var stagedDriver = await ReadStagedDriverAsync(
+                stagedDriverRoot,
+                cancellationToken).ConfigureAwait(false);
+            var openVr = await ReadOpenVrStateAsync(
+                paths.OpenVrPathsFile,
+                cancellationToken).ConfigureAwait(false);
+            var settings = await ReadSettingsStateAsync(
+                paths.SettingsFile,
+                cancellationToken).ConfigureAwait(false);
+            var exactRegistrationCount = openVr.ExternalDrivers.Count(
+                path => PathsEqual(path, stagedDriver.CanonicalRoot));
+            if (exactRegistrationCount > 1 || HasNonCanonicalEquivalent(
+                    openVr.ExternalDrivers,
+                    stagedDriver.CanonicalRoot))
+            {
+                throw Failure(
+                    SteamVrDriverDiagnosticCode.RegistrationVerificationFailed,
+                    "The OpenVR path registry contains a duplicate or non-canonical LTB driver path.");
+            }
+
+            return new SteamVrDriverInspection(
+                paths,
+                stagedDriver.CanonicalRoot,
+                stagedDriver.BuildId,
+                IsRegistered: exactRegistrationCount == 1,
+                settings.ActivateMultipleDrivers);
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
+    }
+
     public async ValueTask<SteamVrDriverLifecycleResult> RegisterAsync(
         string stagedDriverRoot,
         CancellationToken cancellationToken = default)
@@ -61,7 +109,10 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
         try
         {
             var paths = await DiscoverAsync(cancellationToken).ConfigureAwait(false);
-            var canonicalDriverRoot = ValidateStagedDriverRoot(stagedDriverRoot);
+            var stagedDriver = await ReadStagedDriverAsync(
+                stagedDriverRoot,
+                cancellationToken).ConfigureAwait(false);
+            var canonicalDriverRoot = stagedDriver.CanonicalRoot;
             var originalOpenVr = await ReadOpenVrStateAsync(
                 paths.OpenVrPathsFile,
                 cancellationToken).ConfigureAwait(false);
@@ -175,11 +226,13 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                 var changed = driverChanged || settingChanged;
                 return new SteamVrDriverLifecycleResult(
                     changed,
-                    RestartRequired: true,
-                    SteamVrDriverReadiness.RestartRequired,
+                    RestartRequired: changed,
                     changed
-                        ? "driver_ltb is registered; restart SteamVR, then verify the loaded build and two controllers."
-                        : "driver_ltb is already registered; restart SteamVR if the staged driver was replaced, then verify the loaded build and two controllers.",
+                        ? SteamVrDriverReadiness.RestartRequired
+                        : SteamVrDriverReadiness.RuntimeVerificationRequired,
+                    changed
+                        ? $"driver_ltb build '{stagedDriver.BuildId}' is registered; restart SteamVR, then verify the loaded build and two controllers."
+                        : $"driver_ltb build '{stagedDriver.BuildId}' is already registered with activateMultipleDrivers enabled; verify the loaded build and two controllers.",
                     paths,
                     ownedRegistration.Receipt);
             }
@@ -388,7 +441,9 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
         GC.SuppressFinalize(this);
     }
 
-    private string ValidateStagedDriverRoot(string stagedDriverRoot)
+    private async ValueTask<StagedDriver> ReadStagedDriverAsync(
+        string stagedDriverRoot,
+        CancellationToken cancellationToken)
     {
         var canonicalDriverRoot = _fileSystem.GetCanonicalPath(stagedDriverRoot);
         var manifest = _fileSystem.GetCanonicalPath(
@@ -409,7 +464,51 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                 $"The staged driver root has no '{DriverBinaryRelativePath}': '{canonicalDriverRoot}'.");
         }
 
-        return canonicalDriverRoot;
+        var buildIdFile = _fileSystem.GetCanonicalPath(
+            Path.Combine(canonicalDriverRoot, DriverBuildIdRelativePath));
+        if (!_fileSystem.FileExists(buildIdFile))
+        {
+            throw Failure(
+                SteamVrDriverDiagnosticCode.StagedBuildIdMissing,
+                $"The staged driver root has no '{DriverBuildIdRelativePath}': '{canonicalDriverRoot}'.");
+        }
+
+        string buildIdText;
+        try
+        {
+            buildIdText = await _fileSystem.ReadAllTextAsync(
+                buildIdFile,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is not OperationCanceledException &&
+            (exception is IOException or UnauthorizedAccessException))
+        {
+            throw Failure(
+                SteamVrDriverDiagnosticCode.StagedBuildIdInvalid,
+                $"The staged driver build identity could not be read: '{buildIdFile}'.",
+                exception);
+        }
+
+        var buildId = RemoveSingleLineEnding(buildIdText);
+        if (!BuildIdPattern.IsMatch(buildId))
+        {
+            throw Failure(
+                SteamVrDriverDiagnosticCode.StagedBuildIdInvalid,
+                $"The staged driver build identity in '{buildIdFile}' is blank or malformed.");
+        }
+
+        return new StagedDriver(canonicalDriverRoot, buildId);
+    }
+
+    private static string RemoveSingleLineEnding(string text)
+    {
+        if (text.EndsWith("\r\n", StringComparison.Ordinal))
+        {
+            return text[..^2];
+        }
+
+        return text.EndsWith('\n') ? text[..^1] : text;
     }
 
     private async ValueTask RunVrPathRegAsync(
@@ -943,6 +1042,8 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
     private sealed record OwnedRegistration(
         SteamVrDriverRegistrationReceipt Receipt,
         bool Removed);
+
+    private sealed record StagedDriver(string CanonicalRoot, string BuildId);
 
     private enum ExternalDriverRollback
     {

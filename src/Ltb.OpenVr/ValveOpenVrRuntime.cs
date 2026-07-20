@@ -98,7 +98,10 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                             ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String),
                         ReadStringProperty(
                             index,
-                            ValveVr.ETrackedDeviceProperty.Prop_InputProfilePath_String));
+                            ValveVr.ETrackedDeviceProperty.Prop_InputProfilePath_String),
+                        ReadStringProperty(
+                            index,
+                            ValveVr.ETrackedDeviceProperty.Prop_DriverVersion_String));
                 }
 
                 devices.Add(new OpenVrRuntimeDevice(
@@ -162,7 +165,15 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                 MapTrackingResult((OpenVrTrackingResultCode)(int)nativePose.eTrackingResult),
                 RuntimeTimeSeconds: null,
                 PredictionOffsetSeconds: predictionOffsetSeconds,
-                SampleAgeSeconds: null);
+                SampleAgeSeconds: null,
+                MapFiniteVelocity(
+                    nativePose.vVelocity.v0,
+                    nativePose.vVelocity.v1,
+                    nativePose.vVelocity.v2),
+                MapFiniteVelocity(
+                    nativePose.vAngularVelocity.v0,
+                    nativePose.vAngularVelocity.v1,
+                    nativePose.vAngularVelocity.v2));
         }
     }
 
@@ -292,6 +303,11 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
         OpenVrTrackingResultCode.FallbackRotationOnly => PoseTrackingResult.FallbackRotationOnly,
         _ => PoseTrackingResult.Unknown,
     };
+
+    internal static Vector3? MapFiniteVelocity(float x, float y, float z) =>
+        float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z)
+            ? new Vector3(x, y, z)
+            : null;
 
     private static ValveVr.ETrackingUniverseOrigin MapTrackingUniverse(
         OpenVrTrackingUniverse trackingUniverse) => trackingUniverse switch

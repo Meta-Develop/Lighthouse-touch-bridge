@@ -210,6 +210,8 @@ internal sealed class FakeVrPathRegRunner : ISteamVrProcessRunner
 
 internal sealed class SteamVrLifecycleFixture : IDisposable
 {
+    public const string BuildId = "driver_ltb-0.1.0-ipc-1.0";
+
     public SteamVrLifecycleFixture(
         SteamVrActivateMultipleDriversState setting =
             SteamVrActivateMultipleDriversState.Disabled,
@@ -229,6 +231,7 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
         VrPathRegExecutable = Path.Combine(RuntimeRoot, "bin", "win64", "vrpathreg.exe");
         ManifestFile = Path.Combine(StagedDriverRoot, "driver.vrdrivermanifest");
         BinaryFile = Path.Combine(StagedDriverRoot, "bin", "win64", "driver_ltb.dll");
+        BuildIdFile = Path.Combine(StagedDriverRoot, "build-id.txt");
 
         FileSystem.AddFile(
             OpenVrPathsFile,
@@ -237,6 +240,7 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
         FileSystem.AddFile(SettingsFile, SettingsJson(setting, steamVrSectionPresent));
         FileSystem.AddFile(ManifestFile, "{}");
         FileSystem.AddFile(BinaryFile, "driver bytes");
+        FileSystem.AddFile(BuildIdFile, BuildId + "\n");
         ProcessRunner = new FakeVrPathRegRunner(FileSystem, OpenVrPathsFile);
         Lifecycle = new SteamVrDriverLifecycle(
             new FakeSteamVrHostEnvironment
@@ -268,6 +272,8 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
     public string ManifestFile { get; }
 
     public string BinaryFile { get; }
+
+    public string BuildIdFile { get; }
 
     public MemorySteamVrFileSystem FileSystem { get; } = new();
 
