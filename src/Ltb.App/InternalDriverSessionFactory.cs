@@ -48,7 +48,9 @@ public static class InternalDriverSessionFactory
             CanonicalDirectory(options.StagedDriverRoot ??
                 Path.Combine(AppContext.BaseDirectory, "driver_ltb")),
             CanonicalFile(options.StructuredLogPath ??
-                Path.Combine(applicationRoot, "logs", "internal-driver.jsonl")));
+                Path.Combine(applicationRoot, "logs", "internal-driver.jsonl")),
+            CanonicalFile(
+                Path.Combine(applicationRoot, "driver", "registration-receipts.json")));
     }
 
     private static string CanonicalDirectory(string path)
@@ -69,7 +71,8 @@ internal sealed record InternalDriverResolvedPaths(
     string SettingsPath,
     string CalibrationProfileStorePath,
     string StagedDriverRoot,
-    string StructuredLogPath);
+    string StructuredLogPath,
+    string DriverReceiptStorePath);
 
 internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSessionRuntime
 {
@@ -89,7 +92,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     public ProductionInternalDriverSessionRuntime(
         InternalDriverSessionOptions options,
         InternalDriverResolvedPaths paths)
-        : this(options, paths, SteamVrDriverLifecycle.CreateDefault())
+        : this(options, paths, CreateDefaultLifecycle(paths))
     {
     }
 
@@ -101,6 +104,14 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _driverLifecycle = driverLifecycle ?? throw new ArgumentNullException(nameof(driverLifecycle));
+    }
+
+    private static SteamVrDriverLifecycle CreateDefaultLifecycle(
+        InternalDriverResolvedPaths paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        return SteamVrDriverLifecycle.CreateDefault(
+            new ConfigurationSteamVrDriverReceiptStore(paths.DriverReceiptStorePath));
     }
 
     public InternalDriverPlatformProbe Probe()
