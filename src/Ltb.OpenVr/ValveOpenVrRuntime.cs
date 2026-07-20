@@ -117,6 +117,7 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
 
     public OpenVrRuntimePose ReadPose(
         uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
         double predictionOffsetSeconds)
     {
         lock (_sync)
@@ -128,7 +129,7 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
             }
 
             _system.GetDeviceToAbsoluteTrackingPose(
-                ValveVr.ETrackingUniverseOrigin.TrackingUniverseStanding,
+                MapTrackingUniverse(trackingUniverse),
                 (float)predictionOffsetSeconds,
                 _poseBuffer);
             var nativePose = _poseBuffer[transientDeviceIndex];
@@ -290,6 +291,19 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
         OpenVrTrackingResultCode.RunningOutOfRange => PoseTrackingResult.RunningOutOfRange,
         OpenVrTrackingResultCode.FallbackRotationOnly => PoseTrackingResult.FallbackRotationOnly,
         _ => PoseTrackingResult.Unknown,
+    };
+
+    private static ValveVr.ETrackingUniverseOrigin MapTrackingUniverse(
+        OpenVrTrackingUniverse trackingUniverse) => trackingUniverse switch
+    {
+        OpenVrTrackingUniverse.Standing =>
+            ValveVr.ETrackingUniverseOrigin.TrackingUniverseStanding,
+        OpenVrTrackingUniverse.RawAndUncalibrated =>
+            ValveVr.ETrackingUniverseOrigin.TrackingUniverseRawAndUncalibrated,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(trackingUniverse),
+            trackingUniverse,
+            "Tracking universe must be a defined OpenVR frame contract."),
     };
 
     private static string FormatInitError(ValveVr.EVRInitError error)

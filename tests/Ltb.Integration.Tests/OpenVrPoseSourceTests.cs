@@ -41,6 +41,7 @@ public sealed class OpenVrPoseSourceTests
         Assert.Equal(0.025, sample.PredictionOffsetSeconds);
         Assert.Equal(0.003, sample.SampleAgeSeconds);
         Assert.Equal(0.025, runtime.LastPredictionOffsetSeconds);
+        Assert.Equal(OpenVrTrackingUniverse.Standing, runtime.LastTrackingUniverse);
 
         var recorded = sample.ToRecordedPoseSample();
         Assert.Equal(sample.PoseSample, recorded.PoseSample);
@@ -49,6 +50,50 @@ public sealed class OpenVrPoseSourceTests
         Assert.Equal(sample.RuntimeTimeSeconds, recorded.RuntimeTimeSeconds);
         Assert.Equal(sample.PredictionOffsetSeconds, recorded.PredictionOffsetSeconds);
         Assert.Equal(sample.SampleAgeSeconds, recorded.SampleAgeSeconds);
+    }
+
+    [Fact]
+    public void SessionDefaultPoseFactoriesPreserveStandingUniverse()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        using var session = new OpenVrSession(runtime);
+
+        session.CreateInputControllerPoseSource(ControllerDescriptor()).ReadPose();
+        Assert.Equal(OpenVrTrackingUniverse.Standing, runtime.LastTrackingUniverse);
+
+        session.CreateTrackedPoseSource(TrackerDescriptor()).ReadPose();
+        Assert.Equal(OpenVrTrackingUniverse.Standing, runtime.LastTrackingUniverse);
+    }
+
+    [Fact]
+    public void SessionExplicitRawTrackerSourcePropagatesRawDriverSpaceUniverse()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        using var session = new OpenVrSession(runtime);
+        var source = session.CreateTrackedPoseSource(
+            TrackerDescriptor(),
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+
+        source.ReadPose();
+
+        Assert.Equal(
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            runtime.LastTrackingUniverse);
+    }
+
+    [Fact]
+    public void PoseFactoryRejectsUndefinedTrackingUniverse()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        using var session = new OpenVrSession(runtime);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            session.CreateTrackedPoseSource(
+                TrackerDescriptor(),
+                (OpenVrTrackingUniverse)int.MaxValue));
+
+        Assert.Equal("trackingUniverse", exception.ParamName);
+        Assert.False(runtime.HasReadPose);
     }
 
     [Fact]
@@ -200,6 +245,14 @@ public sealed class OpenVrPoseSourceTests
             SteamVrControllerRole.LeftHand,
             true);
 
+    private static SteamVrDeviceDescriptor TrackerDescriptor() =>
+        new(
+            new SteamVrDeviceIdentity("tracker-left", "lighthouse/tracker-left"),
+            7,
+            SteamVrDeviceCategory.GenericTracker,
+            SteamVrControllerRole.None,
+            true);
+
     private static void AssertVectorClose(Vector3 expected, Vector3 actual)
     {
         Assert.InRange(Vector3.Distance(expected, actual), 0f, 1e-5f);
@@ -230,11 +283,17 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
 
     public double? LastPredictionOffsetSeconds { get; private set; }
 
+    public OpenVrTrackingUniverse? LastTrackingUniverse { get; private set; }
+
     public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => _devices;
 
-    public OpenVrRuntimePose ReadPose(uint transientDeviceIndex, double predictionOffsetSeconds)
+    public OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
     {
         HasReadPose = true;
+        LastTrackingUniverse = trackingUniverse;
         LastPredictionOffsetSeconds = predictionOffsetSeconds;
         return _pose;
     }

@@ -53,7 +53,10 @@ internal interface IOpenVrRuntime : IDisposable
 {
     IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices();
 
-    OpenVrRuntimePose ReadPose(uint transientDeviceIndex, double predictionOffsetSeconds);
+    OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds);
 
     OpenVrRuntimeHealthSnapshot GetRuntimeHealth() => OpenVrRuntimeHealthSnapshot.Running;
 }
