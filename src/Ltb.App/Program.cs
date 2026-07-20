@@ -11,25 +11,76 @@ internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
+        using var stop = new CancellationTokenSource();
+        ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            stop.Cancel();
+        };
+        Console.CancelKeyPress += cancelHandler;
+        try
+        {
+            return await RunAsync(
+                args,
+                InternalDriverSessionFactory.Create,
+                Console.Out,
+                Console.Error,
+                stop.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancelHandler;
+        }
+    }
+
+    internal static async Task<int> RunAsync(
+        IReadOnlyList<string> args,
+        Func<InternalDriverSessionOptions?, IInternalDriverSession> createInternalDriverSession,
+        TextWriter output,
+        TextWriter errorOutput,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(createInternalDriverSession);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(errorOutput);
         CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
 
         if (!AppCommandLineOptions.TryParse(args, out var options, out var error))
         {
-            Console.Error.WriteLine(error);
-            Console.Error.WriteLine();
-            AppCommandLineOptions.PrintUsage(Console.Error);
+            errorOutput.WriteLine(error);
+            errorOutput.WriteLine();
+            AppCommandLineOptions.PrintUsage(errorOutput);
+            return 1;
+        }
+
+        if (options.UnsupportedMigrationCommand is { } migrationCommand)
+        {
+            errorOutput.WriteLine(
+                $"Command '{migrationCommand}' is a parse-only migration alias and will not execute. " +
+                $"Use 'legacy-{migrationCommand}' only for the unsupported legacy compile-only path.");
             return 1;
         }
 
         if (options.ShowHelp)
         {
-            AppCommandLineOptions.PrintUsage(Console.Out);
+            AppCommandLineOptions.PrintUsage(output);
             return 0;
         }
 
         try
         {
+            if (options.Command == AppCommand.InternalDriver)
+            {
+                return await InternalDriverAsync(
+                    createInternalDriverSession,
+                    output,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            WriteLegacyWarning(errorOutput, options.Command);
+
             if (options.Command == AppCommand.WizardDemo)
             {
                 return await WizardDemoAsync(options).ConfigureAwait(false);
@@ -60,13 +111,13 @@ internal static class Program
         }
         catch (OpenVrUnavailableException exception)
         {
-            Console.Error.WriteLine(
+            errorOutput.WriteLine(
                 $"SteamVR/OpenVR is unavailable ({exception.Reason}): {exception.Message}");
             return 2;
         }
         catch (OneHandBridgeRunException exception)
         {
-            Console.Error.WriteLine(exception.Message);
+            errorOutput.WriteLine(exception.Message);
             return exception.SafeDisableFailures.Count > 0 ? 4 : 2;
         }
         catch (Exception exception) when (exception is
@@ -76,10 +127,73 @@ internal static class Program
             InvalidOperationException or
             TimeoutException)
         {
-            Console.Error.WriteLine($"Lighthouse Touch Bridge failed: {exception.Message}");
+            errorOutput.WriteLine($"Lighthouse Touch Bridge failed: {exception.Message}");
             return 2;
         }
     }
+
+    private static async Task<int> InternalDriverAsync(
+        Func<InternalDriverSessionOptions?, IInternalDriverSession> createSession,
+        TextWriter output,
+        CancellationToken cancellationToken)
+    {
+        await using var session = createSession(null) ?? throw new InvalidOperationException(
+            "The internal-driver session factory returned null.");
+        output.WriteLine("Lighthouse Touch Bridge - First-Party Internal Driver");
+        output.WriteLine("configuration: automatic per-user settings and calibration profiles");
+        output.WriteLine("driver: staged driver_ltb beside the application");
+        output.WriteLine("runtime: automatic OpenVR discovery and official Meta Quest Link");
+
+        EventHandler<InternalDriverSessionSnapshot> snapshotHandler = (_, snapshot) =>
+            WriteInternalDriverSnapshot(output, snapshot);
+        session.SnapshotChanged += snapshotHandler;
+        try
+        {
+            await session.RunAsync(cancellationToken).ConfigureAwait(false);
+            var finalSnapshot = session.CurrentSnapshot;
+            if (finalSnapshot.State == InternalDriverSessionState.Faulted)
+            {
+                WriteInternalDriverSnapshot(output, finalSnapshot);
+                return 2;
+            }
+
+            return 0;
+        }
+        finally
+        {
+            session.SnapshotChanged -= snapshotHandler;
+            await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static void WriteInternalDriverSnapshot(
+        TextWriter output,
+        InternalDriverSessionSnapshot snapshot)
+    {
+        output.WriteLine(
+            $"state={snapshot.State} can_publish={snapshot.Readiness.CanPublish.ToString().ToLowerInvariant()} " +
+            $"restart_required={snapshot.RestartRequired.ToString().ToLowerInvariant()}");
+        output.WriteLine($"diagnostic={snapshot.Diagnostic}");
+        output.WriteLine($"remediation={snapshot.Remediation}");
+    }
+
+    private static void WriteLegacyWarning(TextWriter errorOutput, AppCommand command)
+    {
+        errorOutput.WriteLine(
+            $"WARNING: legacy-{LegacyCommandName(command)} is an unsupported legacy " +
+            "compile-only ALVR/VMT/TrackingOverrides-era path and is not part of production support.");
+    }
+
+    private static string LegacyCommandName(AppCommand command) => command switch
+    {
+        AppCommand.Devices => "devices",
+        AppCommand.Record => "record",
+        AppCommand.Bridge => "bridge",
+        AppCommand.Daily => "daily",
+        AppCommand.Wizard => "wizard",
+        AppCommand.WizardDemo => "wizard-demo",
+        _ => throw new ArgumentOutOfRangeException(nameof(command)),
+    };
 
     private static async Task<int> DailyAsync(AppCommandLineOptions options)
     {
@@ -650,7 +764,7 @@ internal static class Program
             if (device is null)
             {
                 throw new ArgumentException(
-                    $"No SteamVR device matches --{selectorName} serial '{stableSerial}'. Run the devices command to list stable serials.");
+                    $"No SteamVR device matches --{selectorName} serial '{stableSerial}'. Run the legacy-devices command to list stable serials.");
             }
 
             if (!isCompatible(device))
@@ -707,6 +821,8 @@ internal sealed record AppCommandLineOptions(
 
     public double WizardReconnectDelaySeconds { get; init; } = 0.25d;
 
+    public string? UnsupportedMigrationCommand { get; init; }
+
     public static bool TryParse(
         IReadOnlyList<string> arguments,
         out AppCommandLineOptions options,
@@ -714,19 +830,27 @@ internal sealed record AppCommandLineOptions(
     {
         options = Empty;
         error = null;
+        if (arguments.Count == 0)
+        {
+            return true;
+        }
+
         if (arguments.Count == 1 && arguments[0] is "-h" or "--help")
         {
             options = Empty with { ShowHelp = true };
             return true;
         }
 
-        if (arguments.Count == 0 || !TryParseCommand(arguments[0], out var command))
+        if (!TryParseCommand(arguments[0], out var command))
         {
-            error = arguments.Count == 0
-                ? "A devices, record, bridge, daily, wizard, or wizard-demo command is required."
-                : $"Unknown command '{arguments[0]}'.";
+            error = $"Unknown command '{arguments[0]}'.";
             return false;
         }
+
+        var unsupportedMigrationCommand = arguments[0] is
+            "devices" or "record" or "bridge" or "daily" or "wizard" or "wizard-demo"
+            ? arguments[0]
+            : null;
 
         var trackerSerials = new List<string>();
         var controllerSerials = new List<string>();
@@ -1029,7 +1153,26 @@ internal sealed record AppCommandLineOptions(
 
         if (showHelp)
         {
-            options = Empty with { Command = command, ShowHelp = true };
+            options = Empty with
+            {
+                Command = command,
+                ShowHelp = true,
+                UnsupportedMigrationCommand = unsupportedMigrationCommand,
+            };
+            return true;
+        }
+
+        if (command == AppCommand.InternalDriver)
+        {
+            if (recorderOptionSpecified || bridgeOptionSpecified || wizardOptionSpecified ||
+                wizardLiveOptionSpecified || dailyOptionSpecified)
+            {
+                error = "The first-party internal-driver run command accepts no setup options; " +
+                    "paths and runtime discovery are automatic.";
+                return false;
+            }
+
+            options = Empty;
             return true;
         }
 
@@ -1042,7 +1185,11 @@ internal sealed record AppCommandLineOptions(
                 return false;
             }
 
-            options = Empty with { Command = command };
+            options = Empty with
+            {
+                Command = command,
+                UnsupportedMigrationCommand = unsupportedMigrationCommand,
+            };
             return true;
         }
 
@@ -1091,6 +1238,7 @@ internal sealed record AppCommandLineOptions(
                 SteamVrSettingsPath = steamVrSettingsPath,
                 StaleAfterSeconds = staleAfterSeconds,
                 MonitorRateHz = monitorRateHz,
+                UnsupportedMigrationCommand = unsupportedMigrationCommand,
             };
             return true;
         }
@@ -1159,6 +1307,7 @@ internal sealed record AppCommandLineOptions(
                 DailyRightVmtSlot = dailyRightVmtSlot,
                 DailyLogPath = dailyLogPath,
                 DailyReconnectDelaySeconds = dailyReconnectDelaySeconds,
+                UnsupportedMigrationCommand = unsupportedMigrationCommand,
             };
             return true;
         }
@@ -1246,6 +1395,7 @@ internal sealed record AppCommandLineOptions(
                 WizardLeftVmtSlot = dailyLeftVmtSlot,
                 WizardRightVmtSlot = dailyRightVmtSlot,
                 WizardReconnectDelaySeconds = dailyReconnectDelaySeconds,
+                UnsupportedMigrationCommand = unsupportedMigrationCommand,
             };
             return true;
         }
@@ -1270,6 +1420,7 @@ internal sealed record AppCommandLineOptions(
                 Command = command,
                 WizardProfileStorePath = wizardProfileStorePath,
                 WizardLogPath = wizardLogPath,
+                UnsupportedMigrationCommand = unsupportedMigrationCommand,
             };
             return true;
         }
@@ -1333,37 +1484,45 @@ internal sealed record AppCommandLineOptions(
             0.5d,
             20d,
             null,
-            false);
+            false)
+        {
+            UnsupportedMigrationCommand = unsupportedMigrationCommand,
+        };
         return true;
     }
 
     public static void PrintUsage(TextWriter writer)
     {
-        writer.WriteLine("Lighthouse Touch Bridge console utility");
+        writer.WriteLine("Lighthouse Touch Bridge first-party internal-driver application");
         writer.WriteLine();
-        writer.WriteLine("Repository-root usage:");
-        writer.WriteLine("  dotnet run --project src/Ltb.App -- devices");
-        writer.WriteLine("  dotnet run --project src/Ltb.App -- record --tracker <stable-serial> [--tracker <stable-serial> ...] --controller <stable-serial> [--controller <stable-serial> ...] --output <recording.json> --override-released [--duration <seconds>] [--rate <hz>]");
-        writer.WriteLine("  dotnet run --project src/Ltb.App -- bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]");
-        writer.WriteLine("  dotnet run --project src/Ltb.App -- daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]");
-        writer.WriteLine("  dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]");
-        writer.WriteLine("  dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]");
+        writer.WriteLine("Production usage (zero setup arguments):");
+        writer.WriteLine("  dotnet run --project src/Ltb.App");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- run");
+        writer.WriteLine("Production automatically discovers OpenVR, uses per-user LocalApplicationData settings/profiles, and stages driver_ltb beside the application.");
+        writer.WriteLine("Production never requires ALVR, VMT slots, TrackingOverrides, or a steamvr.vrsettings path.");
         writer.WriteLine();
-        writer.WriteLine("Defaults: record --duration 10 --rate 90; bridge --stale-after 0.5 --monitor-rate 20; daily --monitor-rate 20 --reconnect-delay 0.25.");
-        writer.WriteLine("The bridge command touches only the explicit --steamvr-settings path; it never searches for host settings.");
-        writer.WriteLine("--stale-after governs reported tracker pose sample age when available; synchronous OpenVR reads still require connected, RunningOk, full-valid poses.");
-        writer.WriteLine("VMT Alive heartbeat and post-activation connection use a separate conservative 5-second bound.");
-        writer.WriteLine("--monitor-rate is a requested minimum rate; safety bounds automatically make the effective watchdog faster when required.");
-        writer.WriteLine("Bridge exit codes: 0 cancelled+disabled, 2 startup/run failure, 3 health-triggered SafeDisable, 4 incomplete SafeDisable cleanup.");
-        writer.WriteLine("Daily exit codes: 0 clean cancellation, 2 startup/profile/application failure, 3 SteamVR/runtime health termination, 4 any incomplete cleanup or rollback.");
-        writer.WriteLine("Wizard exit codes: 0 clean cancellation after SafeDisable, 2 dependency/device/capture/calibration/application failure, 3 post-Active health termination, 4 any incomplete cleanup or rollback.");
-        writer.WriteLine("--override-released explicitly acknowledges that VMT and SteamVR pose overrides are inactive, so the original controller pose is sampled.");
-        writer.WriteLine("The record command does not inspect or modify SteamVR settings.");
-        writer.WriteLine("wizard-demo uses deterministic fake devices and never opens SteamVR, VMT, or host settings; rerun with the same store to exercise profile reuse.");
+        writer.WriteLine("Unsupported legacy compile-only commands (not part of production or release support):");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- legacy-devices");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- legacy-record --tracker <stable-serial> [--tracker <stable-serial> ...] --controller <stable-serial> [--controller <stable-serial> ...] --output <recording.json> --override-released [--duration <seconds>] [--rate <hz>]");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- legacy-bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- legacy-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- legacy-wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]");
+        writer.WriteLine("  dotnet run --project src/Ltb.App -- legacy-wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]");
+        writer.WriteLine("These legacy ALVR/VMT/TrackingOverrides-era paths remain buildable only for migration and receive no production automation or support.");
+        writer.WriteLine("Legacy defaults: legacy-record --duration 10 --rate 90; legacy-bridge --stale-after 0.5 --monitor-rate 20; legacy-daily --monitor-rate 20 --reconnect-delay 0.25.");
+        writer.WriteLine("Legacy --stale-after governs reported tracker pose sample age when available; synchronous OpenVR reads still require connected, RunningOk, full-valid poses.");
+        writer.WriteLine("Legacy VMT Alive heartbeat and post-activation connection use a separate conservative 5-second bound.");
+        writer.WriteLine("Legacy --monitor-rate is a requested minimum rate; safety bounds automatically make the effective watchdog faster when required.");
+        writer.WriteLine("Legacy bridge exit codes: 0 cancelled+disabled, 2 startup/run failure, 3 health-triggered SafeDisable, 4 incomplete SafeDisable cleanup.");
+        writer.WriteLine("Legacy daily exit codes: 0 clean cancellation, 2 startup/profile/application failure, 3 SteamVR/runtime health termination, 4 any incomplete cleanup or rollback.");
+        writer.WriteLine("Legacy wizard exit codes: 0 clean cancellation after SafeDisable, 2 dependency/device/capture/calibration/application failure, 3 post-Active health termination, 4 any incomplete cleanup or rollback.");
+        writer.WriteLine("Legacy --override-released acknowledges that VMT and SteamVR pose overrides are inactive, so the original controller pose is sampled.");
+        writer.WriteLine("The legacy-record command does not inspect or modify SteamVR settings.");
+        writer.WriteLine("legacy-wizard-demo uses deterministic fake devices and never opens SteamVR, VMT, or host settings; rerun with the same store to exercise profile reuse.");
     }
 
     private static AppCommandLineOptions Empty { get; } = new(
-        AppCommand.Devices,
+        AppCommand.InternalDriver,
         Array.Empty<string>(),
         Array.Empty<string>(),
         null,
@@ -1382,6 +1541,13 @@ internal sealed record AppCommandLineOptions(
     {
         command = value switch
         {
+            "run" => AppCommand.InternalDriver,
+            "legacy-devices" => AppCommand.Devices,
+            "legacy-record" => AppCommand.Record,
+            "legacy-bridge" => AppCommand.Bridge,
+            "legacy-daily" => AppCommand.Daily,
+            "legacy-wizard" => AppCommand.Wizard,
+            "legacy-wizard-demo" => AppCommand.WizardDemo,
             "devices" => AppCommand.Devices,
             "record" => AppCommand.Record,
             "bridge" => AppCommand.Bridge,
@@ -1465,6 +1631,7 @@ internal sealed record AppCommandLineOptions(
 
 internal enum AppCommand
 {
+    InternalDriver,
     Devices,
     Record,
     Bridge,

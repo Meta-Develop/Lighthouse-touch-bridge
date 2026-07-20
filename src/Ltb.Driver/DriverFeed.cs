@@ -19,6 +19,7 @@ public sealed class DriverFeed : IDriverFeed
     private ulong _nextSequence;
     private ulong? _lastSuccessfulSequence;
     private ulong? _lastSuccessfulSendNanoseconds;
+    private ulong? _lastSuccessfulHeartbeatNanoseconds;
     private ulong? _lastHeartbeatTimestampNanoseconds;
     private ulong? _lastLeftHandSampleNanoseconds;
     private ulong? _lastRightHandSampleNanoseconds;
@@ -60,6 +61,7 @@ public sealed class DriverFeed : IDriverFeed
                     _sessionId,
                     _lastSuccessfulSequence,
                     _lastSuccessfulSendNanoseconds,
+                    _lastSuccessfulHeartbeatNanoseconds,
                     _consecutiveReconnectAttempts,
                     _lastError);
             }
@@ -274,6 +276,11 @@ public sealed class DriverFeed : IDriverFeed
                     {
                         _lastSuccessfulSequence = sequence;
                         _lastSuccessfulSendNanoseconds = successfulSendTimestamp;
+                        if (message is ProtocolHeartbeat)
+                        {
+                            _lastSuccessfulHeartbeatNanoseconds = successfulSendTimestamp;
+                        }
+
                         RecordStreamTimestamp(message, timestamp);
                         _consecutiveReconnectAttempts = 0;
                         _lastError = null;
@@ -290,6 +297,7 @@ public sealed class DriverFeed : IDriverFeed
                     lock (_healthGate)
                     {
                         _readiness = DriverFeedReadiness.Reconnecting;
+                        _lastSuccessfulHeartbeatNanoseconds = null;
                         _consecutiveReconnectAttempts++;
                         _lastError = exception.Message;
                     }
@@ -320,10 +328,11 @@ public sealed class DriverFeed : IDriverFeed
             }
 
             _transport = transport;
-            _sessionId = sessionId;
             _nextSequence = 0;
             lock (_healthGate)
             {
+                _sessionId = sessionId;
+                _lastSuccessfulHeartbeatNanoseconds = null;
                 _lastHeartbeatTimestampNanoseconds = null;
                 _lastLeftHandSampleNanoseconds = null;
                 _lastRightHandSampleNanoseconds = null;
@@ -340,7 +349,12 @@ public sealed class DriverFeed : IDriverFeed
     {
         var transport = _transport;
         _transport = null;
-        _sessionId = null;
+        lock (_healthGate)
+        {
+            _sessionId = null;
+            _lastSuccessfulHeartbeatNanoseconds = null;
+        }
+
         if (transport is not null)
         {
             await transport.DisposeAsync().ConfigureAwait(false);

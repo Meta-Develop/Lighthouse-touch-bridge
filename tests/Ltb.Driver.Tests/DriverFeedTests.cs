@@ -21,6 +21,30 @@ public sealed class DriverFeedTests
         Assert.Equal(clock.GetMonotonicNanoseconds(), heartbeat.Ordering.ProducerMonotonicNanoseconds);
         Assert.Equal(DriverFeedReadiness.Ready, feed.Health.Readiness);
         Assert.False(feed.Health.IsStale);
+        Assert.Equal(clock.GetMonotonicNanoseconds(), feed.Health.LastSuccessfulHeartbeatNanoseconds);
+    }
+
+    [Fact]
+    public async Task SuccessfulHeartbeatHealthUsesPostWriteMonotonicTime()
+    {
+        var clock = new ManualDriverFeedClock();
+        var transport = new AdvancingWriteDriverTransport(
+            () => clock.Advance(TimeSpan.FromMilliseconds(25), releaseDueDelays: false));
+        await using var feed = CreateFeed(
+            new QueueDriverTransportFactory(transport),
+            clock,
+            DriverTestData.SessionA);
+
+        await feed.StartAsync();
+
+        var heartbeat = Assert.IsType<ProtocolHeartbeat>(
+            ProtocolCodec.Decode(Assert.Single(transport.Packets)));
+        Assert.True(
+            feed.Health.LastSuccessfulHeartbeatNanoseconds >
+            heartbeat.Ordering.ProducerMonotonicNanoseconds);
+        Assert.Equal(
+            clock.GetMonotonicNanoseconds(),
+            feed.Health.LastSuccessfulHeartbeatNanoseconds);
     }
 
     [Fact]
@@ -43,6 +67,25 @@ public sealed class DriverFeedTests
             ProtocolCodec.Decode(transport.Packets.Last()));
         Assert.True(precedingHeartbeat.Ordering.ProducerMonotonicNanoseconds > 123UL);
         Assert.Equal(123UL, state.Ordering.ProducerMonotonicNanoseconds);
+        Assert.Equal(1_000_000_000UL, feed.Health.LastSuccessfulSendNanoseconds);
+        Assert.Equal(
+            precedingHeartbeat.Ordering.ProducerMonotonicNanoseconds,
+            feed.Health.LastSuccessfulHeartbeatNanoseconds);
+    }
+
+    [Fact]
+    public async Task SuccessfulHandWriteDoesNotAdvanceSuccessfulHeartbeatHealth()
+    {
+        var transport = new ScriptedDriverTransport();
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(transport, clock, DriverTestData.SessionA);
+        await feed.StartAsync();
+        var successfulHeartbeat = feed.Health.LastSuccessfulHeartbeatNanoseconds;
+        clock.SetTime(1_000_000_000);
+
+        await feed.PublishAsync(DriverTestData.State());
+
+        Assert.Equal(successfulHeartbeat, feed.Health.LastSuccessfulHeartbeatNanoseconds);
         Assert.Equal(1_000_000_000UL, feed.Health.LastSuccessfulSendNanoseconds);
     }
 
@@ -144,6 +187,7 @@ public sealed class DriverFeedTests
 
         var publish = feed.PublishAsync(DriverTestData.State()).AsTask();
         await DriverTestData.WaitUntilAsync(() => first.IsDisposed && clock.PendingDelayCount > 0);
+        Assert.Null(feed.Health.LastSuccessfulHeartbeatNanoseconds);
         clock.Advance(TimeSpan.FromMilliseconds(25));
         await publish;
 
@@ -157,6 +201,30 @@ public sealed class DriverFeedTests
         Assert.Equal(0UL, recoveredState.Ordering.Sequence);
         Assert.Equal(2, factory.CreateCount);
         Assert.Equal(DriverFeedReadiness.Ready, feed.Health.Readiness);
+        Assert.Null(feed.Health.LastSuccessfulHeartbeatNanoseconds);
+    }
+
+    [Fact]
+    public async Task FailedHeartbeatWriteDoesNotAdvanceSuccessfulHeartbeatHealth()
+    {
+        var transport = new ScriptedDriverTransport
+        {
+            FailOnWriteNumber = 2,
+            WriteFailure = new ProtocolException("Scripted non-recoverable heartbeat failure."),
+        };
+        var clock = new ManualDriverFeedClock();
+        await using var feed = CreateFeed(transport, clock, DriverTestData.SessionA);
+        await feed.StartAsync();
+        await DriverTestData.WaitUntilAsync(() => clock.PendingDelayCount > 0);
+        var successfulHeartbeat = feed.Health.LastSuccessfulHeartbeatNanoseconds;
+
+        clock.Advance(TimeSpan.FromMilliseconds(100));
+        await DriverTestData.WaitUntilAsync(
+            () => feed.Health.Readiness == DriverFeedReadiness.Faulted);
+
+        Assert.Equal(successfulHeartbeat, feed.Health.LastSuccessfulHeartbeatNanoseconds);
+        Assert.Equal(successfulHeartbeat, feed.Health.LastSuccessfulSendNanoseconds);
+        Assert.Single(transport.Packets);
     }
 
     [Fact]
@@ -358,8 +426,11 @@ public sealed class DriverFeedTests
             DriverTestData.SessionB);
 
         await feed.StartAsync();
+        Assert.NotNull(feed.Health.LastSuccessfulHeartbeatNanoseconds);
         await feed.StopAsync();
+        Assert.Null(feed.Health.LastSuccessfulHeartbeatNanoseconds);
         await feed.StopAsync();
+        clock.Advance(TimeSpan.FromMilliseconds(1), releaseDueDelays: false);
         await feed.StartAsync();
 
         var restarted = Assert.IsType<ProtocolHeartbeat>(
@@ -367,6 +438,9 @@ public sealed class DriverFeedTests
         Assert.Equal(DriverTestData.SessionB, restarted.Ordering.SessionId);
         Assert.Equal(0UL, restarted.Ordering.Sequence);
         Assert.NotEqual(0UL, restarted.Ordering.ProducerMonotonicNanoseconds);
+        Assert.Equal(
+            restarted.Ordering.ProducerMonotonicNanoseconds,
+            feed.Health.LastSuccessfulHeartbeatNanoseconds);
     }
 
     private static DriverFeed CreateFeed(
@@ -390,4 +464,31 @@ public sealed class DriverFeedTests
                 MaximumReconnectDelay = TimeSpan.FromMilliseconds(100),
             },
             new QueueSessionIdFactory(sessionIds));
+
+    private sealed class AdvancingWriteDriverTransport(Action onWrite) : IDriverTransport
+    {
+        public Queue<byte[]> Packets { get; } = new();
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask WriteAsync(
+            ReadOnlyMemory<byte> packet,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Packets.Enqueue(packet.ToArray());
+            onWrite();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            GC.SuppressFinalize(this);
+            return ValueTask.CompletedTask;
+        }
+    }
 }

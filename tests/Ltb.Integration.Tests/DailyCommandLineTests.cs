@@ -6,28 +6,28 @@ namespace Ltb.Integration.Tests;
 public sealed class DailyCommandLineTests
 {
     private const string DailyUsage =
-        "  dotnet run --project src/Ltb.App -- daily --profiles <profile-store.json> " +
+        "  dotnet run --project src/Ltb.App -- legacy-daily --profiles <profile-store.json> " +
         "--left-vmt-slot <0..57> --right-vmt-slot <0..57> " +
         "--steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] " +
         "[--monitor-rate <hz>] [--reconnect-delay <seconds>]";
 
     private const string DailyExitMeanings =
-        "Daily exit codes: 0 clean cancellation, 2 startup/profile/application failure, " +
+        "Legacy daily exit codes: 0 clean cancellation, 2 startup/profile/application failure, " +
         "3 SteamVR/runtime health termination, 4 any incomplete cleanup or rollback.";
 
     private const string WizardUsage =
-        "  dotnet run --project src/Ltb.App -- wizard-demo " +
+        "  dotnet run --project src/Ltb.App -- legacy-wizard-demo " +
         "--profiles <profile-store.json> [--log <events.jsonl>]";
 
     private const string ProductionWizardUsage =
-        "  dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> " +
+        "  dotnet run --project src/Ltb.App -- legacy-wizard --profiles <profile-store.json> " +
         "--left-vmt-slot <0..57> --right-vmt-slot <0..57> " +
         "--steamvr-settings <steamvr.vrsettings> [--duration <seconds>] " +
         "[--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] " +
         "[--reconnect-delay <seconds>]";
 
     private const string ProductionWizardExitMeanings =
-        "Wizard exit codes: 0 clean cancellation after SafeDisable, " +
+        "Legacy wizard exit codes: 0 clean cancellation after SafeDisable, " +
         "2 dependency/device/capture/calibration/application failure, " +
         "3 post-Active health termination, 4 any incomplete cleanup or rollback.";
 
@@ -36,7 +36,7 @@ public sealed class DailyCommandLineTests
     {
         Assert.True(AppCommandLineOptions.TryParse(
             [
-                "daily",
+                "legacy-daily",
                 "--profiles", "profiles.json",
                 "--left-vmt-slot", "3",
                 "--right-vmt-slot", "57",
@@ -76,7 +76,7 @@ public sealed class DailyCommandLineTests
     {
         Assert.True(AppCommandLineOptions.TryParse(
             [
-                "wizard",
+                "legacy-wizard",
                 "--profiles", "profiles.json",
                 "--left-vmt-slot", "0",
                 "--right-vmt-slot", "57",
@@ -247,26 +247,26 @@ public sealed class DailyCommandLineTests
 
     public static TheoryData<string[]> NonDailyCommandsWithDailyOptions => new()
     {
-        { ["devices", "--left-vmt-slot", "1"] },
+        { ["legacy-devices", "--left-vmt-slot", "1"] },
         {
             [
-                "bridge",
+                "legacy-bridge",
                 "--profile", "profile.json",
                 "--vmt-slot", "1",
                 "--steamvr-settings", "steamvr.vrsettings",
                 "--right-vmt-slot", "2",
             ]
         },
-        { ["wizard-demo", "--profiles", "profiles.json", "--reconnect-delay", "0.25"] },
-        { ["devices", "--reconnect-delay", "0.25"] },
+        { ["legacy-wizard-demo", "--profiles", "profiles.json", "--reconnect-delay", "0.25"] },
+        { ["legacy-devices", "--reconnect-delay", "0.25"] },
     };
 
     public static TheoryData<string[]> UnrelatedCommandsWithLogOption => new()
     {
-        { ["devices", "--log", "events.jsonl"] },
+        { ["legacy-devices", "--log", "events.jsonl"] },
         {
             [
-                "bridge",
+                "legacy-bridge",
                 "--profile", "profile.json",
                 "--vmt-slot", "1",
                 "--steamvr-settings", "steamvr.vrsettings",
@@ -275,7 +275,7 @@ public sealed class DailyCommandLineTests
         },
         {
             [
-                "record",
+                "legacy-record",
                 "--tracker", "TRACKER",
                 "--controller", "TOUCH",
                 "--output", "recording.json",
@@ -287,7 +287,7 @@ public sealed class DailyCommandLineTests
 
     private static string[] RequiredDailyArguments() =>
     [
-        "daily",
+        "legacy-daily",
         "--profiles", "profiles.json",
         "--left-vmt-slot", "1",
         "--right-vmt-slot", "2",
@@ -296,7 +296,7 @@ public sealed class DailyCommandLineTests
 
     private static string[] RequiredWizardArguments() =>
     [
-        "wizard",
+        "legacy-wizard",
         "--profiles", "profiles.json",
         "--left-vmt-slot", "1",
         "--right-vmt-slot", "2",

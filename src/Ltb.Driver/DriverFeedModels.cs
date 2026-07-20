@@ -88,5 +88,6 @@ public readonly record struct DriverFeedHealth(
     ProtocolSessionId? SessionId,
     ulong? LastSuccessfulSequence,
     ulong? LastSuccessfulSendNanoseconds,
+    ulong? LastSuccessfulHeartbeatNanoseconds,
     int ConsecutiveReconnectAttempts,
     string? LastError);
