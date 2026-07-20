@@ -37,6 +37,7 @@ artifact_root="$repo_root/artifacts/package"
 driver_source_root="${LTB_DRIVER_ROOT:-$repo_root/build/native-windows/driver_ltb}"
 
 required_driver_source_files=(
+  "$driver_source_root/build-id.txt"
   "$driver_source_root/driver.vrdrivermanifest"
   "$driver_source_root/bin/win64/driver_ltb.dll"
   "$driver_source_root/resources/input/ltb_touch_profile.json"
@@ -51,6 +52,42 @@ for required_file in "${required_driver_source_files[@]}"; do
     exit 1
   fi
 done
+
+driver_build_id_path="$driver_source_root/build-id.txt"
+driver_build_id="$(python3 - "$driver_build_id_path" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = path.read_bytes()
+try:
+    text = data.decode("ascii")
+except UnicodeDecodeError as error:
+    raise SystemExit(f"Staged build-id.txt must contain ASCII only: {error}") from error
+
+match = re.fullmatch(
+    r"(?P<identity>driver_ltb-[0-9]+\.[0-9]+\.[0-9]+"
+    r"-ipc-(?P<ipc_major>[0-9]+)\.(?P<ipc_minor>[0-9]+))(?:\r?\n)?",
+    text,
+)
+if match is None:
+    raise SystemExit(
+        "Staged build-id.txt must contain one exact driver_ltb-X.Y.Z-ipc-X.Y identity."
+    )
+if (match.group("ipc_major"), match.group("ipc_minor")) != ("1", "0"):
+    raise SystemExit("Staged build-id.txt does not identify supported IPC version 1.0.")
+print(match.group("identity"))
+PY
+)"
+driver_build_id_hash="$(python3 - "$driver_build_id_path" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
 
 version="${1:-}"
 if [[ -z "$version" ]]; then
@@ -184,6 +221,7 @@ required_publish_files=(
   "$package_root/Ltb.Gui.exe"
   "$package_root/openvr_api.dll"
   "$package_root/licenses/Valve.OpenVR.LICENSE.txt"
+  "$package_root/driver_ltb/build-id.txt"
   "$package_root/driver_ltb/driver.vrdrivermanifest"
   "$package_root/driver_ltb/bin/win64/driver_ltb.dll"
   "$package_root/driver_ltb/resources/input/ltb_touch_profile.json"
@@ -246,7 +284,7 @@ if [[ "$openvr_driver_header_hash" != "$expected_openvr_driver_header_hash" ]]; 
 fi
 
 install -m 0644 "$repo_root/LICENSE" "$package_root/LICENSE.txt"
-for document_name in setup troubleshooting architecture calibration driver-evaluation internal-drivers windows-verification specification; do
+for document_name in setup troubleshooting architecture calibration driver-evaluation internal-drivers windows-internal-driver-verification windows-verification specification; do
   install -m 0644 \
     "$repo_root/docs/$document_name.md" \
     "$package_root/docs/$document_name.md"
@@ -271,6 +309,8 @@ done
   printf 'publish_single_file=false\n'
   printf 'publish_trimmed=false\n'
   printf 'openvr_api_sha256=%s\n' "$actual_openvr_hash"
+  printf 'driver_build_id=%s\n' "$driver_build_id"
+  printf 'driver_build_id_sha256=%s\n' "$driver_build_id_hash"
   printf 'driver_ltb_sha256=%s\n' "$driver_ltb_hash"
   printf 'driver_protocol_major=1\n'
   printf 'driver_protocol_minor=0\n'
@@ -321,6 +361,8 @@ python3 - \
   "$zlib_build_version" \
   "$zlib_runtime_version" \
   "$actual_openvr_hash" \
+  "$driver_build_id" \
+  "$driver_build_id_hash" \
   "$driver_ltb_hash" \
   "$openvr_driver_header_hash" \
   "$valve_license_hash" <<'PY'
@@ -344,6 +386,8 @@ import zipfile
     zlib_build_version,
     zlib_runtime_version,
     openvr_hash,
+    driver_build_id,
+    driver_build_id_hash,
     driver_ltb_hash,
     openvr_driver_header_hash,
     valve_license_hash,
@@ -362,6 +406,7 @@ required = {
     root + "coreclr.dll",
     root + "hostfxr.dll",
     root + "openvr_api.dll",
+    root + "driver_ltb/build-id.txt",
     root + "driver_ltb/driver.vrdrivermanifest",
     root + "driver_ltb/bin/win64/driver_ltb.dll",
     root + "driver_ltb/resources/input/ltb_touch_profile.json",
@@ -377,6 +422,7 @@ required = {
     root + "docs/calibration.md",
     root + "docs/driver-evaluation.md",
     root + "docs/internal-drivers.md",
+    root + "docs/windows-internal-driver-verification.md",
     root + "docs/windows-verification.md",
     root + "docs/specification.md",
 }
@@ -399,6 +445,8 @@ expected_manifest = {
     "publish_single_file": "false",
     "publish_trimmed": "false",
     "openvr_api_sha256": openvr_hash,
+    "driver_build_id": driver_build_id,
+    "driver_build_id_sha256": driver_build_id_hash,
     "driver_ltb_sha256": driver_ltb_hash,
     "driver_protocol_major": "1",
     "driver_protocol_minor": "0",
@@ -416,6 +464,7 @@ with zipfile.ZipFile(archive_path, "r") as archive:
     if missing:
         raise SystemExit(f"Package is missing required entries: {missing!r}")
     allowed_driver_entries = {
+        root + "driver_ltb/build-id.txt",
         root + "driver_ltb/driver.vrdrivermanifest",
         root + "driver_ltb/bin/win64/driver_ltb.dll",
         root + "driver_ltb/resources/input/ltb_touch_profile.json",
@@ -439,6 +488,7 @@ with zipfile.ZipFile(archive_path, "r") as archive:
         "/backups/",
         "/logs/",
         "/recordings/",
+        "/state/",
         "/.agents/",
         "/.maco/",
     )
@@ -447,6 +497,7 @@ with zipfile.ZipFile(archive_path, "r") as archive:
         name
         for name in names
         if name.lower().endswith((".pdb", ".log", ".bak", ".backup"))
+        or re.fullmatch(r"libovrrt.*\.dll", pathlib.PurePosixPath(name).name, re.I)
         or (name.lower().endswith(".vrsettings") and name != allowed_vrsettings)
         or any(token in name.lower() for token in forbidden_tokens)
     )
@@ -466,6 +517,29 @@ with zipfile.ZipFile(archive_path, "r") as archive:
         raise SystemExit(
             f"Manifest mismatch. Expected {expected_manifest!r}, got {manifest!r}"
         )
+    archived_build_id_bytes = archive.read(root + "driver_ltb/build-id.txt")
+    try:
+        archived_build_id_text = archived_build_id_bytes.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise SystemExit(f"Archived build-id.txt must contain ASCII only: {error}") from error
+    archived_build_id_match = re.fullmatch(
+        r"(?P<identity>driver_ltb-[0-9]+\.[0-9]+\.[0-9]+"
+        r"-ipc-(?P<ipc_major>[0-9]+)\.(?P<ipc_minor>[0-9]+))(?:\r?\n)?",
+        archived_build_id_text,
+    )
+    if archived_build_id_match is None:
+        raise SystemExit(
+            "Archived build-id.txt does not contain one exact driver_ltb-X.Y.Z-ipc-X.Y identity."
+        )
+    if archived_build_id_match.group("identity") != driver_build_id:
+        raise SystemExit("Archived build-id.txt identity does not match the manifest.")
+    if (
+        archived_build_id_match.group("ipc_major") != manifest["driver_protocol_major"]
+        or archived_build_id_match.group("ipc_minor") != manifest["driver_protocol_minor"]
+    ):
+        raise SystemExit("Archived build-id.txt IPC version does not match the manifest.")
+    if hashlib.sha256(archived_build_id_bytes).hexdigest() != driver_build_id_hash:
+        raise SystemExit("Archived build-id.txt hash does not match the manifest.")
     if hashlib.sha256(archive.read(root + "openvr_api.dll")).hexdigest() != openvr_hash:
         raise SystemExit("Archived openvr_api.dll hash does not match the manifest.")
     if hashlib.sha256(
