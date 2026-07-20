@@ -26,6 +26,7 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private readonly ISteamVrFileSystem _fileSystem;
     private readonly ISteamVrProcessRunner _processRunner;
+    private readonly ISteamVrDriverReceiptStore _receiptStore;
     private readonly SteamVrPathDiscovery _pathDiscovery;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly Dictionary<string, OwnedRegistration> _ownedRegistrations =
@@ -35,19 +36,23 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
     public SteamVrDriverLifecycle(
         ISteamVrHostEnvironment environment,
         ISteamVrFileSystem fileSystem,
-        ISteamVrProcessRunner processRunner)
+        ISteamVrProcessRunner processRunner,
+        ISteamVrDriverReceiptStore? receiptStore = null)
     {
         ArgumentNullException.ThrowIfNull(environment);
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
+        _receiptStore = receiptStore ?? NullSteamVrDriverReceiptStore.Instance;
         _pathDiscovery = new SteamVrPathDiscovery(environment, fileSystem);
     }
 
-    public static SteamVrDriverLifecycle CreateDefault() =>
+    public static SteamVrDriverLifecycle CreateDefault(
+        ISteamVrDriverReceiptStore? receiptStore = null) =>
         new(
             new SystemSteamVrHostEnvironment(),
             new SystemSteamVrFileSystem(),
-            new SystemSteamVrProcessRunner());
+            new SystemSteamVrProcessRunner(),
+            receiptStore);
 
     public ValueTask<SteamVrPaths> DiscoverAsync(
         CancellationToken cancellationToken = default)
@@ -213,15 +218,20 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                         out var ownedRegistration) ||
                     ownedRegistration.Removed)
                 {
-                    var receipt = new SteamVrDriverRegistrationReceipt(
-                        canonicalDriverRoot,
-                        originalSettings.ActivateMultipleDrivers,
-                        settingChanged,
-                        originalSettings.SteamVrSectionWasPresent,
-                        Guid.NewGuid());
+                    var receipt = (ownedRegistration is null
+                            ? TryLoadPersistedReceipt(canonicalDriverRoot)
+                            : null) ??
+                        new SteamVrDriverRegistrationReceipt(
+                            canonicalDriverRoot,
+                            originalSettings.ActivateMultipleDrivers,
+                            settingChanged,
+                            originalSettings.SteamVrSectionWasPresent,
+                            Guid.NewGuid());
                     ownedRegistration = new OwnedRegistration(receipt, Removed: false);
                     _ownedRegistrations[canonicalDriverRoot] = ownedRegistration;
                 }
+
+                _receiptStore.Save(ownedRegistration.Receipt);
 
                 var changed = driverChanged || settingChanged;
                 return new SteamVrDriverLifecycleResult(
@@ -278,12 +288,19 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
 
             if (!_ownedRegistrations.TryGetValue(
                     canonicalDriverRoot,
-                    out var ownedRegistration) ||
-                ownedRegistration.Receipt != receipt)
+                    out var ownedRegistration) &&
+                TryLoadPersistedReceipt(canonicalDriverRoot) is { } persistedReceipt)
+            {
+                ownedRegistration = new OwnedRegistration(persistedReceipt, Removed: false);
+                _ownedRegistrations[canonicalDriverRoot] = ownedRegistration;
+            }
+
+            if (ownedRegistration is null || ownedRegistration.Receipt != receipt)
             {
                 throw Failure(
                     SteamVrDriverDiagnosticCode.RemovalOwnershipLost,
-                    "The registration receipt was not issued by this lifecycle or is stale.");
+                    "The registration receipt was not issued by this lifecycle, is not in " +
+                    "LTB's persisted registration ownership, or is stale.");
             }
 
             var originalOpenVr = await ReadOpenVrStateAsync(
@@ -390,6 +407,7 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                 ownedSettingsText = verifiedSettings.Text;
 
                 var changed = driverChanged || settingNeedsRestore;
+                _receiptStore.Delete(canonicalDriverRoot);
                 _ownedRegistrations[canonicalDriverRoot] = ownedRegistration with
                 {
                     Removed = true,
@@ -1019,6 +1037,20 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                     $"expected '{expected[index]}', found '{actual[index]}'.");
             }
         }
+    }
+
+    /// <summary>
+    /// Loads a durable LTB-issued receipt for the exact canonical driver root.
+    /// A stored receipt whose recorded root is not that canonical root is
+    /// ignored so a corrupted or foreign entry can never grant removal.
+    /// </summary>
+    private SteamVrDriverRegistrationReceipt? TryLoadPersistedReceipt(string canonicalDriverRoot)
+    {
+        var receipt = _receiptStore.TryLoad(canonicalDriverRoot);
+        return receipt is not null &&
+            PathsEqual(receipt.CanonicalDriverRoot, canonicalDriverRoot)
+                ? receipt
+                : null;
     }
 
     private static bool PathsEqual(string left, string right) =>

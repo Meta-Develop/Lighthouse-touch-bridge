@@ -63,6 +63,40 @@ public sealed record SteamVrDriverLifecycleResult(
     SteamVrPaths Paths,
     SteamVrDriverRegistrationReceipt Receipt);
 
+/// <summary>
+/// Durable authority for LTB-issued registration receipts. A lifecycle saves
+/// the receipt of every registration it owns and deletes it after a completed
+/// removal, so removal stays possible after an application restart. Receipts
+/// are keyed by the exact canonical driver root.
+/// </summary>
+public interface ISteamVrDriverReceiptStore
+{
+    SteamVrDriverRegistrationReceipt? TryLoad(string canonicalDriverRoot);
+
+    void Save(SteamVrDriverRegistrationReceipt receipt);
+
+    void Delete(string canonicalDriverRoot);
+}
+
+/// <summary>
+/// Non-persisting store: removal authority then lives only in process memory,
+/// which keeps the historical single-process lifecycle behavior.
+/// </summary>
+public sealed class NullSteamVrDriverReceiptStore : ISteamVrDriverReceiptStore
+{
+    public static NullSteamVrDriverReceiptStore Instance { get; } = new();
+
+    public SteamVrDriverRegistrationReceipt? TryLoad(string canonicalDriverRoot) => null;
+
+    public void Save(SteamVrDriverRegistrationReceipt receipt)
+    {
+    }
+
+    public void Delete(string canonicalDriverRoot)
+    {
+    }
+}
+
 public sealed class SteamVrDriverLifecycleException : Exception
 {
     public SteamVrDriverLifecycleException(
