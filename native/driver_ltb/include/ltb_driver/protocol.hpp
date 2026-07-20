@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ltb_driver/build_identity.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,8 +13,6 @@ inline constexpr std::size_t kHeaderSize = 16;
 inline constexpr std::size_t kHeartbeatPacketSize = 48;
 inline constexpr std::size_t kHandStatePacketSize = 132;
 inline constexpr std::uint32_t kMagic = 0x3142544cU;
-inline constexpr std::uint16_t kProtocolMajor = 1;
-inline constexpr std::uint16_t kProtocolMinor = 0;
 
 enum class MessageType : std::uint16_t {
     HandState = 1,

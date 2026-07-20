@@ -1,5 +1,7 @@
 #include "controller_device.hpp"
 
+#include "ltb_driver/build_identity.hpp"
+
 #include "monotonic_clock.hpp"
 
 #include <algorithm>
@@ -62,6 +64,8 @@ vr::EVRInitError ControllerDevice::Activate(std::uint32_t object_id) {
         property_container_, vr::Prop_SerialNumber_String, serial_number_.c_str());
     vr::VRProperties()->SetStringProperty(
         property_container_, vr::Prop_ManufacturerName_String, "Meta-Develop");
+    vr::VRProperties()->SetStringProperty(
+        property_container_, vr::Prop_DriverVersion_String, kBuildIdentity);
     vr::VRProperties()->SetStringProperty(
         property_container_, vr::Prop_ControllerType_String, kControllerType);
     vr::VRProperties()->SetStringProperty(
