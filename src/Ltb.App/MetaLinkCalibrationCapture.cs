@@ -167,6 +167,8 @@ internal sealed class InternalDriverCaptureEvidenceTracker
     private readonly MetaLinkHand _hand;
     private readonly List<TimestampedPoseSample> _samples = [];
 
+    public int EvaluationCount { get; private set; }
+
     public InternalDriverCaptureEvidenceTracker(MetaLinkHand hand)
     {
         if (!Enum.IsDefined(hand))
@@ -207,6 +209,7 @@ internal sealed class InternalDriverCaptureEvidenceTracker
 
     public InternalDriverCaptureEvidence Evaluate()
     {
+        EvaluationCount++;
         var coverage = MotionCoverageAnalyzer.Evaluate(_samples);
         return new InternalDriverCaptureEvidence(
             coverage.SampleCount,

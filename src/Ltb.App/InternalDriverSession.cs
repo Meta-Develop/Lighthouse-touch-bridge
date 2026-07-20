@@ -209,19 +209,23 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            var restartRequired = CurrentSnapshot.RestartRequired;
             PublishState(
                 InternalDriverSessionState.Stopped,
                 "Internal-driver session cancellation was requested.",
                 "Run the session again when the controllers are needed.",
+                restartRequired: restartRequired,
                 leftReason: InternalDriverNeutralReason.Stopping,
                 rightReason: InternalDriverNeutralReason.Stopping);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
+            var restartRequired = CurrentSnapshot.RestartRequired;
             PublishState(
                 InternalDriverSessionState.Faulted,
                 $"Internal-driver session failed: {exception.Message}",
                 "Correct the reported dependency, topology, calibration, or feed failure, then run the session again.",
+                restartRequired: restartRequired,
                 leftReason: InternalDriverNeutralReason.Faulted,
                 rightReason: InternalDriverNeutralReason.Faulted);
         }
@@ -230,20 +234,28 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             var faultSnapshot = CurrentSnapshot.State == InternalDriverSessionState.Faulted
                 ? CurrentSnapshot
                 : null;
+            var stoppedSnapshot = CurrentSnapshot.State == InternalDriverSessionState.Stopped
+                ? CurrentSnapshot
+                : null;
             await CleanupRunAsync().ConfigureAwait(false);
             faultSnapshot ??= CurrentSnapshot.State == InternalDriverSessionState.Faulted
+                ? CurrentSnapshot
+                : null;
+            stoppedSnapshot ??= CurrentSnapshot.State == InternalDriverSessionState.Stopped
                 ? CurrentSnapshot
                 : null;
             ClearRunEvidence();
             var finalSnapshot = faultSnapshot is { } fault
                 ? CreateFinalFaultSnapshot(fault)
-                : CreateStateSnapshot(
-                    InternalDriverSessionState.Stopped,
-                    "Internal-driver session stopped; both hands are neutral and runtime resources are retired.",
-                    "Run the session again to start a new feed session.",
-                    leftReason: InternalDriverNeutralReason.SessionStopped,
-                    rightReason: InternalDriverNeutralReason.SessionStopped,
-                    retainRunEvidence: false);
+                : stoppedSnapshot is { } stopped
+                    ? CreateFinalStoppedSnapshot(stopped)
+                    : CreateStateSnapshot(
+                        InternalDriverSessionState.Stopped,
+                        "Internal-driver session stopped; both hands are neutral and runtime resources are retired.",
+                        "Run the session again to start a new feed session.",
+                        leftReason: InternalDriverNeutralReason.SessionStopped,
+                        rightReason: InternalDriverNeutralReason.SessionStopped,
+                        retainRunEvidence: false);
             PublishFinalSnapshot(finalSnapshot);
         }
     }
@@ -251,18 +263,30 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private InternalDriverSessionSnapshot CreateFinalFaultSnapshot(
         InternalDriverSessionSnapshot faultSnapshot)
     {
+        return CreateFinalTerminalSnapshot(faultSnapshot);
+    }
+
+    private InternalDriverSessionSnapshot CreateFinalStoppedSnapshot(
+        InternalDriverSessionSnapshot stoppedSnapshot)
+    {
+        return CreateFinalTerminalSnapshot(stoppedSnapshot);
+    }
+
+    private InternalDriverSessionSnapshot CreateFinalTerminalSnapshot(
+        InternalDriverSessionSnapshot terminalSnapshot)
+    {
         var rebuilt = CreateStateSnapshot(
-            InternalDriverSessionState.Faulted,
-            faultSnapshot.Diagnostic,
-            faultSnapshot.Remediation,
-            restartRequired: faultSnapshot.RestartRequired,
-            leftReason: faultSnapshot.Left.NeutralReason,
-            rightReason: faultSnapshot.Right.NeutralReason,
+            terminalSnapshot.State,
+            terminalSnapshot.Diagnostic,
+            terminalSnapshot.Remediation,
+            restartRequired: terminalSnapshot.RestartRequired,
+            leftReason: terminalSnapshot.Left.NeutralReason,
+            rightReason: terminalSnapshot.Right.NeutralReason,
             retainRunEvidence: false);
         return rebuilt with
         {
-            Left = rebuilt.Left with { Diagnostic = faultSnapshot.Left.Diagnostic },
-            Right = rebuilt.Right with { Diagnostic = faultSnapshot.Right.Diagnostic },
+            Left = rebuilt.Left with { Diagnostic = terminalSnapshot.Left.Diagnostic },
+            Right = rebuilt.Right with { Diagnostic = terminalSnapshot.Right.Diagnostic },
         };
     }
 
@@ -958,6 +982,8 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         InternalDriverNeutralReason rightReason = InternalDriverNeutralReason.ProfileUnavailable,
         long? expectedPublicationGeneration = null)
     {
+        var isTerminal = state is InternalDriverSessionState.Stopped or
+            InternalDriverSessionState.Faulted;
         PublishSnapshot(
             CreateStateSnapshot(
                 state,
@@ -966,7 +992,8 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                 observation,
                 restartRequired,
                 leftReason,
-                rightReason),
+                rightReason,
+                retainRunEvidence: !isTerminal),
             expectedPublicationGeneration);
     }
 
@@ -1228,25 +1255,29 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             return null;
         }
 
-        var evidence = new InternalDriverDriverEvidence(registration.StagedBuildIdentity);
         if (observation is null || !LoadedReadiness(observation).IsReady)
         {
-            return evidence;
+            return new InternalDriverDriverEvidence(registration.StagedBuildIdentity);
         }
 
-        return evidence with
-        {
-            LeftController = LoadedControllerEvidence(
+        var left = LoadedControllerEvidence(
                 observation,
                 InternalDriverLoadedReadiness.LeftControllerSerial,
                 SteamVrControllerRole.LeftHand,
-                registration.StagedBuildIdentity),
-            RightController = LoadedControllerEvidence(
+                registration.StagedBuildIdentity)
+            ?? throw new InvalidDataException(
+                "Validated loaded topology did not retain exact left controller evidence.");
+        var right = LoadedControllerEvidence(
                 observation,
                 InternalDriverLoadedReadiness.RightControllerSerial,
                 SteamVrControllerRole.RightHand,
-                registration.StagedBuildIdentity),
-        };
+                registration.StagedBuildIdentity)
+            ?? throw new InvalidDataException(
+                "Validated loaded topology did not retain exact right controller evidence.");
+        return new InternalDriverDriverEvidence(
+            registration.StagedBuildIdentity,
+            left,
+            right);
     }
 
     private static InternalDriverLoadedControllerEvidence? LoadedControllerEvidence(

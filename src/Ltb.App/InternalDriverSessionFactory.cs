@@ -407,7 +407,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             CaptureProgressInterval,
             startedNanoseconds);
         InternalDriverRuntimeObservation? latestObservation = null;
-        UpdateCaptureEvidence(hand, captureEvidence.Evaluate());
+        UpdateCaptureEvidence(hand, InternalDriverCaptureEvidence.Empty);
         ReportCaptureEvidence(hand, progress, observation: null);
         while (ElapsedNanoseconds(GetMonotonicNanoseconds(), startedNanoseconds) < durationNanoseconds)
         {
@@ -420,10 +420,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             }
 
             var meta = observation.Meta.ForHand(hand);
-            if (captureEvidence.TryAppend(observation.Meta))
-            {
-                UpdateCaptureEvidence(hand, captureEvidence.Evaluate());
-            }
+            _ = captureEvidence.TryAppend(observation.Meta);
 
             if (meta.Readiness == MetaLinkReadiness.Ready && meta.Controller is { } controller)
             {
@@ -444,6 +441,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
 
             if (reportCadence.ShouldReport(GetMonotonicNanoseconds()))
             {
+                UpdateCaptureEvidence(hand, captureEvidence.Evaluate());
                 ReportCaptureEvidence(hand, progress, latestObservation);
             }
 
