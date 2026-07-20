@@ -10,9 +10,9 @@ public sealed class OpenVrSession : SteamVrDeviceEnumerator, IDisposable
     private readonly OpenVrDeviceEnumeratorAdapter _deviceEnumerator;
     private bool _disposed;
 
-    private OpenVrSession(IOpenVrRuntime runtime)
+    internal OpenVrSession(IOpenVrRuntime runtime)
     {
-        _runtime = runtime;
+        _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _deviceEnumerator = new OpenVrDeviceEnumeratorAdapter(runtime);
     }
 
@@ -84,11 +84,28 @@ public sealed class OpenVrSession : SteamVrDeviceEnumerator, IDisposable
         SteamVrDeviceDescriptor device,
         double predictionOffsetSeconds = 0d)
     {
+        return CreateInputControllerPoseSource(
+            device,
+            OpenVrTrackingUniverse.Standing,
+            predictionOffsetSeconds);
+    }
+
+    /// <summary>
+    /// Creates an input-controller source in the explicitly selected OpenVR
+    /// coordinate frame. Use <see cref="OpenVrTrackingUniverse.RawAndUncalibrated"/>
+    /// only when the consumer expects raw driver-space poses.
+    /// </summary>
+    public InputControllerPoseSource CreateInputControllerPoseSource(
+        SteamVrDeviceDescriptor device,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds = 0d)
+    {
         ThrowIfDisposed();
         return new OpenVrInputControllerPoseSourceAdapter(
             _runtime,
             StopwatchMonotonicClock.Instance,
             device,
+            trackingUniverse,
             predictionOffsetSeconds);
     }
 
@@ -96,11 +113,30 @@ public sealed class OpenVrSession : SteamVrDeviceEnumerator, IDisposable
         SteamVrDeviceDescriptor device,
         double predictionOffsetSeconds = 0d)
     {
+        return CreateTrackedPoseSource(
+            device,
+            OpenVrTrackingUniverse.Standing,
+            predictionOffsetSeconds);
+    }
+
+    /// <summary>
+    /// Creates a tracked-device source in the explicitly selected OpenVR
+    /// coordinate frame. The first-party driver path selects
+    /// <see cref="OpenVrTrackingUniverse.RawAndUncalibrated"/> so its composed
+    /// output remains in raw driver space; legacy callers retain Standing by
+    /// using the overload without a universe argument.
+    /// </summary>
+    public TrackedPoseSource CreateTrackedPoseSource(
+        SteamVrDeviceDescriptor device,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds = 0d)
+    {
         ThrowIfDisposed();
         return new OpenVrTrackedPoseSourceAdapter(
             _runtime,
             StopwatchMonotonicClock.Instance,
             device,
+            trackingUniverse,
             predictionOffsetSeconds);
     }
 

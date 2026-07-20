@@ -66,17 +66,27 @@ internal abstract class OpenVrPoseSourceAdapter
 {
     private readonly IOpenVrRuntime _runtime;
     private readonly IMonotonicClock _clock;
+    private readonly OpenVrTrackingUniverse _trackingUniverse;
     private readonly double _predictionOffsetSeconds;
 
     protected OpenVrPoseSourceAdapter(
         IOpenVrRuntime runtime,
         IMonotonicClock clock,
         SteamVrDeviceDescriptor device,
+        OpenVrTrackingUniverse trackingUniverse,
         double predictionOffsetSeconds)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         Device = device ?? throw new ArgumentNullException(nameof(device));
+
+        if (!Enum.IsDefined(trackingUniverse))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(trackingUniverse),
+                trackingUniverse,
+                "Tracking universe must be a defined OpenVR frame contract.");
+        }
 
         if (!double.IsFinite(predictionOffsetSeconds) ||
             predictionOffsetSeconds < float.MinValue ||
@@ -87,6 +97,7 @@ internal abstract class OpenVrPoseSourceAdapter
                 "Prediction offset must be finite and representable by OpenVR's float-seconds API.");
         }
 
+        _trackingUniverse = trackingUniverse;
         _predictionOffsetSeconds = predictionOffsetSeconds;
     }
 
@@ -96,6 +107,7 @@ internal abstract class OpenVrPoseSourceAdapter
     {
         var runtimePose = _runtime.ReadPose(
             Device.TransientDeviceIndex,
+            _trackingUniverse,
             _predictionOffsetSeconds);
 
         // Capture host time only after the native pose has crossed the LTB
@@ -125,7 +137,27 @@ internal sealed class OpenVrInputControllerPoseSourceAdapter :
         IMonotonicClock clock,
         SteamVrDeviceDescriptor device,
         double predictionOffsetSeconds)
-        : base(runtime, clock, RequireController(device), predictionOffsetSeconds)
+        : this(
+            runtime,
+            clock,
+            device,
+            OpenVrTrackingUniverse.Standing,
+            predictionOffsetSeconds)
+    {
+    }
+
+    public OpenVrInputControllerPoseSourceAdapter(
+        IOpenVrRuntime runtime,
+        IMonotonicClock clock,
+        SteamVrDeviceDescriptor device,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+        : base(
+            runtime,
+            clock,
+            RequireController(device),
+            trackingUniverse,
+            predictionOffsetSeconds)
     {
     }
 
@@ -150,7 +182,27 @@ internal sealed class OpenVrTrackedPoseSourceAdapter :
         IMonotonicClock clock,
         SteamVrDeviceDescriptor device,
         double predictionOffsetSeconds)
-        : base(runtime, clock, RequireTrackedDevice(device), predictionOffsetSeconds)
+        : this(
+            runtime,
+            clock,
+            device,
+            OpenVrTrackingUniverse.Standing,
+            predictionOffsetSeconds)
+    {
+    }
+
+    public OpenVrTrackedPoseSourceAdapter(
+        IOpenVrRuntime runtime,
+        IMonotonicClock clock,
+        SteamVrDeviceDescriptor device,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+        : base(
+            runtime,
+            clock,
+            RequireTrackedDevice(device),
+            trackingUniverse,
+            predictionOffsetSeconds)
     {
     }
 
