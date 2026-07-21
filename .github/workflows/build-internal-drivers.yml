@@ -46,6 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Configure driver_ltb
         run: >-
           cmake -S native/driver_ltb -B build/native-windows -A x64
@@ -88,6 +92,12 @@ jobs:
             throw "Staged build-id.txt does not contain one exact driver_ltb-X.Y.Z-ipc-X.Y identity."
           }
           Write-Host "Verified staged driver identity: $($buildIdMatch.Groups['identity'].Value)"
+
+      - name: Verify staged driver PE imports
+        run: >-
+          python native/driver_ltb/tools/check_pe_imports.py
+          --binary build/native-windows/driver_ltb/bin/win64/driver_ltb.dll
+          --stage-dir build/native-windows/driver_ltb/bin/win64
 
       - uses: actions/upload-artifact@v4
         with:
