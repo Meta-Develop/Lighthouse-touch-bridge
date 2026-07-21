@@ -85,11 +85,16 @@ public sealed class OvrRuntimeDiscoveryTests
         Assert.Empty(fileSystem.FileExistQueries);
     }
 
-    [Fact]
-    public void FactoryAttemptsOnlyTheCompleteLocatedPath()
+    [Theory]
+    [InlineData(NativeLoadFailure.DllNotFound)]
+    [InlineData(NativeLoadFailure.BadImageFormat)]
+    [InlineData(NativeLoadFailure.FileLoad)]
+    [InlineData(NativeLoadFailure.MissingAbiExport)]
+    public void FactoryClassifiesExpectedLoadAndAbiProbeFailuresAsAbiUnavailable(
+        NativeLoadFailure nativeLoadFailure)
     {
-        const string registeredDll = "/registered/meta/Support/oculus-runtime/LibOVRRT64_1.dll";
-        var loader = new RecordingFailingLoader();
+        var registeredDll = CompleteRegisteredDllPath();
+        var loader = new RecordingThrowingLoader(CreateFailure(nativeLoadFailure));
         var factory = new OvrNativeApiFactory(new FixedLocator(registeredDll), loader);
 
         var created = factory.TryCreate(out var api, out var failure);
@@ -98,8 +103,51 @@ public sealed class OvrRuntimeDiscoveryTests
         Assert.Null(api);
         Assert.NotNull(failure);
         Assert.Equal(MetaLinkReadiness.AbiUnavailable, failure.Readiness);
+        Assert.Contains(
+            nativeLoadFailure == NativeLoadFailure.MissingAbiExport
+                ? "SDK 32.0.0 ABI"
+                : "registered full path",
+            failure.Diagnostic,
+            StringComparison.Ordinal);
+        Assert.True(Path.IsPathFullyQualified(registeredDll));
         Assert.Equal([registeredDll], loader.Paths);
     }
+
+    [Fact]
+    public void FactoryClassifiesUnexpectedLoadFailureAsFaultedWithoutPathFallback()
+    {
+        var registeredDll = CompleteRegisteredDllPath();
+        var loader = new RecordingThrowingLoader(
+            new InvalidOperationException("synthetic unexpected loader failure"));
+        var factory = new OvrNativeApiFactory(new FixedLocator(registeredDll), loader);
+
+        var created = factory.TryCreate(out var api, out var failure);
+
+        Assert.False(created);
+        Assert.Null(api);
+        Assert.NotNull(failure);
+        Assert.Equal(MetaLinkReadiness.Faulted, failure.Readiness);
+        Assert.Contains("unexpectedly", failure.Diagnostic, StringComparison.Ordinal);
+        Assert.True(Path.IsPathFullyQualified(registeredDll));
+        Assert.Equal([registeredDll], loader.Paths);
+    }
+
+    private static string CompleteRegisteredDllPath() => Path.GetFullPath(Path.Combine(
+        Path.GetTempPath(),
+        "registered-meta",
+        "Support",
+        "oculus-runtime",
+        WindowsOvrRuntimeLocator.RuntimeDllName));
+
+    private static Exception CreateFailure(NativeLoadFailure nativeLoadFailure) =>
+        nativeLoadFailure switch
+        {
+            NativeLoadFailure.DllNotFound => new DllNotFoundException("synthetic load failure"),
+            NativeLoadFailure.BadImageFormat => new BadImageFormatException("synthetic image failure"),
+            NativeLoadFailure.FileLoad => new FileLoadException("synthetic file load failure"),
+            NativeLoadFailure.MissingAbiExport => new EntryPointNotFoundException("synthetic ABI probe failure"),
+            _ => throw new ArgumentOutOfRangeException(nameof(nativeLoadFailure)),
+        };
 
     private static WindowsOvrRuntimeLocator Locator(
         RecordingRegistry registry,
@@ -166,14 +214,22 @@ public sealed class OvrRuntimeDiscoveryTests
         }
     }
 
-    private sealed class RecordingFailingLoader : IOvrNativeApiLoader
+    public enum NativeLoadFailure
+    {
+        DllNotFound,
+        BadImageFormat,
+        FileLoad,
+        MissingAbiExport,
+    }
+
+    private sealed class RecordingThrowingLoader(Exception exception) : IOvrNativeApiLoader
     {
         public List<string> Paths { get; } = [];
 
         public IOvrNativeApi Load(string fullPath)
         {
             Paths.Add(fullPath);
-            throw new DllNotFoundException("synthetic load failure");
+            throw exception;
         }
     }
 }
