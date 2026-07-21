@@ -3,6 +3,7 @@ using Ltb.Driver;
 
 namespace Ltb.Driver.Tests;
 
+[Collection(DriverLifecycleTestGroup.Name)]
 public sealed class NamedPipeDriverTransportTests
 {
     [Theory]
@@ -15,7 +16,7 @@ public sealed class NamedPipeDriverTransportTests
         Assert.ThrowsAny<ArgumentException>(() => new NamedPipeDriverTransportFactory(pipeName));
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task UnsupportedPlatformFailsClosedWithDeterministicAuthorizationDiagnostic()
     {
         if (OperatingSystem.IsWindows())
@@ -34,7 +35,7 @@ public sealed class NamedPipeDriverTransportTests
         Assert.False(transport.IsConnected);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task WriteBeforeConnectionClassifiesDisconnectAsRecoverableTransportFailure()
     {
         await using var transport = new NamedPipeDriverTransport("ltb-test");
@@ -43,7 +44,7 @@ public sealed class NamedPipeDriverTransportTests
             () => transport.WriteAsync(new byte[] { 1, 2, 3 }, CancellationToken.None).AsTask());
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task FakeTransportRunsCompleteFeedOnNonWindowsHost()
     {
         var transport = new ScriptedDriverTransport();
@@ -60,7 +61,7 @@ public sealed class NamedPipeDriverTransportTests
         Assert.Equal(2, transport.Packets.Count);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task SameSessionAuthorizationCompletesBeforeConnectionCanPublish()
     {
         string pipeName = $"ltb-test-{Guid.NewGuid():N}";
@@ -75,13 +76,28 @@ public sealed class NamedPipeDriverTransportTests
             pipeName,
             new NamedPipePeerSessionVerifier(nativeApi));
 
-        Task serverConnection = server.WaitForConnectionAsync();
-        await transport.ConnectAsync(CancellationToken.None);
-        await serverConnection;
-        await transport.WriteAsync(new byte[] { 1, 2, 3 }, CancellationToken.None);
+        using var timeout = DriverTestTimeouts.CreatePhaseCancellation();
+        Task serverConnection = server.WaitForConnectionAsync(timeout.Token);
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            transport.ConnectAsync(timeout.Token).AsTask(),
+            "client connect and same-session authorization",
+            timeout.Token);
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            serverConnection,
+            "server accepts authorized client",
+            timeout.Token);
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            transport.WriteAsync(new byte[] { 1, 2, 3 }, timeout.Token).AsTask(),
+            "authorized client writes packet",
+            timeout.Token);
 
         var buffer = new byte[3];
-        int bytesRead = await server.ReadAsync(buffer, CancellationToken.None);
+        Task<int> read = server.ReadAsync(buffer, timeout.Token).AsTask();
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            read,
+            "server reads authorized packet",
+            timeout.Token);
+        int bytesRead = await read;
         Assert.Equal(3, bytesRead);
         Assert.Equal(new byte[] { 1, 2, 3 }, buffer);
         Assert.True(transport.IsConnected);
@@ -91,7 +107,7 @@ public sealed class NamedPipeDriverTransportTests
             nativeApi.SessionLookupProcessIds);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task ConnectionIsNotPublishedAndCannotWriteWhileAuthorizationIsPending()
     {
         string pipeName = $"ltb-test-{Guid.NewGuid():N}";
@@ -104,12 +120,19 @@ public sealed class NamedPipeDriverTransportTests
             PipeOptions.Asynchronous);
         await using var transport = new NamedPipeDriverTransport(pipeName, verifier);
 
-        Task serverConnection = server.WaitForConnectionAsync();
-        Task connect = transport.ConnectAsync(CancellationToken.None).AsTask();
-        await verifier.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await serverConnection;
+        using var timeout = DriverTestTimeouts.CreatePhaseCancellation();
+        Task serverConnection = server.WaitForConnectionAsync(timeout.Token);
+        Task connect = transport.ConnectAsync(timeout.Token).AsTask();
         try
         {
+            await DriverTestTimeouts.AwaitPhaseAsync(
+                verifier.Entered.Task,
+                "authorization verifier entered",
+                timeout.Token);
+            await DriverTestTimeouts.AwaitPhaseAsync(
+                serverConnection,
+                "server accepts client pending authorization",
+                timeout.Token);
             Assert.False(transport.IsConnected);
             await Assert.ThrowsAsync<DriverTransportDisconnectedException>(
                 () => transport.WriteAsync(new byte[] { 1 }, CancellationToken.None).AsTask());
@@ -119,11 +142,14 @@ public sealed class NamedPipeDriverTransportTests
             verifier.Release();
         }
 
-        await connect;
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            connect,
+            "client authorization completes after release",
+            timeout.Token);
         Assert.True(transport.IsConnected);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task RejectedAuthorizationDisconnectsPipeAndPreventsWrites()
     {
         string pipeName = $"ltb-test-{Guid.NewGuid():N}";
@@ -142,10 +168,14 @@ public sealed class NamedPipeDriverTransportTests
             pipeName,
             new NamedPipePeerSessionVerifier(nativeApi));
 
-        Task serverConnection = server.WaitForConnectionAsync();
+        using var timeout = DriverTestTimeouts.CreatePhaseCancellation();
+        Task serverConnection = server.WaitForConnectionAsync(timeout.Token);
         var exception = await Assert.ThrowsAsync<DriverPeerAuthorizationException>(
-            () => transport.ConnectAsync(CancellationToken.None).AsTask());
-        await serverConnection;
+            () => transport.ConnectAsync(timeout.Token).AsTask());
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            serverConnection,
+            "server accepts rejected client before disconnect",
+            timeout.Token);
 
         Assert.Equal(
             "Named-pipe server authorization failed: server session 11 does not match client session 12.",
@@ -154,7 +184,12 @@ public sealed class NamedPipeDriverTransportTests
         await Assert.ThrowsAsync<DriverTransportDisconnectedException>(
             () => transport.WriteAsync(new byte[] { 1 }, CancellationToken.None).AsTask());
         var buffer = new byte[1];
-        int bytesRead = await server.ReadAsync(buffer, CancellationToken.None);
+        Task<int> read = server.ReadAsync(buffer, timeout.Token).AsTask();
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            read,
+            "server observes rejected client disconnect",
+            timeout.Token);
+        int bytesRead = await read;
         Assert.Equal(0, bytesRead);
     }
 }
