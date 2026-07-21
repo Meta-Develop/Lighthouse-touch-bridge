@@ -1,1 +1,2 @@
 build/*.sh text eol=lf
+native/driver_ltb/cmake/build-id.txt.in text eol=lf

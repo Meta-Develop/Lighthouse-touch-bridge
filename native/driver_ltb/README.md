@@ -88,3 +88,10 @@ external-driver root is `<build>/driver_ltb`; its binary is
 `bin/win64/driver_ltb.dll`, and `build-id.txt` is beside
 `driver.vrdrivermanifest`. Generated headers, staged files, DLLs, and build
 directories are artifacts, not source inputs, and must not be committed.
+
+Windows builds statically link the compiler runtime: CMake selects `/MT` for
+MSVC, `-static` for LLVM-MinGW, and `-static -static-libgcc -static-libstdc++`
+for MinGW GCC. The staging build then runs `tools/check_pe_imports.py` against
+`driver_ltb.dll`. The checker parses regular and delay-load PE imports and
+rejects every non-system DLL that is not staged beside the driver. Compiler
+runtime DLLs are deliberately not treated as Windows system components.
