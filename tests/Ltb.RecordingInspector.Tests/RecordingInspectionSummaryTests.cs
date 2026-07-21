@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using Ltb.Calibration;
 using Ltb.Core;
 
 namespace Ltb.RecordingInspector.Tests;
@@ -57,12 +58,12 @@ public sealed class RecordingInspectionSummaryTests
             "lag_pair: tracker=tracker, controller=controller",
             "controller_lag_ms: 17.000",
             "lag_correlation: 1.000000",
-            "lag_confidence: 0.597004",
+            "lag_confidence: 0.597",
             "lag_compared_samples: 716",
             "coarse_correlation_lag_ms: 17.000",
             "coarse_correlation_score: 1.000000",
-            "runner_up_correlation_score: 0.996436",
-            "correlation_peak_prominence: 0.003564",
+            "runner_up_correlation_score: 0.99644",
+            "correlation_peak_prominence: 0.00356",
             "correlation_interval_ms: [-16.000, 50.000]",
             "provisional_rotation_lag_ms: 17.000",
             "coarse_rotation_residual_deg: 0.005335",
@@ -71,6 +72,42 @@ public sealed class RecordingInspectionSummaryTests
             string.Empty);
 
         Assert.Equal(expected, summary);
+    }
+
+    [Fact]
+    public void LagConfidenceReportPrecisionIgnoresIncidentalPlatformDeltaButPreservesRegressionSignal()
+    {
+        var linuxLine = RenderedLagConfidenceLine(0.597004d);
+        var windowsLine = RenderedLagConfidenceLine(0.597037d);
+        var substantiveRegressionLine = RenderedLagConfidenceLine(0.596004d);
+
+        Assert.Equal("lag_confidence: 0.597", linuxLine);
+        Assert.Equal(linuxLine, windowsLine);
+        Assert.Equal("lag_confidence: 0.596", substantiveRegressionLine);
+        Assert.NotEqual(linuxLine, substantiveRegressionLine);
+    }
+
+    [Fact]
+    public void CorrelationEvidenceReportPrecisionIgnoresPlatformDeltaButPreservesRegressionSignal()
+    {
+        var linuxEvidence = RenderedCorrelationEvidence(
+            runnerUp: 0.99643586223984d,
+            prominence: 0.00356413776016d);
+        var windowsEvidence = RenderedCorrelationEvidence(
+            runnerUp: 0.99643546820631d,
+            prominence: 0.00356453179369d);
+        var substantiveRegressionEvidence = RenderedCorrelationEvidence(
+            runnerUp: 0.99653586223984d,
+            prominence: 0.00346413776016d);
+
+        Assert.Equal(
+            ("runner_up_correlation_score: 0.99644", "correlation_peak_prominence: 0.00356"),
+            linuxEvidence);
+        Assert.Equal(linuxEvidence, windowsEvidence);
+        Assert.Equal(
+            ("runner_up_correlation_score: 0.99654", "correlation_peak_prominence: 0.00346"),
+            substantiveRegressionEvidence);
+        Assert.NotEqual(linuxEvidence, substantiveRegressionEvidence);
     }
 
     [Fact]
@@ -171,6 +208,40 @@ public sealed class RecordingInspectionSummaryTests
         (float)(0.18 + (0.23 * Math.Sin(0.83 * phase)) + (0.04 * Math.Cos(2.2 * phase))),
         (float)(1.08 + (0.17 * Math.Sin((1.37 * phase) + 0.4))),
         (float)(-0.28 + (0.21 * Math.Cos((1.11 * phase) - 0.2))));
+
+    private static string RenderedLagConfidenceLine(double confidence) =>
+        RecordingInspectionSummaryRenderer.RenderLag(
+                new LagEstimate(
+                    LagSeconds: 0.017d,
+                    CorrelationScore: 1d,
+                    Confidence: confidence,
+                    ComparedSampleCount: 716,
+                    SearchStepSeconds: 0.001d,
+                    MaximumAbsoluteLagSeconds: 0.1d))
+            .Split(Environment.NewLine)
+            .Single(line => line.StartsWith("lag_confidence:", StringComparison.Ordinal));
+
+    private static (string RunnerUp, string Prominence) RenderedCorrelationEvidence(
+        double runnerUp,
+        double prominence)
+    {
+        var lines = RecordingInspectionSummaryRenderer.RenderLag(
+                new LagEstimate(
+                    LagSeconds: 0.017d,
+                    CorrelationScore: 1d,
+                    Confidence: 0.597004d,
+                    ComparedSampleCount: 716,
+                    SearchStepSeconds: 0.001d,
+                    MaximumAbsoluteLagSeconds: 0.1d)
+                {
+                    RunnerUpCorrelationScore = runnerUp,
+                    PeakProminence = prominence,
+                })
+            .Split(Environment.NewLine);
+        return (
+            lines.Single(line => line.StartsWith("runner_up_correlation_score:", StringComparison.Ordinal)),
+            lines.Single(line => line.StartsWith("correlation_peak_prominence:", StringComparison.Ordinal)));
+    }
 
     private static string Lines(params string[] lines) =>
         string.Join(Environment.NewLine, lines);
