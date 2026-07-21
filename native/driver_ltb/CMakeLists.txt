@@ -32,7 +32,8 @@ configure_file(
     cmake/build_identity.hpp.in
     "${LTB_GENERATED_INCLUDE_DIR}/ltb_driver/build_identity.hpp"
     @ONLY)
-configure_file(cmake/build-id.txt.in "${LTB_STAGED_BUILD_ID_FILE}" @ONLY)
+configure_file(
+    cmake/build-id.txt.in "${LTB_STAGED_BUILD_ID_FILE}" @ONLY NEWLINE_STYLE UNIX)
 
 add_custom_target(ltb_driver_stage_assets ALL
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
