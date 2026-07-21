@@ -3,6 +3,7 @@ using Ltb.Driver;
 
 namespace Ltb.Driver.Tests;
 
+[Collection(DriverLifecycleTestGroup.Name)]
 public sealed class NamedPipePeerSessionVerifierTests
 {
     [Fact]
@@ -191,5 +192,9 @@ internal sealed class BlockingNamedPipePeerSessionVerifier : INamedPipePeerSessi
 
     public void Release() => _release.Set();
 
-    public void Dispose() => _release.Dispose();
+    public void Dispose()
+    {
+        _release.Set();
+        _release.Dispose();
+    }
 }

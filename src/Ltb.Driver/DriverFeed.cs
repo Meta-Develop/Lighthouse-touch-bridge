@@ -25,6 +25,7 @@ public sealed class DriverFeed : IDriverFeed
     private ulong? _lastRightHandSampleNanoseconds;
     private ulong? _startedNanoseconds;
     private int _consecutiveReconnectAttempts;
+    private int _stopRequestCount;
     private string? _lastError;
     private bool _disposed;
 
@@ -74,13 +75,18 @@ public sealed class DriverFeed : IDriverFeed
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_runCancellation is not null)
+            if (Volatile.Read(ref _runCancellation) is not null)
             {
                 return;
             }
 
             var runCancellation = new CancellationTokenSource();
-            _runCancellation = runCancellation;
+            Volatile.Write(ref _runCancellation, runCancellation);
+            if (Volatile.Read(ref _stopRequestCount) != 0)
+            {
+                runCancellation.Cancel();
+            }
+
             lock (_healthGate)
             {
                 _readiness = DriverFeedReadiness.Connecting;
@@ -106,7 +112,7 @@ public sealed class DriverFeed : IDriverFeed
                 runCancellation.Cancel();
                 await DisposeTransportAsync().ConfigureAwait(false);
                 runCancellation.Dispose();
-                _runCancellation = null;
+                Volatile.Write(ref _runCancellation, null);
                 lock (_healthGate)
                 {
                     _readiness = DriverFeedReadiness.Stopped;
@@ -128,7 +134,7 @@ public sealed class DriverFeed : IDriverFeed
         ArgumentOutOfRangeException.ThrowIfZero(
             state.SampleMonotonicNanoseconds,
             nameof(state.SampleMonotonicNanoseconds));
-        var runCancellation = _runCancellation ??
+        var runCancellation = Volatile.Read(ref _runCancellation) ??
             throw new InvalidOperationException("The driver feed has not been started.");
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -142,51 +148,61 @@ public sealed class DriverFeed : IDriverFeed
 
     public async ValueTask StopAsync(CancellationToken cancellationToken = default)
     {
-        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref _stopRequestCount);
         try
         {
-            var runCancellation = _runCancellation;
-            if (runCancellation is null)
-            {
-                return;
-            }
-
-            runCancellation.Cancel();
-            if (_heartbeatTask is { } heartbeatTask)
-            {
-                try
-                {
-                    await heartbeatTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (runCancellation.IsCancellationRequested)
-                {
-                }
-            }
-
-            await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            CancelActiveRun();
+            await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await DisposeTransportAsync().ConfigureAwait(false);
+                var runCancellation = Volatile.Read(ref _runCancellation);
+                if (runCancellation is null)
+                {
+                    return;
+                }
+
+                runCancellation.Cancel();
+                if (_heartbeatTask is { } heartbeatTask)
+                {
+                    try
+                    {
+                        await heartbeatTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (runCancellation.IsCancellationRequested)
+                    {
+                    }
+                }
+
+                await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await DisposeTransportAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    _sendGate.Release();
+                }
+
+                runCancellation.Dispose();
+                Volatile.Write(ref _runCancellation, null);
+                _heartbeatTask = null;
+                lock (_healthGate)
+                {
+                    _readiness = DriverFeedReadiness.Stopped;
+                    _sessionId = null;
+                    _startedNanoseconds = null;
+                    _consecutiveReconnectAttempts = 0;
+                }
             }
             finally
             {
-                _sendGate.Release();
-            }
-
-            runCancellation.Dispose();
-            _runCancellation = null;
-            _heartbeatTask = null;
-            lock (_healthGate)
-            {
-                _readiness = DriverFeedReadiness.Stopped;
-                _sessionId = null;
-                _startedNanoseconds = null;
-                _consecutiveReconnectAttempts = 0;
+                _lifecycleGate.Release();
             }
         }
         finally
         {
-            _lifecycleGate.Release();
+            Interlocked.Decrement(ref _stopRequestCount);
         }
     }
 
@@ -358,6 +374,25 @@ public sealed class DriverFeed : IDriverFeed
         if (transport is not null)
         {
             await transport.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private void CancelActiveRun()
+    {
+        var runCancellation = Volatile.Read(ref _runCancellation);
+        if (runCancellation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            runCancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // A concurrent lifecycle operation completed cleanup after the
+            // volatile read. The run is already stopped in that case.
         }
     }
 

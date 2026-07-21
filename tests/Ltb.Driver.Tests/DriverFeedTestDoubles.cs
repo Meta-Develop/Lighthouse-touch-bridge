@@ -1,8 +1,68 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Ltb.Driver;
 using Ltb.Protocol;
 
 namespace Ltb.Driver.Tests;
+
+[CollectionDefinition("Driver transport lifecycle", DisableParallelization = true)]
+public sealed class DriverLifecycleTestGroup
+{
+    public const string Name = "Driver transport lifecycle";
+}
+
+internal static class DriverTestTimeouts
+{
+    public const int TestTimeoutMilliseconds = 30_000;
+    public static readonly TimeSpan PhaseTimeout = TimeSpan.FromSeconds(10);
+
+    public static CancellationTokenSource CreatePhaseCancellation() => new(PhaseTimeout);
+
+    public static async Task AwaitPhaseAsync(
+        Task task,
+        string phase,
+        CancellationToken timeoutToken = default,
+        [CallerMemberName] string testName = "")
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ArgumentException.ThrowIfNullOrWhiteSpace(phase);
+        WriteDiagnostic(testName, phase, "started");
+        using var timeoutCancellation = new CancellationTokenSource();
+        var timeoutTask = Task.Delay(PhaseTimeout, timeoutCancellation.Token);
+        var completed = await Task.WhenAny(task, timeoutTask).ConfigureAwait(false);
+        if (completed != task)
+        {
+            WriteDiagnostic(testName, phase, "timed out");
+            throw CreateTimeout(testName, phase);
+        }
+
+        timeoutCancellation.Cancel();
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (timeoutToken.IsCancellationRequested)
+        {
+            WriteDiagnostic(testName, phase, "timed out by cancellation");
+            throw CreateTimeout(testName, phase, exception);
+        }
+
+        WriteDiagnostic(testName, phase, "completed");
+    }
+
+    public static TimeoutException CreateTimeout(
+        string testName,
+        string phase,
+        Exception? innerException = null) =>
+        new(
+            $"Ltb.Driver.Tests '{testName}' exceeded the {PhaseTimeout.TotalSeconds:0}-second " +
+            $"limit during lifecycle phase '{phase}'.",
+            innerException);
+
+    public static void WriteDiagnostic(string testName, string phase, string state) =>
+        Console.Error.WriteLine(
+            $"[Ltb.Driver.Tests] test={testName} phase={phase} state={state}");
+}
 
 internal sealed class ManualDriverFeedClock : IDriverFeedClock
 {
@@ -108,6 +168,8 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
 {
     private readonly TaskCompletionSource _connectRelease = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _connectStarted = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
     private int _writeCount;
 
     public ConcurrentQueue<byte[]> Packets { get; } = new();
@@ -124,8 +186,11 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
 
     public bool IsDisposed { get; private set; }
 
+    public Task ConnectStarted => _connectStarted.Task;
+
     public async ValueTask ConnectAsync(CancellationToken cancellationToken)
     {
+        _connectStarted.TrySetResult();
         if (ConnectFailure is not null)
         {
             throw ConnectFailure;
@@ -138,6 +203,8 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
 
         IsConnected = true;
     }
+
+    public void ReleaseConnect() => _connectRelease.TrySetResult();
 
     public ValueTask WriteAsync(ReadOnlyMemory<byte> packet, CancellationToken cancellationToken)
     {
@@ -235,12 +302,29 @@ internal static class DriverTestData
                 0.75f),
             0f);
 
-    public static async Task WaitUntilAsync(Func<bool> condition)
+    public static async Task WaitUntilAsync(
+        Func<bool> condition,
+        string? phase = null,
+        [CallerArgumentExpression(nameof(condition))] string? conditionExpression = null,
+        [CallerMemberName] string testName = "")
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!condition())
+        ArgumentNullException.ThrowIfNull(condition);
+        phase ??= $"wait for {conditionExpression ?? "condition"}";
+        DriverTestTimeouts.WriteDiagnostic(testName, phase, "started");
+        using var timeout = DriverTestTimeouts.CreatePhaseCancellation();
+        try
         {
-            await Task.Delay(1, timeout.Token).ConfigureAwait(false);
+            while (!condition())
+            {
+                await Task.Delay(1, timeout.Token).ConfigureAwait(false);
+            }
         }
+        catch (OperationCanceledException exception) when (timeout.IsCancellationRequested)
+        {
+            DriverTestTimeouts.WriteDiagnostic(testName, phase, "timed out");
+            throw DriverTestTimeouts.CreateTimeout(testName, phase, exception);
+        }
+
+        DriverTestTimeouts.WriteDiagnostic(testName, phase, "completed");
     }
 }

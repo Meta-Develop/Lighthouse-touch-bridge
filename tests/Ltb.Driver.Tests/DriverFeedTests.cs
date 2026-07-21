@@ -3,9 +3,10 @@ using Ltb.Protocol;
 
 namespace Ltb.Driver.Tests;
 
+[Collection(DriverLifecycleTestGroup.Name)]
 public sealed class DriverFeedTests
 {
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task StartSendsSequenceZeroHeartbeatAndBecomesReady()
     {
         var transport = new ScriptedDriverTransport();
@@ -24,7 +25,7 @@ public sealed class DriverFeedTests
         Assert.Equal(clock.GetMonotonicNanoseconds(), feed.Health.LastSuccessfulHeartbeatNanoseconds);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task SuccessfulHeartbeatHealthUsesPostWriteMonotonicTime()
     {
         var clock = new ManualDriverFeedClock();
@@ -47,7 +48,7 @@ public sealed class DriverFeedTests
             feed.Health.LastSuccessfulHeartbeatNanoseconds);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task PublishPreservesFinalPoseSampleTimestampInsteadOfSendTime()
     {
         var transport = new ScriptedDriverTransport();
@@ -73,7 +74,7 @@ public sealed class DriverFeedTests
             feed.Health.LastSuccessfulHeartbeatNanoseconds);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task SuccessfulHandWriteDoesNotAdvanceSuccessfulHeartbeatHealth()
     {
         var transport = new ScriptedDriverTransport();
@@ -89,7 +90,7 @@ public sealed class DriverFeedTests
         Assert.Equal(1_000_000_000UL, feed.Health.LastSuccessfulSendNanoseconds);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task HeartbeatUsesSendTimeIndependentOfNewerHandSampleTime()
     {
         var transport = new ScriptedDriverTransport();
@@ -108,7 +109,7 @@ public sealed class DriverFeedTests
         Assert.True(heartbeat.Ordering.ProducerMonotonicNanoseconds < 500_000_000UL);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task HandSampleTimestampOrderingIsIndependentPerHand()
     {
         var transport = new ScriptedDriverTransport();
@@ -127,7 +128,7 @@ public sealed class DriverFeedTests
         Assert.Equal(4, transport.Packets.Count);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task ZeroHandSampleTimestampIsRejectedBeforeWrite()
     {
         var transport = new ScriptedDriverTransport();
@@ -141,7 +142,7 @@ public sealed class DriverFeedTests
         Assert.Single(transport.Packets);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task PublishUsesOneGlobalIncreasingSequenceAcrossHands()
     {
         var transport = new ScriptedDriverTransport();
@@ -171,7 +172,7 @@ public sealed class DriverFeedTests
             });
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task RecoverableWriteFailureReconnectsWithNewSessionAtSequenceZero()
     {
         var first = new ScriptedDriverTransport { FailOnWriteNumber = 2 };
@@ -204,7 +205,7 @@ public sealed class DriverFeedTests
         Assert.Null(feed.Health.LastSuccessfulHeartbeatNanoseconds);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task FailedHeartbeatWriteDoesNotAdvanceSuccessfulHeartbeatHealth()
     {
         var transport = new ScriptedDriverTransport
@@ -227,7 +228,7 @@ public sealed class DriverFeedTests
         Assert.Single(transport.Packets);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task DisconnectedNamedPipeFailureReconnectsWithNewSessionInsteadOfFaulting()
     {
         var first = new ScriptedDriverTransport
@@ -259,7 +260,7 @@ public sealed class DriverFeedTests
         Assert.Equal(DriverFeedReadiness.Ready, feed.Health.Readiness);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task AuthorizationRejectionDuringReconnectRecoversWithFreshSession()
     {
         var first = new ScriptedDriverTransport { FailOnWriteNumber = 2 };
@@ -314,7 +315,7 @@ public sealed class DriverFeedTests
         Assert.Equal(DriverFeedReadiness.Ready, feed.Health.Readiness);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task HeartbeatContinuesWhenHandStateDoesNotChange()
     {
         var transport = new ScriptedDriverTransport();
@@ -331,7 +332,7 @@ public sealed class DriverFeedTests
         Assert.Equal(new ulong[] { 0, 1 }, messages.Select(message => message.Ordering.Sequence));
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task HealthBecomesStaleAfterFiveHundredMillisecondsWithoutSend()
     {
         var transport = new ScriptedDriverTransport();
@@ -348,7 +349,7 @@ public sealed class DriverFeedTests
         Assert.False(feed.Health.IsStale);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task InvalidStateDoesNotWriteOrAdvanceSequence()
     {
         var transport = new ScriptedDriverTransport();
@@ -369,7 +370,7 @@ public sealed class DriverFeedTests
         Assert.Equal(1UL, state.Ordering.Sequence);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task CanceledStartDisposesBlockedTransportAndReturnsToStopped()
     {
         var transport = new ScriptedDriverTransport { BlockConnect = true };
@@ -386,7 +387,7 @@ public sealed class DriverFeedTests
         Assert.Equal(DriverFeedReadiness.Stopped, feed.Health.Readiness);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task DisposeCancelsReconnectAndBlockedPublishWithoutDeadlock()
     {
         var first = new ScriptedDriverTransport { FailOnWriteNumber = 2 };
@@ -412,7 +413,35 @@ public sealed class DriverFeedTests
         Assert.Equal(DriverFeedReadiness.Disposed, feed.Health.Readiness);
     }
 
-    [Fact]
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
+    public async Task DisposeCancelsBlockedStartWithoutDeadlock()
+    {
+        var transport = new ScriptedDriverTransport { BlockConnect = true };
+        var clock = new ManualDriverFeedClock();
+        var feed = CreateFeed(transport, clock, DriverTestData.SessionA);
+        Task start = feed.StartAsync().AsTask();
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            transport.ConnectStarted,
+            "initial transport connect entered");
+
+        Task dispose = feed.DisposeAsync().AsTask();
+        try
+        {
+            await DriverTestTimeouts.AwaitPhaseAsync(
+                dispose,
+                "dispose cancels blocked initial connect");
+        }
+        finally
+        {
+            transport.ReleaseConnect();
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
+        Assert.True(transport.IsDisposed);
+        Assert.Equal(DriverFeedReadiness.Disposed, feed.Health.Readiness);
+    }
+
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task StopIsIdempotentAndStartCanCreateFreshSession()
     {
         var first = new ScriptedDriverTransport();
