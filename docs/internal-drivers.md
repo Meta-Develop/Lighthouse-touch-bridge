@@ -236,6 +236,21 @@ landing in that small window is overwritten by the commit; and directory-entry
 durability after the rename depends on filesystem journaling, the same
 limitation as `AtomicFileWriter`.
 
+### Package import boundary
+
+Windows driver packages statically link their compiler runtimes. The package
+target and Windows CI run a PE-import gate over the exact staged
+`driver_ltb.dll`; accepted imports are limited to an explicit Windows system
+DLL allowlist and API-set names. Compiler runtime DLLs are neither allowlisted
+nor staged beside the driver.
+
+Linux tests prove the PE parser and allowlist policy, including rejection
+paths, and run only the portable native CTest targets. They do not prove the
+import table of a Windows-produced driver. The Windows driver workflow must
+build the actual staged `driver_ltb.dll`, inspect its regular and delay-load
+imports, and pass that exact artifact through the package gate before it can be
+used as import evidence.
+
 Registration runs at session start and does not check whether SteamVR is
 running. SteamVR rewrites `steamvr.vrsettings` and `openvrpaths.vrpath` from
 memory when it exits, so a registration written while SteamVR runs can be
@@ -275,6 +290,12 @@ session rollover, malformed/range/NaN/replay cases, timeout, and neutral safety.
 They are not Windows runtime or hardware evidence. Complete and retain the
 [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
 on the target machine.
+
+The retained 59-item checklist matrix currently records 3 narrowly
+headless-verified items, 9 items with partial evidence, 14 untested
+Windows/headless-or-GUI software items, and 33 items that require connected
+hardware. This classification does not complete a checkbox. It does not
+satisfy specification section 23.4 or Definition of Done item 14.
 
 ## Known limitations and backlog
 
