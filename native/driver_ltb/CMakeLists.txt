@@ -173,8 +173,7 @@ if(LTB_BUILD_OPENVR_DRIVER)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_pe_imports.py"
             --binary "$<TARGET_FILE:driver_ltb>"
-            --stage-dir "$<TARGET_FILE_DIR:driver_ltb>"
         DEPENDS driver_ltb
-        COMMENT "Checking staged driver_ltb PE imports"
+        COMMENT "Checking driver_ltb PE imports"
         VERBATIM)
 endif()

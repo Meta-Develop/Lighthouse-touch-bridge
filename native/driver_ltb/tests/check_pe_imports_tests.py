@@ -119,36 +119,26 @@ class PeImportCheckerTests(unittest.TestCase):
         self.assertFalse(CHECKER.is_windows_system_dll("VCRUNTIME140.dll"))
         self.assertFalse(CHECKER.is_windows_system_dll("libstdc++-6.dll"))
 
-    def test_staged_non_system_import_is_accepted_case_insensitively(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            stage_directory = pathlib.Path(temporary_directory)
-            (stage_directory / "HELPER.dll").write_bytes(b"staged")
-            unresolved = CHECKER.find_unresolved_imports(
-                ("KERNEL32.dll", "helper.DLL"), stage_directory
-            )
-            self.assertEqual(unresolved, ())
+    def test_non_system_import_is_rejected(self) -> None:
+        rejected = CHECKER.find_non_system_imports(
+            ("ADVAPI32.dll", "libwinpthread-1.dll")
+        )
+        self.assertEqual(rejected, ("libwinpthread-1.dll",))
 
-    def test_unstaged_non_system_import_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            unresolved = CHECKER.find_unresolved_imports(
-                ("ADVAPI32.dll", "libwinpthread-1.dll"),
-                pathlib.Path(temporary_directory),
-            )
-            self.assertEqual(unresolved, ("libwinpthread-1.dll",))
-
-    def test_cli_reports_unstaged_import(self) -> None:
+    def test_cli_rejects_staged_non_system_regular_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             stage_directory = pathlib.Path(temporary_directory)
             binary_path = stage_directory / "driver_ltb.dll"
-            binary_path.write_bytes(make_pe(("KERNEL32.dll", "VCRUNTIME140.dll")))
+            rejected_imports = ("VCRUNTIME140.dll", "libc++.dll", "helper.dll")
+            binary_path.write_bytes(make_pe(("KERNEL32.dll", *rejected_imports)))
+            for import_name in rejected_imports:
+                (stage_directory / import_name).write_bytes(b"staged")
             result = subprocess.run(
                 [
                     sys.executable,
                     str(CHECKER_PATH),
                     "--binary",
                     str(binary_path),
-                    "--stage-dir",
-                    str(stage_directory),
                 ],
                 check=False,
                 capture_output=True,
@@ -156,23 +146,52 @@ class PeImportCheckerTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn(
-                "unstaged non-system DLL imports: VCRUNTIME140.dll", result.stderr
+                "non-system DLL imports: helper.dll, libc++.dll, VCRUNTIME140.dll",
+                result.stderr,
             )
 
-    def test_cli_accepts_system_and_staged_imports(self) -> None:
+    def test_cli_rejects_staged_non_system_delay_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             stage_directory = pathlib.Path(temporary_directory)
             binary_path = stage_directory / "driver_ltb.dll"
-            binary_path.write_bytes(make_pe(("ADVAPI32.dll", "helper.dll")))
-            (stage_directory / "helper.dll").write_bytes(b"staged")
+            rejected_imports = ("VCRUNTIME140.dll", "libc++.dll", "helper.dll")
+            binary_path.write_bytes(
+                make_pe(("ADVAPI32.dll",), delay_imports=rejected_imports)
+            )
+            for import_name in rejected_imports:
+                (stage_directory / import_name).write_bytes(b"staged")
             result = subprocess.run(
                 [
                     sys.executable,
                     str(CHECKER_PATH),
                     "--binary",
                     str(binary_path),
-                    "--stage-dir",
-                    str(stage_directory),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "non-system DLL imports: helper.dll, libc++.dll, VCRUNTIME140.dll",
+                result.stderr,
+            )
+
+    def test_cli_accepts_regular_and_delay_system_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            binary_path = pathlib.Path(temporary_directory) / "driver_ltb.dll"
+            binary_path.write_bytes(
+                make_pe(
+                    ("ADVAPI32.dll", "api-ms-win-core-synch-l1-2-0.dll"),
+                    ("KERNEL32.dll", "ext-ms-win-ntuser-window-l1-1-0.dll"),
+                )
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(CHECKER_PATH),
+                    "--binary",
+                    str(binary_path),
                 ],
                 check=False,
                 capture_output=True,
@@ -190,8 +209,6 @@ class PeImportCheckerTests(unittest.TestCase):
                     str(CHECKER_PATH),
                     "--binary",
                     str(fixture_path),
-                    "--stage-dir",
-                    temporary_directory,
                 ],
                 check=False,
                 capture_output=True,
