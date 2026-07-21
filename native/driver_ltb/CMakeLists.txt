@@ -5,6 +5,15 @@ project(driver_ltb VERSION 0.1.0 LANGUAGES CXX)
 option(LTB_BUILD_OPENVR_DRIVER "Build the Windows OpenVR driver shell" ${WIN32})
 option(LTB_BUILD_TESTS "Build the portable driver-core tests" ON)
 
+if(MSVC)
+    # Keep the staged driver independent of the separately installed MSVC runtime.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+if(LTB_BUILD_OPENVR_DRIVER OR LTB_BUILD_TESTS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+endif()
+
 set(LTB_IPC_PROTOCOL_MAJOR 1)
 set(LTB_IPC_PROTOCOL_MINOR 0)
 set(LTB_DRIVER_VERSION "${PROJECT_VERSION}")
@@ -32,7 +41,11 @@ configure_file(
     cmake/build_identity.hpp.in
     "${LTB_GENERATED_INCLUDE_DIR}/ltb_driver/build_identity.hpp"
     @ONLY)
-configure_file(cmake/build-id.txt.in "${LTB_STAGED_BUILD_ID_FILE}" @ONLY)
+configure_file(
+    cmake/build-id.txt.in
+    "${LTB_STAGED_BUILD_ID_FILE}"
+    @ONLY
+    NEWLINE_STYLE UNIX)
 
 add_custom_target(ltb_driver_stage_assets ALL
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
@@ -97,6 +110,11 @@ if(LTB_BUILD_TESTS)
         COMMAND ltb_driver_build_identity_tests
             "${LTB_STAGED_BUILD_ID_FILE}"
             "${LTB_STAGED_MANIFEST}")
+
+    add_test(
+        NAME ltb_driver_pe_import_checker_tests
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_pe_imports_tests.py")
 endif()
 
 if(LTB_BUILD_OPENVR_DRIVER)
@@ -132,6 +150,14 @@ if(LTB_BUILD_OPENVR_DRIVER)
     else()
         target_compile_options(driver_ltb PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
+    if(MINGW)
+        # Both MinGW GCC and LLVM-MinGW honor -static for their C++ and support
+        # runtimes while retaining Windows system DLL imports through import libs.
+        target_link_options(driver_ltb PRIVATE -static)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            target_link_options(driver_ltb PRIVATE -static-libgcc -static-libstdc++)
+        endif()
+    endif()
 
     set_target_properties(driver_ltb PROPERTIES
         PREFIX ""
@@ -142,4 +168,13 @@ if(LTB_BUILD_OPENVR_DRIVER)
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${LTB_DRIVER_STAGE}/bin/win64"
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${LTB_DRIVER_STAGE}/bin/win64")
     add_dependencies(driver_ltb ltb_driver_stage_assets)
+
+    add_custom_target(ltb_driver_verify_imports ALL
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_pe_imports.py"
+            --binary "$<TARGET_FILE:driver_ltb>"
+            --stage-dir "$<TARGET_FILE_DIR:driver_ltb>"
+        DEPENDS driver_ltb
+        COMMENT "Checking staged driver_ltb PE imports"
+        VERBATIM)
 endif()
