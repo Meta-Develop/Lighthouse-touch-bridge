@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Ltb.Driver;
 
 namespace Ltb.Driver.Tests;
@@ -47,9 +48,76 @@ public sealed class SteamVrPathDiscoveryTests
         using var fixture = new SteamVrLifecycleFixture();
         fixture.FileSystem.Write(
             fixture.OpenVrPathsFile,
-            $$"""
+            JsonSerializer.Serialize(new Dictionary<string, string[]>
             {
-              "config": ["{{fixture.ConfigRoot}}"]
+                ["config"] = [@"C:\Users\owner\AppData\Local\Steam\config"],
+            }));
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.DiscoverAsync().AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.OpenVrPathsInvalid, failure.DiagnosticCode);
+        Assert.StartsWith(
+            "OpenVR path registry is invalid: required 'runtime' array",
+            failure.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            Path.GetFullPath(fixture.OpenVrPathsFile),
+            failure.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DiscoveryUsesOnlyTheInjectedLocalApplicationDataRegistry()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        var decoyLocalApplicationData = Path.Combine(fixture.Root, "real-os-decoy");
+        var decoyOpenVrPathsFile = Path.Combine(
+            decoyLocalApplicationData,
+            "openvr",
+            "openvrpaths.vrpath");
+        fixture.FileSystem.AddFile(decoyOpenVrPathsFile, fixture.OpenVrJson([]));
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["config"] = [@"C:\Users\owner\AppData\Local\Steam\config"],
+            }));
+
+        var discovery = new SteamVrPathDiscovery(
+            new FakeSteamVrHostEnvironment
+            {
+                LocalApplicationDataPath = fixture.LocalApplicationData,
+            },
+            fixture.FileSystem);
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => discovery.DiscoverAsync().AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.OpenVrPathsInvalid, failure.DiagnosticCode);
+        Assert.StartsWith(
+            "OpenVR path registry is invalid: required 'runtime' array",
+            failure.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            Path.GetFullPath(fixture.OpenVrPathsFile),
+            failure.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            Path.GetFullPath(decoyOpenVrPathsFile),
+            failure.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DiscoveryDistinguishesMalformedJsonFromMissingRuntimeArray()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            """
+            {
+              "config": ["C:\Users\owner\AppData\Local\Steam\config"]
             }
             """);
 
@@ -57,6 +125,7 @@ public sealed class SteamVrPathDiscoveryTests
             () => fixture.Lifecycle.DiscoverAsync().AsTask());
 
         Assert.Equal(SteamVrDriverDiagnosticCode.OpenVrPathsInvalid, failure.DiagnosticCode);
-        Assert.Contains("runtime", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("not valid JSON", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("required 'runtime' array", failure.Message, StringComparison.Ordinal);
     }
 }

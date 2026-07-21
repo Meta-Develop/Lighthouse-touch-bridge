@@ -110,7 +110,8 @@ public sealed class SteamVrPathDiscovery
         {
             throw Failure(
                 SteamVrDriverDiagnosticCode.OpenVrPathsInvalid,
-                $"OpenVR path registry '{sourcePath}' has no '{propertyName}' array.");
+                $"OpenVR path registry is invalid: required '{propertyName}' array " +
+                $"is missing or is not an array in '{sourcePath}'.");
         }
 
         foreach (var path in paths.EnumerateArray())
@@ -125,7 +126,8 @@ public sealed class SteamVrPathDiscovery
 
         throw Failure(
             SteamVrDriverDiagnosticCode.OpenVrPathsInvalid,
-            $"OpenVR path registry '{sourcePath}' has no usable '{propertyName}' path.");
+            $"OpenVR path registry is invalid: required '{propertyName}' array " +
+            $"has no usable path in '{sourcePath}'.");
     }
 
     private static SteamVrDriverLifecycleException Failure(
