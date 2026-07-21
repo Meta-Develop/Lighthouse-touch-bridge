@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject PE imports that are neither Windows system DLLs nor staged files."""
+"""Reject PE imports that are not explicitly allowlisted Windows system DLLs."""
 
 from __future__ import annotations
 
@@ -267,44 +267,35 @@ def parse_pe_imports(binary_path: pathlib.Path) -> tuple[str, ...]:
     return parse_pe_imports_bytes(binary_path.read_bytes())
 
 
-def find_unresolved_imports(
-    imports: tuple[str, ...], stage_directory: pathlib.Path
-) -> tuple[str, ...]:
-    staged_files = {
-        child.name.casefold() for child in stage_directory.iterdir() if child.is_file()
-    }
+def find_non_system_imports(imports: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(
         import_name
         for import_name in imports
         if not is_windows_system_dll(import_name)
-        and import_name.casefold() not in staged_files
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=pathlib.Path)
-    parser.add_argument("--stage-dir", required=True, type=pathlib.Path)
     arguments = parser.parse_args(argv)
 
     if not arguments.binary.is_file():
         parser.error(f"binary is not a file: {arguments.binary}")
-    if not arguments.stage_dir.is_dir():
-        parser.error(f"stage directory is not a directory: {arguments.stage_dir}")
 
     try:
         imports = parse_pe_imports(arguments.binary)
-        unresolved = find_unresolved_imports(imports, arguments.stage_dir)
+        non_system_imports = find_non_system_imports(imports)
     except (OSError, PeFormatError) as error:
         print(
             f"PE import check failed for {arguments.binary}: {error}", file=sys.stderr
         )
         return 1
 
-    if unresolved:
+    if non_system_imports:
         print(
-            f"PE import check failed for {arguments.binary}: unstaged non-system DLL "
-            f"imports: {', '.join(unresolved)}",
+            f"PE import check failed for {arguments.binary}: non-system DLL imports: "
+            f"{', '.join(non_system_imports)}",
             file=sys.stderr,
         )
         return 1
