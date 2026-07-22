@@ -16,9 +16,9 @@ jobs:
     name: Linux managed and native-core validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
@@ -44,9 +44,9 @@ jobs:
     name: Windows x64 SteamVR driver
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
@@ -98,7 +98,7 @@ jobs:
           python native/driver_ltb/tools/check_pe_imports.py
           --binary build/native-windows/driver_ltb/bin/win64/driver_ltb.dll
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: driver_ltb-win-x64
           path: |
@@ -119,17 +119,17 @@ jobs:
       - windows-driver
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: driver_ltb-win-x64
           path: ${{ runner.temp }}/driver_ltb
@@ -205,7 +205,7 @@ jobs:
           )
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lighthouse-touch-bridge-win-x64
           path: |
