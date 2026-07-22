@@ -125,10 +125,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
                 "Run the win-x64 LTB application on the SteamVR host.");
         }
 
-        EnsureDefaultSettings();
+        var settingsPreparation = EnsureDefaultSettings(_paths);
         return new InternalDriverPlatformProbe(
             true,
-            "Windows x64 and zero-input LocalApplicationData settings are available.",
+            settingsPreparation.Diagnostic,
             "No remediation is required.");
     }
 
@@ -656,31 +656,55 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             profile.CreatedUtc);
     }
 
-    private void EnsureDefaultSettings()
+    internal static InternalDriverSettingsPreparation EnsureDefaultSettings(
+        InternalDriverResolvedPaths paths)
     {
+        ArgumentNullException.ThrowIfNull(paths);
         var expected = new InternalDriverSettings(
             InternalDriverSettingsSchema.CurrentVersion,
             OpenVrPathsDiscovery.Automatic,
-            _paths.StagedDriverRoot,
-            _paths.CalibrationProfileStorePath);
-        var loaded = InternalDriverSettingsFile.TryLoad(_paths.SettingsPath);
+            paths.StagedDriverRoot,
+            paths.CalibrationProfileStorePath);
+        var loaded = InternalDriverSettingsFile.TryLoad(paths.SettingsPath);
         if (loaded.Status == InternalDriverSettingsLoadStatus.NotFound)
         {
-            InternalDriverSettingsFile.Save(_paths.SettingsPath, expected);
-            return;
+            InternalDriverSettingsFile.Save(paths.SettingsPath, expected);
+            return new InternalDriverSettingsPreparation(
+                InternalDriverSettingsPreparationStatus.Created,
+                "Created zero-input internal-driver settings for the current package.");
         }
 
         var current = loaded.Settings!;
         if (current.OpenVrPathsDiscovery.Mode != OpenVrPathsDiscoveryMode.Automatic ||
-            !string.Equals(current.StagedDriverRoot, expected.StagedDriverRoot, StringComparison.Ordinal) ||
             !string.Equals(
                 current.CalibrationProfileStorePath,
                 expected.CalibrationProfileStorePath,
                 StringComparison.Ordinal))
         {
             throw new InvalidDataException(
-                "Internal-driver settings must retain automatic OpenVR discovery and the zero-input staged/profile paths.");
+                "Internal-driver settings must retain automatic OpenVR discovery and the zero-input calibration profile path.");
         }
+
+        if (!string.Equals(
+                current.StagedDriverRoot,
+                expected.StagedDriverRoot,
+                StringComparison.Ordinal))
+        {
+            var relocated = new InternalDriverSettings(
+                current.SchemaVersion,
+                current.OpenVrPathsDiscovery,
+                expected.StagedDriverRoot,
+                current.CalibrationProfileStorePath);
+            InternalDriverSettingsFile.Save(paths.SettingsPath, relocated);
+            return new InternalDriverSettingsPreparation(
+                InternalDriverSettingsPreparationStatus.StagedDriverRootUpdated,
+                "Updated the app-owned staged driver root for the relocated package; " +
+                "automatic OpenVR discovery and the calibration profile path were preserved.");
+        }
+
+        return new InternalDriverSettingsPreparation(
+            InternalDriverSettingsPreparationStatus.Current,
+            "Windows x64 and zero-input LocalApplicationData settings are available.");
     }
 
     private sealed record TrackerSourceEntry(uint TransientIndex, TrackedPoseSource Source);
@@ -690,6 +714,17 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         IReadOnlyList<MetaLinkControllerSnapshot> MetaSamples,
         IReadOnlyDictionary<string, List<PoseSourceSample>> TrackerSamples);
 }
+
+internal enum InternalDriverSettingsPreparationStatus
+{
+    Current = 0,
+    Created,
+    StagedDriverRootUpdated,
+}
+
+internal sealed record InternalDriverSettingsPreparation(
+    InternalDriverSettingsPreparationStatus Status,
+    string Diagnostic);
 
 /// <summary>Monotonic, fixed-rate gate for bounded capture progress callbacks.</summary>
 internal sealed class InternalDriverCaptureReportCadence
