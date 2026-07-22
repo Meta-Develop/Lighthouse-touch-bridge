@@ -26,6 +26,7 @@ public sealed class DriverFeed : IDriverFeed
     private ulong? _startedNanoseconds;
     private int _consecutiveReconnectAttempts;
     private int _stopRequestCount;
+    private int _disposeRequested;
     private string? _lastError;
     private bool _disposed;
 
@@ -71,10 +72,13 @@ public sealed class DriverFeed : IDriverFeed
 
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeRequested) != 0, this);
         await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ObjectDisposedException.ThrowIf(
+                _disposed || Volatile.Read(ref _disposeRequested) != 0,
+                this);
             if (Volatile.Read(ref _runCancellation) is not null)
             {
                 return;
@@ -156,44 +160,7 @@ public sealed class DriverFeed : IDriverFeed
             await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var runCancellation = Volatile.Read(ref _runCancellation);
-                if (runCancellation is null)
-                {
-                    return;
-                }
-
-                runCancellation.Cancel();
-                if (_heartbeatTask is { } heartbeatTask)
-                {
-                    try
-                    {
-                        await heartbeatTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (runCancellation.IsCancellationRequested)
-                    {
-                    }
-                }
-
-                await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    await DisposeTransportAsync().ConfigureAwait(false);
-                }
-                finally
-                {
-                    _sendGate.Release();
-                }
-
-                runCancellation.Dispose();
-                Volatile.Write(ref _runCancellation, null);
-                _heartbeatTask = null;
-                lock (_healthGate)
-                {
-                    _readiness = DriverFeedReadiness.Stopped;
-                    _sessionId = null;
-                    _startedNanoseconds = null;
-                    _consecutiveReconnectAttempts = 0;
-                }
+                await StopCoreAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -208,21 +175,82 @@ public sealed class DriverFeed : IDriverFeed
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        Interlocked.Exchange(ref _disposeRequested, 1);
+        Interlocked.Increment(ref _stopRequestCount);
+        try
+        {
+            CancelActiveRun();
+            await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
+                _disposed = true;
+                lock (_healthGate)
+                {
+                    _readiness = DriverFeedReadiness.Disposed;
+                }
+
+                // Lifecycle callers can already be waiting when disposal is requested.
+                // Keep the gates alive so those callers observe state instead of racing
+                // disposal of the synchronization primitives themselves.
+                GC.SuppressFinalize(this);
+            }
+            finally
+            {
+                _lifecycleGate.Release();
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _stopRequestCount);
+        }
+    }
+
+    private async ValueTask StopCoreAsync(CancellationToken cancellationToken)
+    {
+        var runCancellation = Volatile.Read(ref _runCancellation);
+        if (runCancellation is null)
         {
             return;
         }
 
-        await StopAsync().ConfigureAwait(false);
-        _disposed = true;
-        lock (_healthGate)
+        runCancellation.Cancel();
+        if (_heartbeatTask is { } heartbeatTask)
         {
-            _readiness = DriverFeedReadiness.Disposed;
+            try
+            {
+                await heartbeatTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (runCancellation.IsCancellationRequested)
+            {
+            }
         }
 
-        _lifecycleGate.Dispose();
-        _sendGate.Dispose();
-        GC.SuppressFinalize(this);
+        await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await DisposeTransportAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+
+        runCancellation.Dispose();
+        Volatile.Write(ref _runCancellation, null);
+        _heartbeatTask = null;
+        lock (_healthGate)
+        {
+            _readiness = DriverFeedReadiness.Stopped;
+            _sessionId = null;
+            _startedNanoseconds = null;
+            _consecutiveReconnectAttempts = 0;
+        }
     }
 
     private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)

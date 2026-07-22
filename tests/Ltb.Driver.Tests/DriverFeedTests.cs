@@ -442,6 +442,50 @@ public sealed class DriverFeedTests
     }
 
     [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
+    public async Task StartQueuedDuringDisposalCannotCreateNewRun()
+    {
+        var first = new ScriptedDriverTransport { BlockDispose = true };
+        var second = new ScriptedDriverTransport();
+        var factory = new QueueDriverTransportFactory(first, second);
+        var clock = new ManualDriverFeedClock();
+        var feed = CreateFeed(
+            factory,
+            clock,
+            DriverTestData.SessionA,
+            DriverTestData.SessionB);
+        await feed.StartAsync();
+
+        Task dispose = feed.DisposeAsync().AsTask();
+        await DriverTestTimeouts.AwaitPhaseAsync(
+            first.DisposeStarted,
+            "dispose entered transport cleanup");
+        Task start = feed.StartAsync().AsTask();
+        Task concurrentDispose = feed.DisposeAsync().AsTask();
+        try
+        {
+            Assert.True(
+                start.IsCompleted,
+                "A start requested after disposal begins must be rejected before waiting on lifecycle cleanup.");
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => start);
+            Assert.False(dispose.IsCompleted);
+        }
+        finally
+        {
+            first.ReleaseDispose();
+            await DriverTestTimeouts.AwaitPhaseAsync(dispose, "dispose completed");
+            await DriverTestTimeouts.AwaitPhaseAsync(
+                concurrentDispose,
+                "concurrent dispose completed");
+        }
+
+        Assert.Equal(1, factory.CreateCount);
+        Assert.Equal(1, first.DisposeCount);
+        Assert.Empty(second.Packets);
+        Assert.False(second.IsConnected);
+        Assert.Equal(DriverFeedReadiness.Disposed, feed.Health.Readiness);
+    }
+
+    [Fact(Timeout = DriverTestTimeouts.TestTimeoutMilliseconds)]
     public async Task StopIsIdempotentAndStartCanCreateFreshSession()
     {
         var first = new ScriptedDriverTransport();
