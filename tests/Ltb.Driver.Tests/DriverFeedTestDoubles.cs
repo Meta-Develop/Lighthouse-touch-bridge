@@ -170,6 +170,11 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
         TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _connectStarted = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _disposeRelease = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _disposeStarted = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _disposeCount;
     private int _writeCount;
 
     public ConcurrentQueue<byte[]> Packets { get; } = new();
@@ -182,11 +187,17 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
 
     public Exception? WriteFailure { get; init; }
 
+    public bool BlockDispose { get; init; }
+
     public bool IsConnected { get; private set; }
 
     public bool IsDisposed { get; private set; }
 
     public Task ConnectStarted => _connectStarted.Task;
+
+    public Task DisposeStarted => _disposeStarted.Task;
+
+    public int DisposeCount => Volatile.Read(ref _disposeCount);
 
     public async ValueTask ConnectAsync(CancellationToken cancellationToken)
     {
@@ -205,6 +216,8 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
     }
 
     public void ReleaseConnect() => _connectRelease.TrySetResult();
+
+    public void ReleaseDispose() => _disposeRelease.TrySetResult();
 
     public ValueTask WriteAsync(ReadOnlyMemory<byte> packet, CancellationToken cancellationToken)
     {
@@ -225,13 +238,19 @@ internal sealed class ScriptedDriverTransport : IDriverTransport
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        IsDisposed = true;
+        Interlocked.Increment(ref _disposeCount);
         IsConnected = false;
         _connectRelease.TrySetCanceled();
+        _disposeStarted.TrySetResult();
+        if (BlockDispose)
+        {
+            await _disposeRelease.Task.ConfigureAwait(false);
+        }
+
+        IsDisposed = true;
         GC.SuppressFinalize(this);
-        return ValueTask.CompletedTask;
     }
 }
 
