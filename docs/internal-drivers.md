@@ -291,11 +291,13 @@ They are not Windows runtime or hardware evidence. Complete and retain the
 [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
 on the target machine.
 
-The retained 59-item checklist matrix currently records 3 narrowly
-headless-verified items, 9 items with partial evidence, 14 untested
-Windows/headless-or-GUI software items, and 33 items that require connected
-hardware. This classification does not complete a checkbox. It does not
-satisfy specification section 23.4 or Definition of Done item 14.
+The tracked checklist contains 59 live acceptance items: the 59 lines that
+begin with `- [ ]`. All 59 remain unchecked, and the repository does not
+assign them to additional evidence categories. Existing automated and Linux
+evidence does not satisfy the Windows runtime and connected-hardware gates in
+specification sections 23.3 and 23.4 or Definition of Done item 14. The next
+registration, load, and removal verification run starts from the fresh
+environment and clean baseline defined in that checklist.
 
 ## Known limitations and backlog
 
