@@ -324,7 +324,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception exception)
         {
-            DispatchError($"Unable to create the internal-driver session: {exception.Message}");
+            DispatchStartFailure(
+                $"Unable to create the internal-driver session: {exception.Message}");
             return;
         }
 
@@ -623,6 +624,18 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
+            LastError = message;
+            OverallStatus = "Action required";
+        });
+
+    private void DispatchStartFailure(string message) =>
+        _dispatch(() =>
+        {
+            CurrentPhase = InternalDriverSessionState.Faulted;
+            PhaseText = "Faulted";
+            Diagnostic = message;
+            Remediation =
+                "Review the error, correct the problem, then press Start to try again.";
             LastError = message;
             OverallStatus = "Action required";
         });
