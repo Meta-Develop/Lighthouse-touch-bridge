@@ -833,14 +833,46 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
     {
         var directory = Path.GetDirectoryName(_path)!;
         var fileName = Path.GetFileName(_path);
+        var archivePrefix = $"{fileName}.";
         foreach (var candidate in Directory.EnumerateFiles(directory, $"{fileName}.*"))
         {
-            var suffix = Path.GetFileName(candidate).AsSpan(fileName.Length + 1);
-            if (int.TryParse(suffix, out var index) && index > _retainedFileCount)
+            var candidateFileName = Path.GetFileName(candidate);
+            if (!candidateFileName.StartsWith(
+                    archivePrefix,
+                    OperatingSystem.IsWindows()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var suffix = candidateFileName.AsSpan(archivePrefix.Length);
+            if (IsCanonicalArchiveIndex(suffix, out var index) &&
+                index > _retainedFileCount)
             {
                 File.Delete(candidate);
             }
         }
+    }
+
+    private static bool IsCanonicalArchiveIndex(ReadOnlySpan<char> suffix, out int index)
+    {
+        if (suffix.IsEmpty || suffix[0] == '0')
+        {
+            index = 0;
+            return false;
+        }
+
+        foreach (var character in suffix)
+        {
+            if (character is < '0' or > '9')
+            {
+                index = 0;
+                return false;
+            }
+        }
+
+        return int.TryParse(suffix, out index);
     }
 
     private string ArchivePath(int index) => $"{_path}.{index}";
