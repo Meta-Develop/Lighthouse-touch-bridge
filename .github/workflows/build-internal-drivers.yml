@@ -46,9 +46,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
+
+      - name: Test managed log archive pruning on Windows
+        run: >-
+          dotnet test tests/Ltb.Integration.Tests/Ltb.Integration.Tests.csproj
+          --configuration Release
+          --filter FullyQualifiedName~JsonLinesInternalDriverSessionOutputTests
 
       - name: Configure driver_ltb
         run: >-
