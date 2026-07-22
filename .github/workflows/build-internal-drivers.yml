@@ -111,3 +111,51 @@ jobs:
             build/native-windows/driver_ltb/resources/icons/ltb_touch.svg
           if-no-files-found: error
           retention-days: 14
+
+  package-win-x64:
+    name: Portable Windows x64 package
+    needs:
+      - linux-validation
+      - windows-driver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver_ltb-win-x64
+          path: build/native-windows/driver_ltb
+
+      - name: Build and verify portable package
+        run: bash build/package-win-x64.sh
+
+      - name: Verify package outputs
+        shell: bash
+        run: |
+          shopt -s nullglob
+          archives=(artifacts/package/LighthouseTouchBridge-*-win-x64.zip)
+          checksums=(artifacts/package/LighthouseTouchBridge-*-win-x64.zip.sha256)
+          if (( ${#archives[@]} != 1 || ${#checksums[@]} != 1 )); then
+            printf 'Expected exactly one portable ZIP and checksum, found %d and %d.\n' \
+              "${#archives[@]}" "${#checksums[@]}" >&2
+            exit 1
+          fi
+          checksum_name="$(basename -- "${checksums[0]}")"
+          (cd artifacts/package && sha256sum --check "$checksum_name")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-touch-bridge-win-x64
+          path: |
+            artifacts/package/LighthouseTouchBridge-*-win-x64.zip
+            artifacts/package/LighthouseTouchBridge-*-win-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
