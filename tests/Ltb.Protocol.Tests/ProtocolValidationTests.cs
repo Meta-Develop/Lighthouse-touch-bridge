@@ -84,22 +84,16 @@ public sealed class ProtocolValidationTests
     }
 
     [Fact]
-    public void DisconnectedHandMayReportIndependentBatteryButNotValidInputs()
+    public void EncodeRejectsBatteryCapabilityInV1()
     {
-        var batteryOnly = ProtocolHandState.Neutral(
+        var state = ProtocolHandState.Neutral(
             ProtocolTestData.Ordering(),
             ProtocolHand.Left) with
         {
             Presence = ProtocolPresence.BatteryPresent,
-            BatteryLevel = 0.5f,
-        };
-        var invalidInputs = batteryOnly with
-        {
-            Presence = ProtocolPresence.BatteryPresent | ProtocolPresence.InputsValid,
         };
 
-        Assert.Equal(ProtocolConstants.HandStatePacketSize, ProtocolCodec.Encode(batteryOnly).Length);
-        Assert.Throws<ProtocolException>(() => ProtocolCodec.Encode(invalidInputs));
+        Assert.Throws<ProtocolException>(() => ProtocolCodec.Encode(state));
     }
 
     [Theory]
@@ -115,8 +109,7 @@ public sealed class ProtocolValidationTests
             ProtocolTestData.Ordering(),
             ProtocolHand.Left) with
         {
-            Presence = ProtocolPresence.BatteryPresent | validityFlag,
-            BatteryLevel = 0.5f,
+            Presence = validityFlag,
         };
 
         Assert.Throws<ProtocolException>(() => ProtocolCodec.Encode(state));
@@ -181,7 +174,7 @@ public sealed class ProtocolValidationTests
     }
 
     [Fact]
-    public void EncodeRejectsBatteryValueWithoutPresenceFlag()
+    public void EncodeRejectsBatteryValueInV1()
     {
         var state = ProtocolHandState.Neutral(
             ProtocolTestData.Ordering(),

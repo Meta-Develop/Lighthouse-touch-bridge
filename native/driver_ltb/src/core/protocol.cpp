@@ -147,6 +147,9 @@ DecodeResult DecodePacket(std::span<const std::uint8_t> packet) noexcept {
     }
     message.state.hand = static_cast<Hand>(raw_hand);
     message.state.flags = ReadLittleEndian<std::uint16_t>(packet, kOffsetFlags);
+    if ((message.state.flags & FlagValue(StateFlag::BatteryPresent)) != 0U) {
+        return Failure(DecodeError::InvalidBattery);
+    }
     if ((message.state.flags & ~kAllowedStateFlags) != 0U) {
         return Failure(DecodeError::InvalidFlags);
     }
@@ -236,10 +239,7 @@ DecodeResult DecodePacket(std::span<const std::uint8_t> packet) noexcept {
          message.state.stick_x != 0.0F || message.state.stick_y != 0.0F)) {
         return Failure(DecodeError::InvalidAnalog);
     }
-    const bool battery_present =
-        (message.state.flags & FlagValue(StateFlag::BatteryPresent)) != 0U;
-    if ((battery_present && !InRange(message.state.battery, 0.0F, 1.0F)) ||
-        (!battery_present && message.state.battery != 0.0F)) {
+    if (message.state.battery != 0.0F) {
         return Failure(DecodeError::InvalidBattery);
     }
 

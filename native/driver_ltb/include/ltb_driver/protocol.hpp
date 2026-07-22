@@ -35,7 +35,8 @@ enum class StateFlag : std::uint16_t {
     Tracked = 1U << 7U,
 };
 
-inline constexpr std::uint16_t kAllowedStateFlags = 0x00ffU;
+inline constexpr std::uint16_t kAllowedStateFlags = 0x00bfU;
+inline constexpr bool kProtocolV1ProvidesBatteryStatus = false;
 inline constexpr std::uint32_t kAllowedButtonBits = 0x0000001fU;
 inline constexpr std::uint32_t kAllowedTouchBits = 0x0000007fU;
 

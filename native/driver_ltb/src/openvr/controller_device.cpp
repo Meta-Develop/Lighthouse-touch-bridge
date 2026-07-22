@@ -74,7 +74,9 @@ vr::EVRInitError ControllerDevice::Activate(std::uint32_t object_id) {
         property_container_, vr::Prop_ControllerRoleHint_Int32, static_cast<std::int32_t>(role_));
     vr::VRProperties()->SetBoolProperty(property_container_, vr::Prop_WillDriftInYaw_Bool, false);
     vr::VRProperties()->SetBoolProperty(
-        property_container_, vr::Prop_DeviceProvidesBatteryStatus_Bool, false);
+        property_container_,
+        vr::Prop_DeviceProvidesBatteryStatus_Bool,
+        kProtocolV1ProvidesBatteryStatus);
 
     const bool left = hand_ == Hand::Left;
     const bool inputs_created =
@@ -202,7 +204,6 @@ void ControllerDevice::RunFrame(std::uint64_t now_nanoseconds) {
     const auto pose = PoseFromSnapshot(snapshot, now_nanoseconds);
     vr::VRServerDriverHost()->TrackedDevicePoseUpdated(object_id_, pose, sizeof(pose));
 
-    const auto& state = snapshot.state;
     const auto published_input = InputForPublication(snapshot);
     const double input_time_offset = pose.poseTimeOffset;
     vr::VRDriverInput()->UpdateBooleanComponent(
@@ -261,14 +262,6 @@ void ControllerDevice::RunFrame(std::uint64_t now_nanoseconds) {
         inputs_[InputIndex(Input::ThumbUpTouch)],
         HasTouch(published_input.touches, TouchBit::ThumbUp),
         input_time_offset);
-
-    const bool battery_present = !snapshot.stale && HasFlag(state.flags, StateFlag::BatteryPresent);
-    vr::VRProperties()->SetBoolProperty(
-        property_container_, vr::Prop_DeviceProvidesBatteryStatus_Bool, battery_present);
-    if (battery_present) {
-        vr::VRProperties()->SetFloatProperty(
-            property_container_, vr::Prop_DeviceBatteryPercentage_Float, state.battery);
-    }
 }
 
 }  // namespace ltb::driver::openvr

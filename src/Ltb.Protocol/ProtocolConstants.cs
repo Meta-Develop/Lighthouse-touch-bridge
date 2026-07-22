@@ -17,7 +17,14 @@ public static class ProtocolConstants
     public const float StickMinimum = -1f;
     public const float StickMaximum = 1f;
     public const ulong WatchdogTimeoutNanoseconds = 500_000_000;
-    public const ProtocolPresence AllowedPresence = (ProtocolPresence)0x00FF;
+    public const ProtocolPresence AllowedPresence =
+        ProtocolPresence.Connected |
+        ProtocolPresence.OrientationValid |
+        ProtocolPresence.PositionValid |
+        ProtocolPresence.LinearVelocityValid |
+        ProtocolPresence.AngularVelocityValid |
+        ProtocolPresence.InputsValid |
+        ProtocolPresence.Tracked;
     public const ProtocolButtons AllowedButtons = (ProtocolButtons)0x0000001F;
     public const ProtocolTouches AllowedTouches = (ProtocolTouches)0x0000007F;
 

@@ -95,7 +95,7 @@ std::vector<std::uint8_t> HandPacket(
     WriteFloat(packet, 116, 0.75F);
     WriteFloat(packet, 120, -0.5F);
     WriteFloat(packet, 124, 0.5F);
-    WriteFloat(packet, 128, 0.5F);
+    WriteFloat(packet, 128, 0.0F);
     return packet;
 }
 
@@ -126,12 +126,6 @@ void NeutralizeInputs(std::vector<std::uint8_t>& packet) {
     WriteFloat(packet, 124, 0.0F);
 }
 
-void NeutralizeVelocities(std::vector<std::uint8_t>& packet) {
-    for (const std::size_t offset : {80U, 84U, 88U, 92U, 96U, 100U}) {
-        WriteFloat(packet, offset, 0.0F);
-    }
-}
-
 std::vector<std::uint8_t> ParseHex(const std::string& hex) {
     Require(hex.size() % 2U == 0U, "hex fixture has odd length");
     const auto digit = [](char value) -> std::uint8_t {
@@ -156,13 +150,13 @@ void GoldenPacketDecodes() {
         "4C544231010000000100000074000000"
         "0102030405060708090A0B0C0D0E0F10"
         "1112131415161718191A1B1C1D1E1F20"
-        "0100FF00"
+        "0100BF00"
         "0000803F000000C00000003F"
         "0000000000000000000000000000803F"
         "0000803E000000BF0000C03F"
         "00000040000040C000008040"
         "0500000012000000"
-        "0000803E0000403F000000BF0000003FCDCC4C3F");
+        "0000803E0000403F000000BF0000003F00000000");
     Require(hand_bytes.size() == ltb::driver::kHandStatePacketSize, "golden hand byte count changed");
     const auto result = ltb::driver::DecodePacket(hand_bytes);
     Require(static_cast<bool>(result), "golden hand packet was rejected");
@@ -174,13 +168,14 @@ void GoldenPacketDecodes() {
     Require(result.message.state.position.y == -2.0F, "wrong position y");
     Require(result.message.state.position.z == 0.5F, "wrong position z");
     Require(result.message.state.orientation.w == 1.0F, "wrong quaternion order");
-    Require(result.message.state.flags == 0x00ffU, "wrong state flags");
+    Require(result.message.state.flags == ltb::driver::kAllowedStateFlags, "wrong state flags");
     Require(
         result.message.state.touches ==
             (TouchValue(TouchBit::Secondary) | TouchValue(TouchBit::Thumbrest)),
         "wrong golden touch bits");
     Require(result.message.state.stick_x == -0.5F, "wrong stick x");
-    Require(std::abs(result.message.state.battery - 0.8F) < 0.0001F, "wrong battery");
+    Require(result.message.state.battery == 0.0F, "wrong battery");
+    Require(!ltb::driver::kProtocolV1ProvidesBatteryStatus, "IPC v1 advertised battery status");
 
     const auto heartbeat_bytes = ParseHex(
         "4C544231010000000200000020000000"
@@ -428,10 +423,7 @@ void IdentityAndRangeFailuresAreRejected() {
     WriteInteger(
         packet,
         50,
-        static_cast<std::uint16_t>(
-            ltb::driver::FlagValue(StateFlag::BatteryPresent) |
-            ltb::driver::FlagValue(StateFlag::OrientationValid)));
-    NeutralizeInputs(packet);
+        static_cast<std::uint16_t>(ltb::driver::FlagValue(StateFlag::OrientationValid)));
     Require(
         ltb::driver::DecodePacket(packet).error == DecodeError::InvalidFlags,
         "disconnected state with tracking flags accepted");
@@ -440,16 +432,12 @@ void IdentityAndRangeFailuresAreRejected() {
     WriteInteger(
         packet,
         50,
-        static_cast<std::uint16_t>(ltb::driver::FlagValue(StateFlag::BatteryPresent)));
-    NeutralizeVelocities(packet);
+        static_cast<std::uint16_t>(
+            ltb::driver::kAllowedStateFlags |
+            ltb::driver::FlagValue(StateFlag::BatteryPresent)));
     Require(
-        ltb::driver::DecodePacket(packet).error == DecodeError::InvalidAnalog,
-        "disconnected state with non-neutral inputs accepted");
-
-    NeutralizeInputs(packet);
-    Require(
-        static_cast<bool>(ltb::driver::DecodePacket(packet)),
-        "battery telemetry was incorrectly tied to connection state");
+        ltb::driver::DecodePacket(packet).error == DecodeError::InvalidBattery,
+        "IPC v1 battery capability was accepted");
 }
 
 void NonFiniteAndQuaternionFailuresAreRejected() {
@@ -484,14 +472,10 @@ void AnalogAndBatteryFailuresAreRejected() {
     Require(ltb::driver::DecodePacket(packet).error == DecodeError::InvalidAnalog, "stick < -1 accepted");
 
     packet = HandPacket();
-    WriteInteger(
-        packet,
-        50,
-        static_cast<std::uint16_t>(ltb::driver::kAllowedStateFlags &
-            ~ltb::driver::FlagValue(StateFlag::BatteryPresent)));
+    WriteFloat(packet, 128, 0.5F);
     Require(
         ltb::driver::DecodePacket(packet).error == DecodeError::InvalidBattery,
-        "nonzero absent battery accepted");
+        "nonzero IPC v1 battery value accepted");
 
     packet = HandPacket();
     WriteInteger(
