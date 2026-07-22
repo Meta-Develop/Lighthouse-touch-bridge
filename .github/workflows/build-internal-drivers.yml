@@ -132,13 +132,17 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: driver_ltb-win-x64
-          path: build/native-windows/driver_ltb
+          path: ${{ runner.temp }}/driver_ltb
 
       - name: Build and verify portable package
+        env:
+          LTB_DRIVER_ROOT: ${{ runner.temp }}/driver_ltb
         run: bash build/package-win-x64.sh
 
       - name: Verify package outputs
         shell: bash
+        env:
+          LTB_DRIVER_ROOT: ${{ runner.temp }}/driver_ltb
         run: |
           shopt -s nullglob
           archives=(artifacts/package/LighthouseTouchBridge-*-win-x64.zip)
@@ -150,6 +154,56 @@ jobs:
           fi
           checksum_name="$(basename -- "${checksums[0]}")"
           (cd artifacts/package && sha256sum --check "$checksum_name")
+          python3 - "${archives[0]}" "$LTB_DRIVER_ROOT/bin/win64/driver_ltb.dll" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+          import zipfile
+
+          archive_path = pathlib.Path(sys.argv[1])
+          downloaded_driver_path = pathlib.Path(sys.argv[2])
+          with zipfile.ZipFile(archive_path, "r") as archive:
+              manifest_names = [
+                  name
+                  for name in archive.namelist()
+                  if len(pathlib.PurePosixPath(name).parts) == 2
+                  and pathlib.PurePosixPath(name).name == "release-manifest.txt"
+              ]
+              if len(manifest_names) != 1:
+                  raise SystemExit(
+                      f"Expected one package-root release-manifest.txt, found {manifest_names!r}"
+                  )
+              manifest_name = manifest_names[0]
+              manifest_lines = archive.read(manifest_name).decode("utf-8").splitlines()
+              dirty_lines = [
+                  line for line in manifest_lines if line.startswith("source_tree_dirty=")
+              ]
+              if dirty_lines != ["source_tree_dirty=false"]:
+                  raise SystemExit(
+                      f"Package source_tree_dirty evidence is not exactly false: {dirty_lines!r}"
+                  )
+
+              package_root = pathlib.PurePosixPath(manifest_name).parts[0]
+              driver_name = f"{package_root}/driver_ltb/bin/win64/driver_ltb.dll"
+              if archive.namelist().count(driver_name) != 1:
+                  raise SystemExit(
+                      f"Expected one archived Windows driver at {driver_name!r}"
+                  )
+              archived_driver_hash = hashlib.sha256(archive.read(driver_name)).hexdigest()
+
+          downloaded_driver_hash = hashlib.sha256(
+              downloaded_driver_path.read_bytes()
+          ).hexdigest()
+          if archived_driver_hash != downloaded_driver_hash:
+              raise SystemExit(
+                  "Archived driver_ltb.dll does not match the downloaded Windows artifact: "
+                  f"{archived_driver_hash} != {downloaded_driver_hash}"
+              )
+          print(
+              "Verified clean-source manifest and exact Windows driver artifact SHA-256: "
+              f"{downloaded_driver_hash}"
+          )
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
