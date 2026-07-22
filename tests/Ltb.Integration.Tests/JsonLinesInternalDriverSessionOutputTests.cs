@@ -102,6 +102,36 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
     }
 
     [Fact]
+    public void StartupPreservesExistingActiveLogAndPrunesOnlyExpiredNumberedArchives()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "session.jsonl");
+        const string activeContents = "existing-active-record\n";
+        File.WriteAllText(path, activeContents);
+        File.WriteAllText($"{path}.1", "current-one");
+        File.WriteAllText($"{path}.2", "current-two");
+        File.WriteAllText($"{path}.3", "expired-three");
+        File.WriteAllText($"{path}.backup", "unrelated-backup");
+        File.WriteAllText($"{path}.03", "unrelated-leading-zero");
+        File.WriteAllText($"{path}.4.tmp", "unrelated-suffix");
+
+        using (new JsonLinesInternalDriverSessionOutput(
+            path,
+            maxFileSizeBytes: 1024,
+            retainedFileCount: 2))
+        {
+        }
+
+        Assert.Equal(activeContents, File.ReadAllText(path));
+        Assert.True(File.Exists($"{path}.1"));
+        Assert.True(File.Exists($"{path}.2"));
+        Assert.False(File.Exists($"{path}.3"));
+        Assert.True(File.Exists($"{path}.backup"));
+        Assert.True(File.Exists($"{path}.03"));
+        Assert.True(File.Exists($"{path}.4.tmp"));
+    }
+
+    [Fact]
     public void EveryEmittedRecordIsOneCompleteJsonLine()
     {
         using var directory = new TemporaryDirectory();
