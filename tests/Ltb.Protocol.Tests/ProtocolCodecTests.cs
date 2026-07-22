@@ -29,13 +29,13 @@ public sealed class ProtocolCodecTests
             "0102030405060708090A0B0C0D0E0F10" +
             "1112131415161718" +
             "191A1B1C1D1E1F20" +
-            "0100FF00" +
+            "0100BF00" +
             "0000803F000000C00000003F" +
             "0000000000000000000000000000803F" +
             "0000803E000000BF0000C03F" +
             "00000040000040C000008040" +
             "0500000012000000" +
-            "0000803E0000403F000000BF0000003FCDCC4C3F");
+            "0000803E0000403F000000BF0000003F00000000");
 
         var packet = ProtocolCodec.Encode(ProtocolTestData.HandState());
 
@@ -121,6 +121,20 @@ public sealed class ProtocolCodecTests
             BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(mutation.Offset), mutation.Value);
             Assert.False(ProtocolCodec.TryDecode(packet, out _));
         }
+    }
+
+    [Fact]
+    public void DecodeRejectsBatteryCapabilityInV1()
+    {
+        var packet = ProtocolCodec.Encode(ProtocolTestData.HandState());
+        var presence = BinaryPrimitives.ReadUInt16LittleEndian(
+            packet.AsSpan(ProtocolConstants.PresenceFlagsOffset));
+        BinaryPrimitives.WriteUInt16LittleEndian(
+            packet.AsSpan(ProtocolConstants.PresenceFlagsOffset),
+            (ushort)(presence | (ushort)ProtocolPresence.BatteryPresent));
+
+        Assert.False(ProtocolCodec.TryDecode(packet, out var decoded));
+        Assert.Null(decoded);
     }
 
     [Fact]

@@ -28,7 +28,6 @@ internal static class ProtocolTestData
             ProtocolPresence.LinearVelocityValid |
             ProtocolPresence.AngularVelocityValid |
             ProtocolPresence.InputsValid |
-            ProtocolPresence.BatteryPresent |
             ProtocolPresence.Tracked,
             new ProtocolDriverPose(
                 new ProtocolVector3(1f, -2f, 0.5f),
@@ -43,5 +42,5 @@ internal static class ProtocolTestData
                 0.75f,
                 -0.5f,
                 0.5f),
-            0.8f);
+            0f);
 }

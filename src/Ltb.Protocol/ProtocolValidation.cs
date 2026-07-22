@@ -39,6 +39,11 @@ public static class ProtocolValidation
             throw new ProtocolException("The hand identifier is invalid.");
         }
 
+        if (state.Presence.HasFlag(ProtocolPresence.BatteryPresent))
+        {
+            throw new ProtocolException("Battery telemetry is not supported by IPC v1.");
+        }
+
         if ((state.Presence & ~ProtocolConstants.AllowedPresence) != 0)
         {
             throw new ProtocolException("The presence flags contain unknown bits.");
@@ -103,11 +108,9 @@ public static class ProtocolValidation
             throw new ProtocolException("Inputs without the inputs-valid flag must be neutral.");
         }
 
-        var batteryPresent = state.Presence.HasFlag(ProtocolPresence.BatteryPresent);
-        ValidateRange(state.BatteryLevel, ProtocolConstants.AnalogMinimum, ProtocolConstants.AnalogMaximum, "battery");
-        if (!batteryPresent && state.BatteryLevel != 0f)
+        if (state.BatteryLevel != 0f)
         {
-            throw new ProtocolException("Battery level must be zero when battery telemetry is absent.");
+            throw new ProtocolException("Battery level must be zero because IPC v1 has no battery capability.");
         }
     }
 
