@@ -11,14 +11,14 @@ and discovery contract. The older
 history for paths that run only behind warning-gated `legacy-*` commands and
 cannot satisfy any item here.
 
-## Retained evidence boundary
+## Repository-visible evidence boundary
 
-The retained 59-item evidence matrix classifies 3 items as narrowly
-headless-verified, 9 as partial evidence, 14 as untested
-Windows/headless-or-GUI software items, and 33 as requiring connected hardware.
-These categories describe retained evidence only; they do not complete any
-checkbox. Headless evidence does not satisfy specification section 23.4 or
-Definition of Done item 14.
+This tracked checklist contains 59 live acceptance items: the 59 lines below
+that begin with `- [ ]`. All 59 remain unchecked. The repository does not
+assign these items to additional evidence categories, so no category subtotals
+are claimed here. Existing automated and Linux evidence does not satisfy the
+Windows runtime and connected-hardware gates in specification sections 23.3
+and 23.4 or Definition of Done item 14.
 
 Driver packages statically link their compiler runtimes. The package target
 and Windows CI gate the exact staged `driver_ltb.dll` by parsing regular and
@@ -28,9 +28,10 @@ prove the parser and allowlist logic and run the portable native CTest targets
 only. The Windows workflow must build and inspect the actual produced
 `driver_ltb.dll` before its import set is accepted.
 
-## V6 repeat precondition
+## Fresh-environment transaction precondition
 
-Repeat V6 only from a fresh Gate0 and retain evidence for this complete
+Start the next registration, load, and removal verification run from a fresh
+environment, record a clean baseline, and retain evidence for this complete
 transaction:
 
 1. Prove a clean initial state: no LTB or SteamVR process, LTB scheduled task,
@@ -49,15 +50,16 @@ transaction:
 5. Stop SteamVR and run receipt-backed removal from a fresh process; require
    verified exit code `0` and removal of only LTB-owned registration state.
 6. Restore both protected files byte-for-byte and verify their hashes and the
-   unrelated external-driver order against Gate0.
+   unrelated external-driver order against the clean baseline recorded in
+   steps 1 and 2.
 7. Prove final residue absence: no LTB or SteamVR process, scheduled task,
    external-driver registration, registration receipt, temporary setting, or
    staged test residue remains.
 
 Any unresolved import, missing intended-DLL load or exact-controller proof,
 unexplained shutdown, protected-state difference, incomplete receipt-backed
-removal, or residue fails V6. This software transaction still does not replace
-the connected-hardware gates.
+removal, or residue fails this transaction. Passing this software transaction
+still does not replace the connected-hardware gates.
 
 ## Evidence record
 
