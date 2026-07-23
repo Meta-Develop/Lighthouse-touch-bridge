@@ -48,6 +48,13 @@
       "touch": true,
       "order": 2
     },
+    "/input/system": {
+      "binding_image_point": [128, 82],
+      "type": "button",
+      "side": "left",
+      "click": true,
+      "order": 3
+    },
     "/input/trigger": {
       "binding_image_point": [206, 54],
       "type": "trigger",

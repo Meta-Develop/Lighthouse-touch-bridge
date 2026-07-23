@@ -10,7 +10,7 @@ public sealed class InternalDriverInputProfileTests
     private const string VrChatAppKey = "steam.app.438100";
 
     [Fact]
-    public void ProfileDeclaresBindableNativeInputsAndExcludesReservedSystemButton()
+    public void ProfileDeclaresNativeInputsAndLeftOnlyReservedSystemButton()
     {
         var repositoryRoot = FindRepositoryRoot();
         var inputRoot = Path.Combine(
@@ -35,7 +35,10 @@ public sealed class InternalDriverInputProfileTests
         var sources = profile.GetProperty("input_source");
         var rawPose = sources.GetProperty("/pose/raw");
         Assert.Equal("pose", rawPose.GetProperty("type").GetString());
-        Assert.False(sources.TryGetProperty("/input/system", out _));
+        var system = sources.GetProperty("/input/system");
+        Assert.Equal("button", system.GetProperty("type").GetString());
+        Assert.Equal("left", system.GetProperty("side").GetString());
+        Assert.True(system.GetProperty("click").GetBoolean());
         Assert.False(sources.TryGetProperty("/input/menu", out _));
 
         var nativeSource = File.ReadAllText(Path.Combine(
@@ -55,11 +58,7 @@ public sealed class InternalDriverInputProfileTests
 
         Assert.NotEmpty(nativeComponents);
         Assert.Contains(ReservedSystemClick, nativeComponents);
-        foreach (var componentPath in nativeComponents.Where(
-                     path => !string.Equals(
-                         path,
-                         ReservedSystemClick,
-                         StringComparison.Ordinal)))
+        foreach (var componentPath in nativeComponents)
         {
             var separator = componentPath.LastIndexOf('/');
             var sourcePath = componentPath[..separator];
@@ -156,6 +155,12 @@ public sealed class InternalDriverInputProfileTests
             profile.GetProperty("legacy_binding").GetString());
         using var remappingDocument = Parse(remappingPath);
         using var legacyBindingDocument = Parse(legacyBindingPath);
+        using var localizationDocument = Parse(Path.Combine(
+            resourcesRoot,
+            "localization",
+            "localization.json"));
+        var localization = Assert.Single(localizationDocument.RootElement.EnumerateArray());
+        Assert.Equal("System", localization.GetProperty("/input/system").GetString());
 
         var defaultBindings = profile.GetProperty("default_bindings");
         var vrChatBinding = Assert.Single(defaultBindings.EnumerateArray());

@@ -223,10 +223,12 @@ stable left/right controller roles with the LTB input profile. Haptics are not
 advertised and LibOVR controller battery state is reported as absent.
 The public LibOVR left Menu/Enter bit is reserved exclusively for SteamVR
 dashboard control: the left device publishes it directly as
-`/input/system/click`, the right device has no system component, and neither
-the input profile nor application bindings declare that reserved source. The
-bundled VRChat binding keeps the in-application Quick Menu on Y/B, avoiding a
-simultaneous app-menu action when the SteamVR dashboard is toggled.
+`/input/system/click`, the right device has no system component, and the input
+profile declares `/input/system` only as a left-side source for SteamVR source
+resolution. Application bindings and automatic remapping do not reference the
+reserved source. The bundled VRChat binding keeps the in-application Quick
+Menu on Y/B, avoiding a simultaneous app-menu action when the SteamVR
+dashboard is toggled.
 
 ## Registration and verification
 

@@ -544,8 +544,8 @@ OpenVR driver space. The native driver shall:
   trigger, grip, and thumbstick values;
 - map the public LibOVR left Menu/Enter bit exclusively to SteamVR's reserved
   `/input/system/click` component so it opens or closes the dashboard, create
-  no right-hand system component, and omit the reserved source from profiles
-  and application bindings;
+  no right-hand system component, declare it only as a left-side profile
+  source, and omit it from application bindings and automatic remapping;
 - publish the pose with identity driver-to-world transform;
 - neutralize invalid or stale input atomically; and
 - report the device untracked instead of freezing the last valid pose.
