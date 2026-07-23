@@ -1,7 +1,14 @@
 {
   "jsonid": "input_profile",
   "controller_type": "ltb_touch",
+  "device_class": "TrackedDeviceClass_Controller",
+  "resource_root": "ltb",
+  "driver_name": "ltb",
+  "hand_priority": 0,
+  "legacy_binding": "{ltb}/input/legacy_bindings_ltb_touch.json",
+  "remapping": "{ltb}/input/ltb_touch_remapping.json",
   "input_bindingui_mode": "controller_handed",
+  "should_show_binding_errors": true,
   "input_bindingui_left": {
     "image": "{ltb}/icons/ltb_touch.svg"
   },
@@ -12,46 +19,59 @@
     "/input/x": {
       "binding_image_point": [68, 70],
       "type": "button",
+      "side": "left",
+      "click": true,
       "touch": true,
       "order": 1
     },
     "/input/y": {
       "binding_image_point": [92, 48],
       "type": "button",
+      "side": "left",
+      "click": true,
       "touch": true,
       "order": 2
     },
     "/input/a": {
       "binding_image_point": [68, 70],
       "type": "button",
+      "side": "right",
+      "click": true,
       "touch": true,
       "order": 1
     },
     "/input/b": {
       "binding_image_point": [92, 48],
       "type": "button",
+      "side": "right",
+      "click": true,
       "touch": true,
       "order": 2
     },
     "/input/menu": {
       "binding_image_point": [128, 82],
       "type": "button",
+      "click": true,
       "order": 3
     },
     "/input/trigger": {
       "binding_image_point": [206, 54],
       "type": "trigger",
+      "value": true,
+      "click": true,
       "touch": true,
       "order": 4
     },
     "/input/grip": {
       "binding_image_point": [188, 128],
       "type": "trigger",
+      "value": true,
       "order": 5
     },
     "/input/thumbstick": {
       "binding_image_point": [108, 104],
       "type": "joystick",
+      "click": true,
       "touch": true,
       "order": 6
     },
@@ -72,7 +92,20 @@
       "type": "button",
       "touch": true,
       "order": 9
+    },
+    "/pose/raw": {
+      "binding_image_point": [128, 96],
+      "type": "pose"
     }
   },
-  "default_bindings": []
+  "mirror_mappings": [
+    ["/user/hand/left/input/x", "/user/hand/right/input/a"],
+    ["/user/hand/left/input/y", "/user/hand/right/input/b"]
+  ],
+  "default_bindings": [
+    {
+      "app_key": "steam.app.438100",
+      "binding_url": "bindings/bindings_ltb_touch_vrchat.json"
+    }
+  ]
 }

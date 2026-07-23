@@ -81,6 +81,9 @@ jobs:
             "driver.vrdrivermanifest",
             "bin/win64/driver_ltb.dll",
             "resources/input/ltb_touch_profile.json",
+            "resources/input/ltb_touch_remapping.json",
+            "resources/input/legacy_bindings_ltb_touch.json",
+            "resources/input/bindings/bindings_ltb_touch_vrchat.json",
             "resources/settings/default.vrsettings",
             "resources/localization/localization.json",
             "resources/icons/ltb_touch.svg"
@@ -116,6 +119,9 @@ jobs:
             build/native-windows/driver_ltb/driver.vrdrivermanifest
             build/native-windows/driver_ltb/bin/win64/driver_ltb.dll
             build/native-windows/driver_ltb/resources/input/ltb_touch_profile.json
+            build/native-windows/driver_ltb/resources/input/ltb_touch_remapping.json
+            build/native-windows/driver_ltb/resources/input/legacy_bindings_ltb_touch.json
+            build/native-windows/driver_ltb/resources/input/bindings/bindings_ltb_touch_vrchat.json
             build/native-windows/driver_ltb/resources/settings/default.vrsettings
             build/native-windows/driver_ltb/resources/localization/localization.json
             build/native-windows/driver_ltb/resources/icons/ltb_touch.svg

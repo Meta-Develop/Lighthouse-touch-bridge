@@ -41,6 +41,9 @@ required_driver_source_files=(
   "$driver_source_root/driver.vrdrivermanifest"
   "$driver_source_root/bin/win64/driver_ltb.dll"
   "$driver_source_root/resources/input/ltb_touch_profile.json"
+  "$driver_source_root/resources/input/ltb_touch_remapping.json"
+  "$driver_source_root/resources/input/legacy_bindings_ltb_touch.json"
+  "$driver_source_root/resources/input/bindings/bindings_ltb_touch_vrchat.json"
   "$driver_source_root/resources/settings/default.vrsettings"
   "$driver_source_root/resources/localization/localization.json"
   "$driver_source_root/resources/icons/ltb_touch.svg"
@@ -225,6 +228,9 @@ required_publish_files=(
   "$package_root/driver_ltb/driver.vrdrivermanifest"
   "$package_root/driver_ltb/bin/win64/driver_ltb.dll"
   "$package_root/driver_ltb/resources/input/ltb_touch_profile.json"
+  "$package_root/driver_ltb/resources/input/ltb_touch_remapping.json"
+  "$package_root/driver_ltb/resources/input/legacy_bindings_ltb_touch.json"
+  "$package_root/driver_ltb/resources/input/bindings/bindings_ltb_touch_vrchat.json"
   "$package_root/driver_ltb/resources/settings/default.vrsettings"
 )
 for required_file in "${required_publish_files[@]}"; do
@@ -410,6 +416,9 @@ required = {
     root + "driver_ltb/driver.vrdrivermanifest",
     root + "driver_ltb/bin/win64/driver_ltb.dll",
     root + "driver_ltb/resources/input/ltb_touch_profile.json",
+    root + "driver_ltb/resources/input/ltb_touch_remapping.json",
+    root + "driver_ltb/resources/input/legacy_bindings_ltb_touch.json",
+    root + "driver_ltb/resources/input/bindings/bindings_ltb_touch_vrchat.json",
     root + "driver_ltb/resources/settings/default.vrsettings",
     root + "driver_ltb/resources/localization/localization.json",
     root + "driver_ltb/resources/icons/ltb_touch.svg",
@@ -468,6 +477,9 @@ with zipfile.ZipFile(archive_path, "r") as archive:
         root + "driver_ltb/driver.vrdrivermanifest",
         root + "driver_ltb/bin/win64/driver_ltb.dll",
         root + "driver_ltb/resources/input/ltb_touch_profile.json",
+        root + "driver_ltb/resources/input/ltb_touch_remapping.json",
+        root + "driver_ltb/resources/input/legacy_bindings_ltb_touch.json",
+        root + "driver_ltb/resources/input/bindings/bindings_ltb_touch_vrchat.json",
         root + "driver_ltb/resources/settings/default.vrsettings",
         root + "driver_ltb/resources/localization/localization.json",
         root + "driver_ltb/resources/icons/ltb_touch.svg",

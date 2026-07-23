@@ -1,0 +1,33 @@
+{
+  "to_controller_type": "ltb_touch",
+  "layouts": [
+    {
+      "priority": 100,
+      "from_controller_type": "oculus_touch",
+      "simulate_controller_type": true,
+      "simulate_render_model": true,
+      "simulate_HMD": false,
+      "autoremappings": [
+        {
+          "from": "/user/hand/right/input/grip",
+          "to": "/user/hand/right/input/grip",
+          "parameters": {
+            "click_activate_threshold": "0.2",
+            "click_deactivate_threshold": "0.1",
+            "touch_activate_threshold": "0.05",
+            "touch_deactivate_threshold": "0.02"
+          }
+        },
+        {
+          "from": "/user/hand/right/input/joystick",
+          "to": "/user/hand/right/input/thumbstick"
+        },
+        {
+          "from": "/user/hand/left/input/system",
+          "to": "/user/hand/left/input/menu",
+          "mirror": false
+        }
+      ]
+    }
+  ]
+}
