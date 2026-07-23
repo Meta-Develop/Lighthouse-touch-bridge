@@ -15,6 +15,7 @@ namespace {
 
 constexpr char kInputProfile[] = "{ltb}/input/ltb_touch_profile.json";
 constexpr char kControllerType[] = "ltb_touch";
+constexpr char kRegisteredDeviceTypePrefix[] = "ltb/";
 
 template <typename InputType>
 std::size_t InputIndex(InputType input) noexcept {
@@ -57,11 +58,17 @@ bool ControllerDevice::CreateScalar(
 vr::EVRInitError ControllerDevice::Activate(std::uint32_t object_id) {
     object_id_ = object_id;
     property_container_ = vr::VRProperties()->TrackedDeviceToPropertyContainer(object_id_);
+    const auto registered_device_type =
+        std::string{kRegisteredDeviceTypePrefix} + serial_number_;
     vr::VRProperties()->SetStringProperty(property_container_, vr::Prop_TrackingSystemName_String, "ltb");
     vr::VRProperties()->SetStringProperty(
         property_container_, vr::Prop_ModelNumber_String, "Lighthouse Touch Bridge Controller");
     vr::VRProperties()->SetStringProperty(
         property_container_, vr::Prop_SerialNumber_String, serial_number_.c_str());
+    vr::VRProperties()->SetStringProperty(
+        property_container_,
+        vr::Prop_RegisteredDeviceType_String,
+        registered_device_type.c_str());
     vr::VRProperties()->SetStringProperty(
         property_container_, vr::Prop_ManufacturerName_String, "Meta-Develop");
     vr::VRProperties()->SetStringProperty(
