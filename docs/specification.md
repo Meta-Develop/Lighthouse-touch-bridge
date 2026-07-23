@@ -542,6 +542,10 @@ OpenVR driver space. The native driver shall:
 - validate protocol framing, values, session ordering, and freshness;
 - publish pose, linear and angular velocity, buttons, capacitive states,
   trigger, grip, and thumbstick values;
+- map the public LibOVR left Menu/Enter bit exclusively to SteamVR's reserved
+  `/input/system/click` component so it opens or closes the dashboard, create
+  no right-hand system component, and omit the reserved source from profiles
+  and application bindings;
 - publish the pose with identity driver-to-world transform;
 - neutralize invalid or stale input atomically; and
 - report the device untracked instead of freezing the last valid pose.

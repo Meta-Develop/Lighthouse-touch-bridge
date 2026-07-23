@@ -221,6 +221,12 @@ hands.
 `driver_ltb` performs no calibration or Meta access. It publishes exactly two
 stable left/right controller roles with the LTB input profile. Haptics are not
 advertised and LibOVR controller battery state is reported as absent.
+The public LibOVR left Menu/Enter bit is reserved exclusively for SteamVR
+dashboard control: the left device publishes it directly as
+`/input/system/click`, the right device has no system component, and neither
+the input profile nor application bindings declare that reserved source. The
+bundled VRChat binding keeps the in-application Quick Menu on Y/B, avoiding a
+simultaneous app-menu action when the SteamVR dashboard is toggled.
 
 ## Registration and verification
 
