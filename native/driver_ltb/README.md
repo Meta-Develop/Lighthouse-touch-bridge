@@ -46,11 +46,14 @@ Touch bits 0 through 6 are primary, secondary, trigger, stick, thumbrest,
 index-pointing, and thumb-up states.
 Button bits 0 through 4 are primary, secondary, menu, thumbstick click, and
 trigger click.
-The left Touch Menu/Enter bit publishes only OpenVR's reserved
-`/input/system/click` component so it can open and close the SteamVR dashboard.
-The system component and its input-profile source are left-hand only. It is not
-an application-bindable menu input; application menus remain on their normal
-button bindings, such as VRChat's Y/B bindings.
+The wire-level menu bit is the public LibOVR left Menu/Enter input. The native
+left controller maps it exclusively to SteamVR's reserved
+`/input/system/click` component so it summons or dismisses the SteamVR
+dashboard. The right controller creates no system component. Reserved system
+input is declared only as a left-side source in the LTB input profile so
+SteamVR can resolve it consistently, but it is absent from application
+bindings and automatic remapping; the bundled VRChat binding keeps its
+application Quick Menu on Y/B.
 When either velocity-valid flag is clear, its three velocity fields must be
 exactly zero. A disconnected state may retain only the battery-present flag;
 all tracking and input-valid flags must be clear.

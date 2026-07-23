@@ -6,6 +6,7 @@ namespace Ltb.Integration.Tests;
 public sealed class InternalDriverInputProfileTests
 {
     private const string ControllerType = "ltb_touch";
+    private const string ReservedSystemClick = "/input/system/click";
     private const string VrChatAppKey = "steam.app.438100";
 
     [Fact]
@@ -51,7 +52,7 @@ public sealed class InternalDriverInputProfileTests
             .ToArray();
 
         Assert.NotEmpty(nativeComponents);
-        Assert.Contains("/input/system/click", nativeComponents);
+        Assert.Contains(ReservedSystemClick, nativeComponents);
         Assert.DoesNotContain("/input/menu/click", nativeComponents);
         Assert.Contains(
             """CreateBoolean(property_container_, Input::SystemClick, "/input/system/click")""",
@@ -71,12 +72,24 @@ public sealed class InternalDriverInputProfileTests
                 """\(!left\s*\|\|\s*CreateBoolean\(property_container_, Input::SystemClick, "/input/system/click"\)\)""",
                 RegexOptions.CultureInvariant),
             "The reserved system component must be created only for the left controller.");
-        Assert.True(
-            Regex.IsMatch(
-                nativeSource,
-                """if \(hand_ == Hand::Left\)\s*\{\s*vr::VRDriverInput\(\)->UpdateBooleanComponent\(\s*inputs_\[InputIndex\(Input::SystemClick\)\]""",
-                RegexOptions.CultureInvariant),
-            "The reserved system component must be updated only for the left controller.");
+        Assert.Matches(
+            new Regex(
+                """
+                if\s*\(\s*hand_\s*==\s*Hand::Left\s*\)\s*\{\s*
+                    vr::VRDriverInput\(\)->UpdateBooleanComponent\(\s*
+                        inputs_\[InputIndex\(Input::SystemClick\)\],\s*
+                        SystemClickForButtons\(\s*
+                            hand_,\s*
+                            published_input\.buttons\s*
+                        \),\s*
+                        input_time_offset\s*
+                    \);\s*
+                \}
+                """,
+                RegexOptions.CultureInvariant |
+                RegexOptions.IgnorePatternWhitespace |
+                RegexOptions.Singleline),
+            nativeSource);
         Assert.Equal(2, Regex.Matches(nativeSource, "Input::SystemClick").Count);
         Assert.DoesNotContain("/input/menu", nativeSource, StringComparison.Ordinal);
         foreach (var componentPath in nativeComponents)
@@ -200,14 +213,10 @@ public sealed class InternalDriverInputProfileTests
         Assert.DoesNotContain(
             automaticMappings,
             mapping =>
-                string.Equals(
-                    mapping.From,
-                    "/user/hand/left/input/system",
-                    StringComparison.Ordinal) ||
-                string.Equals(
-                    mapping.To,
-                    "/user/hand/left/input/menu",
-                    StringComparison.Ordinal));
+                mapping.From?.Contains("/input/system", StringComparison.Ordinal) == true ||
+                mapping.To?.Contains("/input/system", StringComparison.Ordinal) == true ||
+                mapping.From?.Contains("/input/menu", StringComparison.Ordinal) == true ||
+                mapping.To?.Contains("/input/menu", StringComparison.Ordinal) == true);
 
         using var vrChatDocument = Parse(Path.Combine(
             inputRoot,
@@ -227,8 +236,31 @@ public sealed class InternalDriverInputProfileTests
         Assert.Contains("/user/hand/left/input/thumbstick", userPaths);
         Assert.Contains("/user/hand/right/input/thumbstick", userPaths);
         Assert.DoesNotContain(userPaths, path => path.Contains("/input/joystick", StringComparison.Ordinal));
+        Assert.DoesNotContain(userPaths, path => path.Contains("/input/menu", StringComparison.Ordinal));
+        Assert.DoesNotContain(userPaths, path => path.Contains("/input/system", StringComparison.Ordinal));
         Assert.DoesNotContain(userPaths, path => path.Contains("/input/skeleton", StringComparison.Ordinal));
         Assert.DoesNotContain(userPaths, path => path.Contains("/output/haptic", StringComparison.Ordinal));
+
+        var vrChatAppMenuPaths = vrChat
+            .GetProperty("bindings")
+            .GetProperty("/actions/global")
+            .GetProperty("sources")
+            .EnumerateArray()
+            .Where(source =>
+                source.GetProperty("inputs").TryGetProperty("click", out var click) &&
+                string.Equals(
+                    click.GetProperty("output").GetString(),
+                    "/actions/global/in/menu",
+                    StringComparison.Ordinal))
+            .Select(source => source.GetProperty("path").GetString())
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(
+            [
+                "/user/hand/left/input/y",
+                "/user/hand/right/input/b",
+            ],
+            vrChatAppMenuPaths);
 
         var bindingJson = File.ReadAllText(Path.Combine(
             inputRoot,
