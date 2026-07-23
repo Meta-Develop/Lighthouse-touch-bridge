@@ -267,23 +267,26 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             InternalDriverSessionState.Validation,
             "Running held-out model selection and per-hand calibration quality gates.",
             "Bad rotation will fail; unavailable or unobservable position may select rotation-only.");
-        var left = Calibrate(
-            calibration,
-            leftCapture,
-            MetaLinkHand.Left,
-            association.Left!.TrackerSerial,
-            explicitRequest);
-        var right = Calibrate(
-            calibration,
-            rightCapture,
-            MetaLinkHand.Right,
-            association.Right!.TrackerSerial,
-            explicitRequest);
+        var profiles = explicitRequest
+            ? RunExplicitProfileStoreTransaction(
+                _paths.CalibrationProfileStorePath,
+                stagedProfileStorePath => CalibratePair(
+                    new InternalDriverCalibration(stagedProfileStorePath),
+                    leftCapture,
+                    rightCapture,
+                    association,
+                    explicitRequest: true))
+            : CalibratePair(
+                calibration,
+                leftCapture,
+                rightCapture,
+                association,
+                explicitRequest: false);
         progress(
             InternalDriverSessionState.SaveProfile,
             "Both first-party results passed validation; exact schema-2 profiles were saved and reloaded.",
             "Keep the physical tracker mounts fixed for profile reuse.");
-        return new InternalDriverProfilePair(left, right);
+        return profiles;
     }
 
     public IDriverFeed CreateFeed()
@@ -658,6 +661,71 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             result.Profile!,
             InternalDriverProfileReadiness.Calibrated,
             result.Diagnostic);
+    }
+
+    private static InternalDriverProfilePair CalibratePair(
+        InternalDriverCalibration calibration,
+        GuidedHandCapture leftCapture,
+        GuidedHandCapture rightCapture,
+        TrackerAssociationResult association,
+        bool explicitRequest)
+    {
+        var left = Calibrate(
+            calibration,
+            leftCapture,
+            MetaLinkHand.Left,
+            association.Left!.TrackerSerial,
+            explicitRequest);
+        var right = Calibrate(
+            calibration,
+            rightCapture,
+            MetaLinkHand.Right,
+            association.Right!.TrackerSerial,
+            explicitRequest);
+        return new InternalDriverProfilePair(left, right);
+    }
+
+    /// <summary>
+    /// Stages an explicit two-hand calibration against a private copy and
+    /// commits the complete resulting store only after both hands validate.
+    /// </summary>
+    internal static TResult RunExplicitProfileStoreTransaction<TResult>(
+        string profileStorePath,
+        Func<string, TResult> stageCalibration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileStorePath);
+        ArgumentNullException.ThrowIfNull(stageCalibration);
+
+        var canonicalPath = Path.GetFullPath(profileStorePath);
+        var directory = Path.GetDirectoryName(canonicalPath)
+            ?? throw new ArgumentException(
+                "The calibration profile store must have a parent directory.",
+                nameof(profileStorePath));
+        var fileName = Path.GetFileName(canonicalPath);
+        var stagedPath = Path.Combine(
+            directory,
+            $".{fileName}.explicit-calibration.{Guid.NewGuid():N}.stage");
+
+        try
+        {
+            var initialStore = File.Exists(canonicalPath)
+                ? CalibrationProfileFile.LoadStore(canonicalPath)
+                : CalibrationProfileStore.Empty;
+            CalibrationProfileFile.SaveStore(stagedPath, initialStore);
+
+            var result = stageCalibration(stagedPath);
+            var completedStore = CalibrationProfileFile.LoadStore(stagedPath);
+            CalibrationProfileFile.SaveStore(canonicalPath, completedStore);
+            _ = CalibrationProfileFile.LoadStore(canonicalPath);
+            return result;
+        }
+        finally
+        {
+            if (File.Exists(stagedPath))
+            {
+                File.Delete(stagedPath);
+            }
+        }
     }
 
     private static InternalDriverHandProfile ToHandProfile(
