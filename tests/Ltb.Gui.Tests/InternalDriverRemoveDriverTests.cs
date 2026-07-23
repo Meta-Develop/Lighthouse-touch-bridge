@@ -76,7 +76,9 @@ public sealed class InternalDriverRemoveDriverTests
         await session.Started;
 
         Assert.False(viewModel.CanRemoveDriver);
+        Assert.False(viewModel.CanCalibrate);
         await viewModel.RemoveDriverAsync();
+        await viewModel.CalibrateAsync();
         Assert.Equal(0, remover.RemoveCount);
 
         await viewModel.StopAsync();
@@ -108,9 +110,12 @@ public sealed class InternalDriverRemoveDriverTests
         await remover.Entered;
 
         await viewModel.StartAsync();
+        await viewModel.CalibrateAsync();
 
         Assert.Equal(0, factory.CreateCount);
         Assert.False(viewModel.IsRunning);
+        Assert.False(viewModel.CanCalibrate);
+        Assert.False(viewModel.CanToggle);
 
         remover.Complete(new InternalDriverRemovalResult(
             Changed: false,
@@ -121,7 +126,7 @@ public sealed class InternalDriverRemoveDriverTests
 
     private sealed class UnusedSessionFactory : IInternalDriverSessionFactory
     {
-        public IInternalDriverSession Create() =>
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent) =>
             throw new InvalidOperationException(
                 "Driver removal must not create an internal-driver session.");
     }
@@ -137,7 +142,7 @@ public sealed class InternalDriverRemoveDriverTests
 
         public int CreateCount { get; private set; }
 
-        public IInternalDriverSession Create()
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent)
         {
             CreateCount++;
             return _session;

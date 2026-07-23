@@ -8,7 +8,7 @@ namespace Ltb.Gui;
 /// </summary>
 public interface IInternalDriverSessionFactory
 {
-    IInternalDriverSession Create();
+    IInternalDriverSession Create(InternalDriverSessionIntent intent);
 }
 
 /// <summary>
@@ -18,6 +18,9 @@ public interface IInternalDriverSessionFactory
 /// </summary>
 public sealed class InternalDriverSessionFactory : IInternalDriverSessionFactory
 {
-    public IInternalDriverSession Create() =>
-        Ltb.App.InternalDriverSessionFactory.Create();
+    public IInternalDriverSession Create(InternalDriverSessionIntent intent) =>
+        Ltb.App.InternalDriverSessionFactory.Create(new InternalDriverSessionOptions
+        {
+            Intent = intent,
+        });
 }

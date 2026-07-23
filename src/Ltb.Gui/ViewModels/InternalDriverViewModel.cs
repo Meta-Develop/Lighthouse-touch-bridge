@@ -61,6 +61,9 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         ActionCommand = new RelayCommand(
             () => _ = ToggleAsync(),
             () => CanToggle);
+        CalibrationCommand = new RelayCommand(
+            () => _ = CalibrateAsync(),
+            () => CanCalibrate);
         RemoveDriverCommand = new RelayCommand(
             () => _ = RemoveDriverAsync(),
             () => CanRemoveDriver);
@@ -149,7 +152,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_lifecycleSync)
             {
-                return !_closing;
+                return !_closing && !_removeDriverActive;
             }
         }
     }
@@ -170,6 +173,17 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     {
         get => _removeDriverStatus;
         private set => SetProperty(ref _removeDriverStatus, value);
+    }
+
+    public bool CanCalibrate
+    {
+        get
+        {
+            lock (_lifecycleSync)
+            {
+                return !_closing && !_runActive && !_removeDriverActive;
+            }
+        }
     }
 
     public bool CanRemoveDriver
@@ -227,6 +241,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public RelayCommand ActionCommand { get; }
 
+    public RelayCommand CalibrationCommand { get; }
+
     public RelayCommand RemoveDriverCommand { get; }
 
     /// <summary>
@@ -249,7 +265,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         _dispatch(() =>
         {
             RemoveDriverStatus = "Removing the driver_ltb registration...";
-            PresentRemovalAvailability();
+            PresentLifecycleAvailability();
         });
 
         string status;
@@ -275,12 +291,16 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         _dispatch(() =>
         {
             RemoveDriverStatus = status;
-            PresentRemovalAvailability();
+            PresentLifecycleAvailability();
         });
     }
 
-    private void PresentRemovalAvailability()
+    private void PresentLifecycleAvailability()
     {
+        OnPropertyChanged(nameof(CanToggle));
+        ActionCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(CanCalibrate));
+        CalibrationCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(nameof(CanRemoveDriver));
         RemoveDriverCommand.RaiseCanExecuteChanged();
     }
@@ -293,7 +313,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    public async Task StartAsync()
+    public Task StartAsync() => StartSessionAsync(InternalDriverSessionIntent.NormalStart);
+
+    public Task CalibrateAsync() => StartSessionAsync(InternalDriverSessionIntent.Calibrate);
+
+    private async Task StartSessionAsync(InternalDriverSessionIntent intent)
     {
         IInternalDriverSession session;
         CancellationTokenSource cancellation;
@@ -308,7 +332,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                     return;
                 }
 
-                session = _sessionFactory.Create() ??
+                session = _sessionFactory.Create(intent) ??
                     throw new InvalidOperationException("The session factory returned null.");
                 cancellation = new CancellationTokenSource();
                 completion = new TaskCompletionSource(
@@ -342,8 +366,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             LastError = "None";
             IsRunning = true;
             ActionButtonText = "Stop";
-            ActionCommand.RaiseCanExecuteChanged();
-            PresentRemovalAvailability();
+            PresentLifecycleAvailability();
         });
 
         string? runError = null;
@@ -402,8 +425,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
                 IsRunning = false;
                 ActionButtonText = "Start";
-                ActionCommand.RaiseCanExecuteChanged();
-                PresentRemovalAvailability();
+                PresentLifecycleAvailability();
             });
             completion.TrySetResult();
         }
@@ -477,9 +499,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
         _dispatch(() =>
         {
-            OnPropertyChanged(nameof(CanToggle));
-            ActionCommand.RaiseCanExecuteChanged();
-            PresentRemovalAvailability();
+            PresentLifecycleAvailability();
         });
         await StopAsync().ConfigureAwait(false);
     }
@@ -635,7 +655,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             PhaseText = "Faulted";
             Diagnostic = message;
             Remediation =
-                "Review the error, correct the problem, then press Start to try again.";
+                "Review the error, correct the problem, then press Start or Calibrate / Recalibrate to try again.";
             LastError = message;
             OverallStatus = "Action required";
         });
