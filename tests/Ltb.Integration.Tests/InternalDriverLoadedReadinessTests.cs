@@ -566,6 +566,22 @@ public sealed class InternalDriverLoadedReadinessTests
     }
 
     [Fact]
+    public void ExactInternalControllerWithUnavailableDriverFailsClosed()
+    {
+        var replacement = LtbController(
+            InternalDriverLoadedReadiness.LeftControllerSerial,
+            SteamVrControllerRole.LeftHand,
+            metadata: LtbMetadata(driverId: null));
+
+        var result = EvaluateWithReplacement(replacement);
+
+        AssertIssue(
+            result,
+            InternalDriverLoadedReadinessIssue.DriverIdMismatch,
+            InternalDriverLoadedReadiness.LeftControllerSerial);
+    }
+
+    [Fact]
     public void MetaActiveHmdProducesBothTopologyAndGlobalExclusionDiagnostics()
     {
         var result = EvaluateWithReplacement(ForeignDevice(
@@ -577,6 +593,31 @@ public sealed class InternalDriverLoadedReadinessTests
 
         AssertIssue(result, InternalDriverLoadedReadinessIssue.ActiveHmdInvalid);
         AssertIssue(result, InternalDriverLoadedReadinessIssue.DisallowedSteamVrDevice);
+    }
+
+    [Fact]
+    public void DisallowedActualTrackingSystemProducesGlobalExclusionDiagnostic()
+    {
+        var metadata = OpenVrDeviceMetadataComposer.Compose(
+            "/devices/lighthouse/ACTIVE-HMD",
+            trackingSystemName: "lighthouse",
+            actualTrackingSystemName: "Oculus",
+            manufacturerName: "Bigscreen",
+            modelNumber: "Beyond 2e",
+            controllerType: null,
+            inputProfilePath: null,
+            driverVersion: null);
+        var result = EvaluateWithReplacement(Descriptor(
+            "ACTIVE-HMD",
+            0,
+            SteamVrDeviceCategory.HeadMountedDisplay,
+            SteamVrControllerRole.None,
+            true,
+            metadata));
+
+        AssertIssue(result, InternalDriverLoadedReadinessIssue.ActiveHmdInvalid);
+        AssertIssue(result, InternalDriverLoadedReadinessIssue.DisallowedSteamVrDevice);
+        Assert.Contains("actual tracking system", result.Diagnostic, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -679,7 +720,7 @@ public sealed class InternalDriverLoadedReadinessTests
             metadata ?? LtbMetadata());
 
     private static SteamVrDeviceMetadata LtbMetadata(
-        string driverId = InternalDriverLoadedReadiness.DriverId,
+        string? driverId = InternalDriverLoadedReadiness.DriverId,
         string? trackingSystem = InternalDriverLoadedReadiness.TrackingSystemName,
         string? controllerType = InternalDriverLoadedReadiness.ControllerType,
         string? inputProfile = InternalDriverLoadedReadiness.InputProfilePath,

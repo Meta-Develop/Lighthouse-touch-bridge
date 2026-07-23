@@ -343,6 +343,23 @@ public sealed class InternalDriverSessionTests
             "HMD", "/devices/hmd", "", null, null, null));
         Assert.ThrowsAny<ArgumentException>(() => new InternalDriverLighthouseHmdEvidence(
             "HMD", "/devices/hmd", "lighthouse", " ", null, null));
+        Assert.ThrowsAny<ArgumentException>(() => new InternalDriverLighthouseHmdEvidence(
+            "HMD", "/devices/hmd", null, null, null, null));
+        var trackingOnlyHmd = new InternalDriverLighthouseHmdEvidence(
+            "HMD", "/devices/hmd", null, "lighthouse", "Bigscreen", "Beyond 2e");
+        Assert.Null(trackingOnlyHmd.DriverId);
+        Assert.Equal("lighthouse", trackingOnlyHmd.TrackingSystemName);
+        var actualTrackingOnlyHmd = new InternalDriverLighthouseHmdEvidence(
+            "HMD",
+            "openvr://device/HMD",
+            driverId: null,
+            trackingSystemName: null,
+            actualTrackingSystemName: "lighthouse",
+            manufacturerName: "Bigscreen",
+            modelNumber: "Beyond 2e");
+        Assert.Null(actualTrackingOnlyHmd.DriverId);
+        Assert.Null(actualTrackingOnlyHmd.TrackingSystemName);
+        Assert.Equal("lighthouse", actualTrackingOnlyHmd.ActualTrackingSystemName);
 
         Assert.ThrowsAny<ArgumentException>(() =>
             new InternalDriverCalibrationQualityEvidence(-1d, null, null, 0.9d));
@@ -571,6 +588,7 @@ public sealed class InternalDriverSessionTests
         Assert.Equal("/devices/HMD-LIGHTHOUSE", active.LighthouseHmd.DevicePath);
         Assert.Equal("lighthouse", active.LighthouseHmd.DriverId);
         Assert.Equal("lighthouse", active.LighthouseHmd.TrackingSystemName);
+        Assert.Equal("lighthouse", active.LighthouseHmd.ActualTrackingSystemName);
         Assert.Equal("Bigscreen", active.LighthouseHmd.ManufacturerName);
         Assert.Equal("Beyond", active.LighthouseHmd.ModelNumber);
 
@@ -1037,7 +1055,10 @@ public sealed class InternalDriverSessionTests
                     "Beyond",
                     null,
                     null,
-                    "hmd-build")),
+                    "hmd-build")
+                {
+                    ActualTrackingSystemName = "lighthouse",
+                }),
             LtbController(
                 InternalDriverLoadedReadiness.LeftControllerSerial,
                 1,
