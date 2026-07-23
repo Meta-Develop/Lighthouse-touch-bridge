@@ -71,10 +71,12 @@ public static class ActiveHmdReadiness
 
         var driver = metadata.DriverId;
         var trackingSystem = metadata.TrackingSystemName;
+        var actualTrackingSystem = metadata.ActualTrackingSystemName;
         var observedEvidence = new[]
         {
             driver,
             trackingSystem,
+            actualTrackingSystem,
             metadata.ManufacturerName,
             metadata.ModelNumber,
             metadata.DriverVersion,
@@ -84,17 +86,20 @@ public static class ActiveHmdReadiness
         {
             return NotReady(
                 "The active SteamVR display HMD reports Quest/ALVR/Meta/Oculus runtime " +
-                $"evidence (driver='{driver}', tracking_system='{Format(trackingSystem)}', " +
+                $"evidence (driver='{Format(driver)}', tracking_system='{Format(trackingSystem)}', " +
+                $"actual_tracking_system='{Format(actualTrackingSystem)}', " +
                 $"driver_version='{Format(metadata.DriverVersion)}').");
         }
 
         if (!ContainsLighthouseEvidence(driver) &&
-            !ContainsLighthouseEvidence(trackingSystem))
+            !ContainsLighthouseEvidence(trackingSystem) &&
+            !ContainsLighthouseEvidence(actualTrackingSystem))
         {
             return NotReady(
                 "The active SteamVR display HMD does not report positive Lighthouse " +
-                $"driver or tracking-system evidence (driver='{driver}', " +
-                $"tracking_system='{Format(trackingSystem)}').");
+                $"driver, tracking-system, or actual-tracking-system evidence " +
+                $"(driver='{Format(driver)}', tracking_system='{Format(trackingSystem)}', " +
+                $"actual_tracking_system='{Format(actualTrackingSystem)}').");
         }
 
         return new ActiveHmdReadinessResult(

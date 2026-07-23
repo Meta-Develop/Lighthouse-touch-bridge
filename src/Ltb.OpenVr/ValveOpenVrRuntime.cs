@@ -79,30 +79,29 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                 var devicePath = OpenVrDevicePath.Resolve(
                     registeredDeviceType,
                     serialNumber);
-                SteamVrDeviceMetadata? metadata = null;
-                if (OpenVrDevicePath.TryGetDriverId(devicePath, out var driverId))
-                {
-                    metadata = new SteamVrDeviceMetadata(
-                        driverId,
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_TrackingSystemName_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_ManufacturerName_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_ModelNumber_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_InputProfilePath_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_DriverVersion_String));
-                }
+                var metadata = OpenVrDeviceMetadataComposer.Compose(
+                    devicePath,
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_TrackingSystemName_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ActualTrackingSystemName_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ManufacturerName_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ModelNumber_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_InputProfilePath_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_DriverVersion_String));
 
                 devices.Add(new OpenVrRuntimeDevice(
                     index,
@@ -341,6 +340,40 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
+}
+
+internal static class OpenVrDeviceMetadataComposer
+{
+    public static SteamVrDeviceMetadata Compose(
+        string devicePath,
+        string? trackingSystemName,
+        string? actualTrackingSystemName,
+        string? manufacturerName,
+        string? modelNumber,
+        string? controllerType,
+        string? inputProfilePath,
+        string? driverVersion)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(devicePath);
+
+        string? driverId = OpenVrDevicePath.TryGetDriverId(devicePath, out var parsedDriverId)
+            ? parsedDriverId
+            : null;
+        return new SteamVrDeviceMetadata(
+            driverId,
+            trackingSystemName,
+            manufacturerName,
+            modelNumber,
+            controllerType,
+            inputProfilePath,
+            driverVersion)
+        {
+            ActualTrackingSystemName = NormalizeOptional(actualTrackingSystemName),
+        };
+    }
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
 internal static class OpenVrMatrixConverter
