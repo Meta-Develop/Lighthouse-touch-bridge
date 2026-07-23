@@ -44,6 +44,11 @@ no device indexes, VMT slots, driver paths, or settings paths to enter.
 5. Follow the separate left- and right-hand movement prompts if the mounts need
    calibration. Stop from the GUI before changing hardware.
 
+Normal **Start** reuses an exact matching left/right profile pair. Press
+**Calibrate / Recalibrate** while stopped to bypass saved profiles and capture
+both hands again; fresh association requires exactly two tracker candidates, so
+power off unrelated trackers first.
+
 See [Internal driver operations](docs/internal-drivers.md) for discovery,
 readiness, calibration, paths, keep-awake guidance, and failure behavior.
 

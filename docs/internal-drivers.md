@@ -34,10 +34,14 @@ The packaged `Ltb.Gui.exe` starts directly in the **First-party internal
 driver** view. Its **Start** button creates a fresh application session and
 runs typed checks for Windows, SteamVR, driver registration and loaded build,
 Meta Link, the sole Lighthouse HMD, both Touch hands, the two selected
-controller-source trackers, calibration profiles, and the driver feed. Other
-raw Lighthouse trackers are ignored after saved profiles select the
-controller-mounted pair. It never starts the legacy
-ALVR/VMT/`TrackingOverrides` wizard.
+controller-source trackers, calibration profiles, and the driver feed. Normal
+**Start** reuses an exact matching left/right profile pair. The separate
+**Calibrate / Recalibrate** button creates the same first-party session while
+explicitly bypassing reusable profiles and capturing both hands again. Fresh
+association requires exactly two tracker candidates, so power off unrelated
+trackers before using it. Other raw Lighthouse trackers are ignored after
+saved profiles select the controller-mounted pair. Neither action starts the
+legacy ALVR/VMT/`TrackingOverrides` wizard.
 
 Before pressing **Start**:
 
@@ -83,7 +87,8 @@ reason, lag, and quality metrics.
 Use **Stop** before changing runtime or hardware state. Closing the window also
 requests the same bounded fail-safe stop and waits for session cleanup. A
 stopped or closed session is never reused; the next **Start** creates a new
-session.
+session. **Calibrate / Recalibrate** is available only while stopped and cannot
+overlap Start, driver removal, or window close.
 
 ## Automatic paths
 
