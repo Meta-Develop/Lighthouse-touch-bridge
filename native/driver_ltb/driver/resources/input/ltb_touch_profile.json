@@ -48,9 +48,10 @@
       "touch": true,
       "order": 2
     },
-    "/input/menu": {
+    "/input/system": {
       "binding_image_point": [128, 82],
       "type": "button",
+      "side": "left",
       "click": true,
       "order": 3
     },

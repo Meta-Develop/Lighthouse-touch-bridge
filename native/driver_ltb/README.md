@@ -46,6 +46,11 @@ Touch bits 0 through 6 are primary, secondary, trigger, stick, thumbrest,
 index-pointing, and thumb-up states.
 Button bits 0 through 4 are primary, secondary, menu, thumbstick click, and
 trigger click.
+The left Touch Menu/Enter bit publishes only OpenVR's reserved
+`/input/system/click` component so it can open and close the SteamVR dashboard.
+The system component and its input-profile source are left-hand only. It is not
+an application-bindable menu input; application menus remain on their normal
+button bindings, such as VRChat's Y/B bindings.
 When either velocity-valid flag is clear, its three velocity fields must be
 exactly zero. A disconnected state may retain only the battery-present flag;
 all tracking and input-valid flags must be clear.

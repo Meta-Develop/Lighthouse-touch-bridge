@@ -21,11 +21,6 @@
         {
           "from": "/user/hand/right/input/joystick",
           "to": "/user/hand/right/input/thumbstick"
-        },
-        {
-          "from": "/user/hand/left/input/system",
-          "to": "/user/hand/left/input/menu",
-          "mirror": false
         }
       ]
     }

@@ -1,3 +1,4 @@
+#include "ltb_driver/controller_input_policy.hpp"
 #include "ltb_driver/peer_session.hpp"
 #include "ltb_driver/protocol.hpp"
 #include "ltb_driver/state_store.hpp"
@@ -662,6 +663,23 @@ void PublicationBoundaryCannotLatchInputs() {
     require_neutral(ltb::driver::InputForPublication(snapshot), "missing-state snapshot");
 }
 
+void SystemClickIsLeftMenuOnly() {
+    Require(
+        ltb::driver::SystemClickForButtons(Hand::Left, ButtonValue(ButtonBit::Menu)),
+        "left menu did not publish the SteamVR system click");
+    Require(
+        !ltb::driver::SystemClickForButtons(Hand::Left, 0U),
+        "left neutral input published the SteamVR system click");
+    Require(
+        !ltb::driver::SystemClickForButtons(Hand::Right, ButtonValue(ButtonBit::Menu)),
+        "right menu published a phantom SteamVR system click");
+    Require(
+        !ltb::driver::SystemClickForButtons(
+            Hand::Left,
+            ButtonValue(ButtonBit::Primary) | ButtonValue(ButtonBit::Secondary)),
+        "non-menu buttons published the SteamVR system click");
+}
+
 }  // namespace
 
 int main() {
@@ -682,6 +700,7 @@ int main() {
         {"heartbeat freshness", HeartbeatRefreshesWatchdogWithoutChangingHandState},
         {"invalid input neutral safety", InvalidInputsArePublishedNeutral},
         {"publication boundary neutral safety", PublicationBoundaryCannotLatchInputs},
+        {"SteamVR system click policy", SystemClickIsLeftMenuOnly},
     };
 
     std::size_t failures = 0;

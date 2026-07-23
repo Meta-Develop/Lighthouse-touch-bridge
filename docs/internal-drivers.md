@@ -51,6 +51,11 @@ Before pressing **Start**:
    exactly two candidates so the first pair is unambiguous.
 5. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
 
+Once both LTB controllers are ready, the physical left Touch Menu button opens
+and closes the SteamVR dashboard through OpenVR's reserved system input. VRChat
+menu actions remain on the application binding (Y/B by default); changing that
+binding is not required for the SteamVR dashboard.
+
 LTB transactionally registers the staged `driver_ltb` directory beside the
 application. If registration changed, the GUI reports **Restart required**.
 Stop LTB, restart SteamVR once, and press **Start** again so the runtime loads

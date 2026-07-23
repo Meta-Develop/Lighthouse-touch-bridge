@@ -1,6 +1,7 @@
 #include "controller_device.hpp"
 
 #include "ltb_driver/build_identity.hpp"
+#include "ltb_driver/controller_input_policy.hpp"
 
 #include "monotonic_clock.hpp"
 
@@ -91,7 +92,8 @@ vr::EVRInitError ControllerDevice::Activate(std::uint32_t object_id) {
         CreateBoolean(property_container_, Input::PrimaryTouch, left ? "/input/x/touch" : "/input/a/touch") &&
         CreateBoolean(property_container_, Input::SecondaryClick, left ? "/input/y/click" : "/input/b/click") &&
         CreateBoolean(property_container_, Input::SecondaryTouch, left ? "/input/y/touch" : "/input/b/touch") &&
-        CreateBoolean(property_container_, Input::MenuClick, "/input/menu/click") &&
+        (!left ||
+         CreateBoolean(property_container_, Input::SystemClick, "/input/system/click")) &&
         CreateScalar(
             property_container_,
             Input::TriggerValue,
@@ -229,10 +231,12 @@ void ControllerDevice::RunFrame(std::uint64_t now_nanoseconds) {
         inputs_[InputIndex(Input::SecondaryTouch)],
         HasTouch(published_input.touches, TouchBit::Secondary),
         input_time_offset);
-    vr::VRDriverInput()->UpdateBooleanComponent(
-        inputs_[InputIndex(Input::MenuClick)],
-        HasButton(published_input.buttons, ButtonBit::Menu),
-        input_time_offset);
+    if (hand_ == Hand::Left) {
+        vr::VRDriverInput()->UpdateBooleanComponent(
+            inputs_[InputIndex(Input::SystemClick)],
+            SystemClickForButtons(hand_, published_input.buttons),
+            input_time_offset);
+    }
     vr::VRDriverInput()->UpdateScalarComponent(
         inputs_[InputIndex(Input::TriggerValue)], published_input.trigger, input_time_offset);
     vr::VRDriverInput()->UpdateBooleanComponent(

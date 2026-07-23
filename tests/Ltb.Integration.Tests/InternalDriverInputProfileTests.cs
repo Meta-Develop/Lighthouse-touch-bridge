@@ -9,7 +9,7 @@ public sealed class InternalDriverInputProfileTests
     private const string VrChatAppKey = "steam.app.438100";
 
     [Fact]
-    public void ProfileDeclaresEveryNativeInputComponentAndRequiredRawPose()
+    public void ProfileDeclaresEveryNativeInputAndMakesSystemLeftOnly()
     {
         var repositoryRoot = FindRepositoryRoot();
         var inputRoot = Path.Combine(
@@ -51,11 +51,40 @@ public sealed class InternalDriverInputProfileTests
             .ToArray();
 
         Assert.NotEmpty(nativeComponents);
+        Assert.Contains("/input/system/click", nativeComponents);
+        Assert.DoesNotContain("/input/menu/click", nativeComponents);
+        Assert.Contains(
+            """CreateBoolean(property_container_, Input::SystemClick, "/input/system/click")""",
+            nativeSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "inputs_[InputIndex(Input::SystemClick)]",
+            nativeSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SystemClickForButtons(hand_, published_input.buttons)",
+            nativeSource,
+            StringComparison.Ordinal);
+        Assert.True(
+            Regex.IsMatch(
+                nativeSource,
+                """\(!left\s*\|\|\s*CreateBoolean\(property_container_, Input::SystemClick, "/input/system/click"\)\)""",
+                RegexOptions.CultureInvariant),
+            "The reserved system component must be created only for the left controller.");
+        Assert.True(
+            Regex.IsMatch(
+                nativeSource,
+                """if \(hand_ == Hand::Left\)\s*\{\s*vr::VRDriverInput\(\)->UpdateBooleanComponent\(\s*inputs_\[InputIndex\(Input::SystemClick\)\]""",
+                RegexOptions.CultureInvariant),
+            "The reserved system component must be updated only for the left controller.");
+        Assert.Equal(2, Regex.Matches(nativeSource, "Input::SystemClick").Count);
+        Assert.DoesNotContain("/input/menu", nativeSource, StringComparison.Ordinal);
         foreach (var componentPath in nativeComponents)
         {
             var separator = componentPath.LastIndexOf('/');
             var sourcePath = componentPath[..separator];
             var component = componentPath[(separator + 1)..];
+
             Assert.True(
                 sources.TryGetProperty(sourcePath, out var source),
                 $"Native component '{componentPath}' has no input-profile source '{sourcePath}'.");
@@ -71,6 +100,13 @@ public sealed class InternalDriverInputProfileTests
                 declared.ValueKind == JsonValueKind.True,
                 $"Native component '{componentPath}' is not declared by the input profile.");
         }
+
+        var system = sources.GetProperty("/input/system");
+        Assert.Equal("button", system.GetProperty("type").GetString());
+        Assert.Equal("left", system.GetProperty("side").GetString());
+        Assert.True(system.GetProperty("click").GetBoolean());
+        Assert.False(system.TryGetProperty("touch", out _));
+        Assert.False(sources.TryGetProperty("/input/menu", out _));
     }
 
     [Fact]
@@ -96,6 +132,10 @@ public sealed class InternalDriverInputProfileTests
             profile.GetProperty("legacy_binding").GetString());
         using var remappingDocument = Parse(remappingPath);
         using var legacyBindingDocument = Parse(legacyBindingPath);
+        using var localizationDocument = Parse(Path.Combine(
+            resourcesRoot,
+            "localization",
+            "localization.json"));
 
         var defaultBindings = profile.GetProperty("default_bindings");
         var vrChatBinding = Assert.Single(defaultBindings.EnumerateArray());
@@ -117,8 +157,14 @@ public sealed class InternalDriverInputProfileTests
         AssertBindingOnlyUsesDeclaredSources(legacyBindingDocument.RootElement, sources);
         AssertBindingOnlyUsesDeclaredSources(vrChatDocument.RootElement, sources);
         var legacyJson = File.ReadAllText(legacyBindingPath);
+        var vrChatJson = File.ReadAllText(vrChatBindingPath);
         Assert.Contains("/actions/legacy/in/left_grip_press", legacyJson, StringComparison.Ordinal);
         Assert.Contains("/actions/legacy/in/right_grip_press", legacyJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("/input/system", legacyJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("/input/system", vrChatJson, StringComparison.Ordinal);
+        var localization = Assert.Single(localizationDocument.RootElement.EnumerateArray());
+        Assert.Equal("System", localization.GetProperty("/input/system").GetString());
+        Assert.False(localization.TryGetProperty("/input/menu", out _));
     }
 
     [Fact]
@@ -151,9 +197,17 @@ public sealed class InternalDriverInputProfileTests
         Assert.Contains(
             ("/user/hand/right/input/joystick", "/user/hand/right/input/thumbstick"),
             automaticMappings);
-        Assert.Contains(
-            ("/user/hand/left/input/system", "/user/hand/left/input/menu"),
-            automaticMappings);
+        Assert.DoesNotContain(
+            automaticMappings,
+            mapping =>
+                string.Equals(
+                    mapping.From,
+                    "/user/hand/left/input/system",
+                    StringComparison.Ordinal) ||
+                string.Equals(
+                    mapping.To,
+                    "/user/hand/left/input/menu",
+                    StringComparison.Ordinal));
 
         using var vrChatDocument = Parse(Path.Combine(
             inputRoot,
