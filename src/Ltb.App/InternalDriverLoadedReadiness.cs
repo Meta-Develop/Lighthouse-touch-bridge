@@ -399,6 +399,7 @@ public static class InternalDriverLoadedReadiness
             ("device path", device.Identity.DevicePath),
             ("driver id", device.Metadata?.DriverId),
             ("tracking system", device.Metadata?.TrackingSystemName),
+            ("actual tracking system", device.Metadata?.ActualTrackingSystemName),
             ("manufacturer", device.Metadata?.ManufacturerName),
             ("model", device.Metadata?.ModelNumber),
             ("controller type", device.Metadata?.ControllerType),

@@ -159,8 +159,27 @@ public sealed record InternalDriverLighthouseHmdEvidence
     public InternalDriverLighthouseHmdEvidence(
         string stableDeviceId,
         string devicePath,
-        string driverId,
+        string? driverId,
         string? trackingSystemName,
+        string? manufacturerName,
+        string? modelNumber)
+        : this(
+            stableDeviceId,
+            devicePath,
+            driverId,
+            trackingSystemName,
+            actualTrackingSystemName: null,
+            manufacturerName,
+            modelNumber)
+    {
+    }
+
+    public InternalDriverLighthouseHmdEvidence(
+        string stableDeviceId,
+        string devicePath,
+        string? driverId,
+        string? trackingSystemName,
+        string? actualTrackingSystemName,
         string? manufacturerName,
         string? modelNumber)
     {
@@ -170,12 +189,24 @@ public sealed record InternalDriverLighthouseHmdEvidence
         DevicePath = InternalDriverEvidenceValidation.RequireNonblank(
             devicePath,
             nameof(devicePath));
-        DriverId = InternalDriverEvidenceValidation.RequireNonblank(
+        DriverId = InternalDriverEvidenceValidation.RequireOptionalNonblank(
             driverId,
             nameof(driverId));
         TrackingSystemName = InternalDriverEvidenceValidation.RequireOptionalNonblank(
             trackingSystemName,
             nameof(trackingSystemName));
+        ActualTrackingSystemName = InternalDriverEvidenceValidation.RequireOptionalNonblank(
+            actualTrackingSystemName,
+            nameof(actualTrackingSystemName));
+        if (DriverId is null &&
+            TrackingSystemName is null &&
+            ActualTrackingSystemName is null)
+        {
+            throw new ArgumentException(
+                "Lighthouse HMD evidence requires a driver id, tracking-system name, " +
+                "or actual-tracking-system name.",
+                nameof(actualTrackingSystemName));
+        }
         ManufacturerName = InternalDriverEvidenceValidation.RequireOptionalNonblank(
             manufacturerName,
             nameof(manufacturerName));
@@ -188,9 +219,11 @@ public sealed record InternalDriverLighthouseHmdEvidence
 
     public string DevicePath { get; }
 
-    public string DriverId { get; }
+    public string? DriverId { get; }
 
     public string? TrackingSystemName { get; }
+
+    public string? ActualTrackingSystemName { get; }
 
     public string? ManufacturerName { get; }
 
