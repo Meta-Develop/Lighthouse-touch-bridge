@@ -75,23 +75,46 @@ public sealed class InternalDriverSessionTests
     }
 
     [Fact]
-    public async Task ExactTwoTrackerTopologyGatesCalibrationAndPublication()
+    public async Task FiveTrackerColdStartReusesControllerPairAndIgnoresFbtChurn()
     {
+        string[] firstFbt = ["FBT-WAIST", "FBT-LEFT-FOOT", "FBT-RIGHT-FOOT"];
+        string[] changedFbt = ["FBT-WAIST", "FBT-RIGHT-FOOT", "FBT-CHEST"];
+        var feed = new FakeFeed();
         var runtime = new FakeRuntime(
-            ReadyObservation(extraTracker: true),
-            ReadyObservation(),
-            ReadyObservation(sampleTimeSeconds: 11d),
-            StoppedObservation());
+            ReadyObservation(sampleTimeSeconds: 10d, additionalTrackerSerials: firstFbt),
+            ReadyObservation(sampleTimeSeconds: 11d, additionalTrackerSerials: firstFbt),
+            ReadyObservation(sampleTimeSeconds: 12d, additionalTrackerSerials: changedFbt),
+            StoppedObservation())
+        {
+            Feeds = new Queue<FakeFeed>([feed]),
+        };
         var output = new RecordingOutput();
         await using var session = Session(runtime, output);
 
         await session.RunAsync();
 
-        Assert.Contains(output.Snapshots, snapshot =>
-            snapshot.State == InternalDriverSessionState.WaitingForTrackers &&
-            !snapshot.Readiness.TwoDistinctTrackersReady);
         Assert.Equal(1, runtime.ResolveProfilesCount);
-        Assert.Contains(output.Snapshots, snapshot => snapshot.State == InternalDriverSessionState.Active);
+        var active = output.Snapshots
+            .Where(snapshot => snapshot.State == InternalDriverSessionState.Active)
+            .ToArray();
+        Assert.Equal(2, active.Length);
+        Assert.All(active, snapshot =>
+        {
+            Assert.True(snapshot.Readiness.TwoDistinctTrackersReady);
+            Assert.True(snapshot.Readiness.CanPublish);
+            Assert.True(snapshot.Left.IsPublishing);
+            Assert.True(snapshot.Right.IsPublishing);
+            Assert.Equal(InternalDriverNeutralReason.None, snapshot.Left.NeutralReason);
+            Assert.Equal(InternalDriverNeutralReason.None, snapshot.Right.NeutralReason);
+        });
+        Assert.DoesNotContain(output.Snapshots, snapshot =>
+            snapshot.State == InternalDriverSessionState.WaitingForTrackers ||
+            snapshot.Left.NeutralReason == InternalDriverNeutralReason.TrackerTopologyInvalid ||
+            snapshot.Right.NeutralReason == InternalDriverNeutralReason.TrackerTopologyInvalid);
+
+        Assert.True(feed.Published.Count >= 4);
+        Assert.All(feed.Published.Take(4), state =>
+            Assert.True(state.Presence.HasFlag(ProtocolPresence.Tracked)));
     }
 
     [Fact]
@@ -412,9 +435,15 @@ public sealed class InternalDriverSessionTests
     [Fact]
     public async Task OneTrackerLossNeutralizesOnlyThatHandAndReacquiresExactSerial()
     {
+        string[] fbtTrackers = ["FBT-WAIST", "FBT-LEFT-FOOT", "FBT-RIGHT-FOOT"];
         var first = ReadyObservation(sampleTimeSeconds: 10d);
-        var lost = ReadyObservation(sampleTimeSeconds: 11d, omitTracker: "TRACKER-LEFT");
-        var recovered = ReadyObservation(sampleTimeSeconds: 12d);
+        var lost = ReadyObservation(
+            sampleTimeSeconds: 11d,
+            omitTracker: "TRACKER-LEFT",
+            additionalTrackerSerials: fbtTrackers);
+        var recovered = ReadyObservation(
+            sampleTimeSeconds: 12d,
+            additionalTrackerSerials: fbtTrackers);
         var feed = new FakeFeed();
         var runtime = new FakeRuntime(first, lost, recovered, StoppedObservation())
         {
@@ -428,6 +457,8 @@ public sealed class InternalDriverSessionTests
         var lostSnapshot = Assert.Single(output.Snapshots.Where(snapshot =>
             snapshot.State == InternalDriverSessionState.Active &&
             snapshot.Left.NeutralReason == InternalDriverNeutralReason.TrackerMissing));
+        Assert.False(lostSnapshot.Readiness.TwoDistinctTrackersReady);
+        Assert.False(lostSnapshot.Readiness.CanPublish);
         Assert.False(lostSnapshot.Left.IsPublishing);
         Assert.True(lostSnapshot.Right.IsPublishing);
         Assert.Equal("TRACKER-LEFT", lostSnapshot.Left.TrackerSerial);
@@ -446,58 +477,6 @@ public sealed class InternalDriverSessionTests
         Assert.Contains(afterLoss, state =>
             state.Hand == ProtocolHand.Right &&
             state.Presence.HasFlag(ProtocolPresence.Tracked));
-    }
-
-    [Fact]
-    public async Task UnexpectedThirdTrackerNeutralizesBothUntilExactTopologyRecovers()
-    {
-        var feed = new FakeFeed();
-        var runtime = new FakeRuntime(
-            ReadyObservation(sampleTimeSeconds: 10d),
-            ReadyObservation(sampleTimeSeconds: 11d),
-            ReadyObservation(sampleTimeSeconds: 12d, extraTracker: true),
-            ReadyObservation(sampleTimeSeconds: 13d),
-            StoppedObservation())
-        {
-            Feeds = new Queue<FakeFeed>([feed]),
-        };
-        var output = new RecordingOutput();
-        await using var session = Session(runtime, output);
-
-        await session.RunAsync();
-
-        var snapshots = output.Snapshots.ToArray();
-        var topologyIndex = Array.FindIndex(snapshots, snapshot =>
-            snapshot.State == InternalDriverSessionState.WaitingForTrackers &&
-            snapshot.Left.NeutralReason == InternalDriverNeutralReason.TrackerTopologyInvalid &&
-            snapshot.Right.NeutralReason == InternalDriverNeutralReason.TrackerTopologyInvalid);
-        Assert.True(topologyIndex > 0);
-        var topologySnapshot = snapshots[topologyIndex];
-        Assert.False(topologySnapshot.Readiness.TwoDistinctTrackersReady);
-        Assert.False(topologySnapshot.Readiness.CanPublish);
-        Assert.False(topologySnapshot.Left.IsPublishing);
-        Assert.False(topologySnapshot.Right.IsPublishing);
-        Assert.Contains(snapshots[..topologyIndex], snapshot =>
-            snapshot.State == InternalDriverSessionState.Active &&
-            snapshot.Left.IsPublishing &&
-            snapshot.Right.IsPublishing);
-        Assert.Contains(snapshots[(topologyIndex + 1)..], snapshot =>
-            snapshot.State == InternalDriverSessionState.Active &&
-            snapshot.Readiness.CanPublish &&
-            snapshot.Left.IsPublishing &&
-            snapshot.Right.IsPublishing);
-
-        var published = feed.Published.ToArray();
-        Assert.True(published.Length >= 6);
-        Assert.All(published[..2], state =>
-            Assert.True(state.Presence.HasFlag(ProtocolPresence.Tracked)));
-        Assert.All(published[2..4], state =>
-        {
-            Assert.False(state.Presence.HasFlag(ProtocolPresence.Tracked));
-            Assert.Equal(ProtocolInputState.Neutral, state.Input);
-        });
-        Assert.All(published[4..6], state =>
-            Assert.True(state.Presence.HasFlag(ProtocolPresence.Tracked)));
     }
 
     [Fact]
@@ -923,21 +902,27 @@ public sealed class InternalDriverSessionTests
         double sampleTimeSeconds = 10d,
         bool extraTracker = false,
         string? omitTracker = null,
-        bool extraHmd = false)
+        bool extraHmd = false,
+        IReadOnlyList<string>? additionalTrackerSerials = null)
     {
         var trackers = new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal);
         AddTracker("TRACKER-LEFT", sampleTimeSeconds, Vector3.UnitX);
         AddTracker("TRACKER-RIGHT", sampleTimeSeconds + 0.001d, Vector3.UnitY);
-        if (extraTracker)
+        var extras = additionalTrackerSerials ??
+            (extraTracker ? ["TRACKER-EXTRA"] : Array.Empty<string>());
+        for (var index = 0; index < extras.Count; index++)
         {
-            AddTracker("TRACKER-EXTRA", sampleTimeSeconds + 0.002d, Vector3.UnitZ);
+            AddTracker(
+                extras[index],
+                sampleTimeSeconds + 0.002d + (index * 0.001d),
+                Vector3.UnitZ * (index + 1));
         }
 
         return new InternalDriverRuntimeObservation(
             SteamVrRunning: true,
             "SteamVR runtime is running.",
             ReadyMeta(sampleTimeSeconds),
-            ReadyDevices(extraTracker, extraHmd),
+            ReadyDevices(extras, extraHmd),
             trackers);
 
         void AddTracker(string serial, double time, Vector3 position)
@@ -1038,7 +1023,7 @@ public sealed class InternalDriverSessionTests
         angularVelocityRadiansPerSecond: new Vector3(0f, 1f, 0f));
 
     private static IReadOnlyList<SteamVrDeviceDescriptor> ReadyDevices(
-        bool extraTracker = false,
+        IReadOnlyList<string>? additionalTrackerSerials = null,
         bool extraHmd = false)
     {
         var devices = new List<SteamVrDeviceDescriptor>
@@ -1070,16 +1055,17 @@ public sealed class InternalDriverSessionTests
             TrackerDescriptor("TRACKER-LEFT", 3),
             TrackerDescriptor("TRACKER-RIGHT", 4),
         };
-        if (extraTracker)
+        var extras = additionalTrackerSerials ?? Array.Empty<string>();
+        for (var index = 0; index < extras.Count; index++)
         {
-            devices.Add(TrackerDescriptor("TRACKER-EXTRA", 5));
+            devices.Add(TrackerDescriptor(extras[index], checked((uint)(5 + index))));
         }
 
         if (extraHmd)
         {
             devices.Add(Descriptor(
                 "HMD-LIGHTHOUSE-EXTRA",
-                6,
+                checked((uint)(5 + extras.Count)),
                 SteamVrDeviceCategory.HeadMountedDisplay,
                 SteamVrControllerRole.None,
                 new SteamVrDeviceMetadata(
