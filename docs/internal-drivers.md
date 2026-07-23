@@ -51,6 +51,11 @@ Before pressing **Start**:
    exactly two candidates so the first pair is unambiguous.
 5. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
 
+Once both LTB controllers are ready, the physical left Touch Menu button opens
+and closes the SteamVR dashboard through OpenVR's reserved system input. VRChat
+menu actions remain on the application binding (Y/B by default); changing that
+binding is not required for the SteamVR dashboard.
+
 LTB transactionally registers the staged `driver_ltb` directory beside the
 application. If registration changed, the GUI reports **Restart required**.
 Stop LTB, restart SteamVR once, and press **Start** again so the runtime loads
@@ -221,14 +226,6 @@ hands.
 `driver_ltb` performs no calibration or Meta access. It publishes exactly two
 stable left/right controller roles with the LTB input profile. Haptics are not
 advertised and LibOVR controller battery state is reported as absent.
-The public LibOVR left Menu/Enter bit is reserved exclusively for SteamVR
-dashboard control: the left device publishes it directly as
-`/input/system/click`, the right device has no system component, and the input
-profile declares `/input/system` only as a left-side source for SteamVR source
-resolution. Application bindings and automatic remapping do not reference the
-reserved source. The bundled VRChat binding keeps the in-application Quick
-Menu on Y/B, avoiding a simultaneous app-menu action when the SteamVR
-dashboard is toggled.
 
 ## Registration and verification
 
