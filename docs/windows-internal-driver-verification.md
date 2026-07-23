@@ -110,11 +110,15 @@ still does not replace the connected-hardware gates.
 - [ ] Confirm Quest is absent from SteamVR as an HMD and that no Meta-, Oculus-,
   or ALVR-provided controller device is present.
 - [ ] Confirm SteamVR exposes exactly two LTB input controllers, one left and
-  one right, plus exactly two eligible physical Lighthouse tracker sources and
+  one right, plus the two selected controller-source Lighthouse trackers and
   no unexpected LTB device.
 - [ ] Introduce an additional HMD, Meta/ALVR controller, unexpected LTB device,
-  or third physical tracker in controlled tests and confirm readiness fails
-  closed and publication remains neutral.
+  or ambiguous/missing selected tracker in controlled tests and confirm
+  readiness fails closed and publication remains neutral.
+- [ ] With saved profiles, connect five raw Lighthouse trackers (the two
+  selected controller trackers plus three full-body trackers) and confirm both
+  LTB controllers remain active; connect/disconnect or re-index only the three
+  unrelated trackers and confirm neither selected hand is neutralized.
 - [ ] Confirm the raw tracker observations use the intended uncalibrated/raw
   tracking universe and stable serial identities through device-index churn.
 
@@ -205,8 +209,9 @@ still does not replace the connected-hardware gates.
   without partial state publication.
 - [ ] Lose one associated tracker and confirm only that hand neutralizes, no
   other tracker is substituted, and recovery requires the exact stable serial.
-- [ ] Introduce invalid tracker topology and confirm both hands neutralize
-  until exactly the associated pair remains.
+- [ ] Introduce ambiguous or duplicate selected controller-source identity
+  evidence and confirm publication fails closed; unrelated trackers alone must
+  not neutralize either selected hand.
 - [ ] Lose Meta readiness and confirm both hands neutralize, the old feed is
   retired, and Link recovery creates a fresh feed session.
 - [ ] Stop SteamVR during active use and confirm both hands neutralize, the
