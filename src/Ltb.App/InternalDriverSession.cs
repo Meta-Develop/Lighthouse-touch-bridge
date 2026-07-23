@@ -189,7 +189,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                 .ConfigureAwait(false);
             PublishState(
                 InternalDriverSessionState.Ready,
-                "SteamVR, Meta Link, exactly two physical trackers, and the loaded first-party driver are ready.",
+                "SteamVR, Meta Link, controller-source tracker candidates, and the loaded first-party driver are ready.",
                 "Keep both Touch controllers awake and move only the requested hand if calibration is required.",
                 observation: readyObservation);
 
@@ -335,10 +335,10 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             return InternalDriverSessionState.WaitingForMetaLink;
         }
 
-        if (!ExactlyTwoReadyTrackers(observation))
+        if (!AtLeastTwoReadyTrackerCandidates(observation))
         {
             diagnostic = TrackerDiagnostic(observation);
-            remediation = "Connect exactly two distinct physical Lighthouse trackers and restore valid raw poses.";
+            remediation = "Connect at least two distinct physical Lighthouse trackers and restore valid raw poses.";
             return InternalDriverSessionState.WaitingForTrackers;
         }
 
@@ -379,7 +379,6 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private async ValueTask MonitorActiveAsync(CancellationToken cancellationToken)
     {
         var metaWasLost = false;
-        var trackerTopologyWasInvalid = false;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -441,27 +440,6 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             }
 
             metaWasLost = false;
-            if (HasUnexpectedTrackerTopology(observation))
-            {
-                if (!trackerTopologyWasInvalid)
-                {
-                    await NeutralizeBothAsync(
-                        InternalDriverNeutralReason.TrackerTopologyInvalid).ConfigureAwait(false);
-                    trackerTopologyWasInvalid = true;
-                }
-
-                PublishState(
-                    InternalDriverSessionState.WaitingForTrackers,
-                    TrackerDiagnostic(observation),
-                    "Disconnect every unexpected physical tracker; publication resumes only with the exact associated serials.",
-                    observation,
-                    leftReason: InternalDriverNeutralReason.TrackerTopologyInvalid,
-                    rightReason: InternalDriverNeutralReason.TrackerTopologyInvalid);
-                await _runtime.DelayAsync(_options.PollInterval, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            trackerTopologyWasInvalid = false;
             if (_feed is null)
             {
                 await StartFreshFeedAsync(observation, cancellationToken).ConfigureAwait(false);
@@ -1097,7 +1075,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             platform,
             observation?.SteamVrRunning == true,
             observation is not null && MetaBothReady(observation.Meta),
-            observation is not null && ExactlyTwoReadyTrackers(observation),
+            observation is not null && RequiredTrackersReady(observation),
             _profiles?.IsValid == true,
             driverRegistered,
             observation is not null && LoadedReadiness(observation).IsReady,
@@ -1349,21 +1327,35 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         controller.Analog.IsValid &&
         !controller.Battery.IsAvailable;
 
-    private static bool ExactlyTwoReadyTrackers(InternalDriverRuntimeObservation observation) =>
+    private static bool AtLeastTwoReadyTrackerCandidates(
+        InternalDriverRuntimeObservation observation) =>
+        observation.TrackerSamples
+            .Where(pair => IsTrackerPublishable(pair.Value))
+            .Select(pair => pair.Key)
+            .Distinct(StringComparer.Ordinal)
+            .Take(2)
+            .Count() == 2;
+
+    private static bool ExactlyTwoReadyTrackerCandidates(
+        InternalDriverRuntimeObservation observation) =>
         observation.TrackerSamples.Count == 2 &&
-        observation.TrackerSamples.Keys.Distinct(StringComparer.Ordinal).Count() == 2 &&
         observation.TrackerSamples.Values.All(IsTrackerPublishable);
 
-    private bool HasUnexpectedTrackerTopology(InternalDriverRuntimeObservation observation)
+    private bool RequiredTrackersReady(InternalDriverRuntimeObservation observation)
     {
-        if (_profiles is not { } profiles)
+        if (_profiles is not { IsValid: true } profiles)
         {
-            return true;
+            return ExactlyTwoReadyTrackerCandidates(observation);
         }
 
-        return observation.TrackerSamples.Keys.Any(serial =>
-            !string.Equals(serial, profiles.Left.TrackerSerial, StringComparison.Ordinal) &&
-            !string.Equals(serial, profiles.Right.TrackerSerial, StringComparison.Ordinal));
+        return observation.TrackerSamples.TryGetValue(
+                   profiles.Left.TrackerSerial,
+                   out var left) &&
+               observation.TrackerSamples.TryGetValue(
+                   profiles.Right.TrackerSerial,
+                   out var right) &&
+               IsTrackerPublishable(left) &&
+               IsTrackerPublishable(right);
     }
 
     private static bool IsTrackerPublishable(PoseSourceSample sample) =>
@@ -1378,7 +1370,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         $"right={meta.Right.Readiness} ({meta.Right.Diagnostic}).";
 
     private static string TrackerDiagnostic(InternalDriverRuntimeObservation observation) =>
-        $"Expected exactly two distinct connected, fully tracked raw tracker poses; observed " +
+        $"Expected at least two distinct connected, fully tracked raw tracker poses; observed " +
         $"{observation.TrackerSamples.Count} stable serial(s).";
 
     private static string ActiveDiagnostic(
@@ -1412,7 +1404,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             !observation.TrackerSamples.ContainsKey(profiles.Right.TrackerSerial))
         {
             throw new InvalidOperationException(
-                "Calibration associated a tracker serial that was not in the exact two-tracker readiness set.");
+                "Profile resolution selected a controller-source tracker serial that was not observed.");
         }
     }
 

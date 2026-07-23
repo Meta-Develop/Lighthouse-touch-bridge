@@ -202,10 +202,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         var serials = observation.TrackerSamples.Keys
             .OrderBy(serial => serial, StringComparer.Ordinal)
             .ToArray();
-        if (serials.Length != 2 || string.Equals(serials[0], serials[1], StringComparison.Ordinal))
+        if (serials.Length < 2)
         {
             throw new InvalidOperationException(
-                "Profile resolution requires exactly two distinct observed tracker serials.");
+                "Profile resolution requires at least two distinct observed tracker serials.");
         }
 
         _leftCaptureEvidence = null;
@@ -216,6 +216,13 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         if (reusable is not null)
         {
             return reusable;
+        }
+
+        if (serials.Length != 2)
+        {
+            throw new InvalidOperationException(
+                "No unique reusable left/right controller-source profile pair matched the observed trackers. " +
+                "New calibration requires exactly two tracker candidates; power off unrelated trackers and run again.");
         }
 
         var leftCapture = await CaptureHandAsync(
@@ -369,31 +376,58 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         InternalDriverCalibration calibration,
         IReadOnlyList<string> serials)
     {
-        foreach (var (leftSerial, rightSerial) in new[]
-                 {
-                     (serials[0], serials[1]),
-                     (serials[1], serials[0]),
-                 })
+        var leftProfiles = new List<InternalDriverProfileLookup>();
+        var rightProfiles = new List<InternalDriverProfileLookup>();
+        foreach (var serial in serials.Distinct(StringComparer.Ordinal))
         {
             var left = calibration.FindReusableProfile(new InternalDriverCalibrationContext(
                 MetaLinkHand.Left,
-                leftSerial,
+                serial,
                 ControllerModel));
             var right = calibration.FindReusableProfile(new InternalDriverCalibrationContext(
                 MetaLinkHand.Right,
-                rightSerial,
+                serial,
                 ControllerModel));
-            if (!left.CanReuse || !right.CanReuse)
+
+            if (left.CanReuse)
             {
-                continue;
+                leftProfiles.Add(left);
             }
 
-            return new InternalDriverProfilePair(
-                ToHandProfile(ProtocolHand.Left, left.Profile!, InternalDriverProfileReadiness.Reused, left.Diagnostic),
-                ToHandProfile(ProtocolHand.Right, right.Profile!, InternalDriverProfileReadiness.Reused, right.Diagnostic));
+            if (right.CanReuse)
+            {
+                rightProfiles.Add(right);
+            }
         }
 
-        return null;
+        var candidates = (
+            from left in leftProfiles
+            from right in rightProfiles
+            where !string.Equals(
+                left.Context.TrackerSerial,
+                right.Context.TrackerSerial,
+                StringComparison.Ordinal)
+            select new InternalDriverProfilePair(
+                ToHandProfile(
+                    ProtocolHand.Left,
+                    left.Profile!,
+                    InternalDriverProfileReadiness.Reused,
+                    left.Diagnostic),
+                ToHandProfile(
+                    ProtocolHand.Right,
+                    right.Profile!,
+                    InternalDriverProfileReadiness.Reused,
+                    right.Diagnostic)))
+            .Take(2)
+            .ToArray();
+
+        if (candidates.Length > 1)
+        {
+            throw new InvalidOperationException(
+                "Multiple reusable left/right controller-source profile pairs matched the observed trackers.");
+        }
+
+        return candidates.SingleOrDefault();
     }
 
     private async ValueTask<GuidedHandCapture> CaptureHandAsync(

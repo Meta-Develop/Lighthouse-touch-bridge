@@ -7,6 +7,7 @@ using Ltb.App;
 using Ltb.Calibration;
 using Ltb.Configuration;
 using Ltb.Core;
+using Ltb.Driver;
 using Ltb.MetaLink;
 using Ltb.OpenVr;
 using Xunit;
@@ -149,6 +150,100 @@ public sealed class InternalDriverCalibrationTests
             Assert.Null(evidence.Quality.TranslationConditionNumber);
             Assert.Equal(0.95d, evidence.Quality.InlierRatio);
         });
+    }
+
+    [Fact]
+    public async Task ReusableControllerPairResolvesAsSubsetOfFiveObservedTrackers()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-internal-profile-subset-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var profilePath = Path.Combine(directory, "profiles.json");
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore(
+                [
+                    Profile(hand: ControllerHand.Left, trackerSerial: "TRACKER-LEFT"),
+                    Profile(hand: ControllerHand.Right, trackerSerial: "TRACKER-RIGHT"),
+                ]));
+            var paths = new InternalDriverResolvedPaths(
+                Path.Combine(directory, "settings.json"),
+                profilePath,
+                directory,
+                Path.Combine(directory, "events.jsonl"),
+                Path.Combine(directory, "receipts.json"));
+            await using var runtime = new ProductionInternalDriverSessionRuntime(
+                new InternalDriverSessionOptions(),
+                paths,
+                new NoopDriverLifecycle());
+            var trackerSerials = new[]
+            {
+                "FBT-CHEST",
+                "FBT-LEFT-FOOT",
+                "FBT-RIGHT-FOOT",
+                "TRACKER-LEFT",
+                "TRACKER-RIGHT",
+            };
+            var observation = new InternalDriverRuntimeObservation(
+                SteamVrRunning: true,
+                "SteamVR runtime is running.",
+                StoppedMeta(),
+                Devices: [],
+                trackerSerials.ToDictionary(
+                    serial => serial,
+                    serial => TrackerSample(
+                        10d,
+                        new RigidTransform(
+                            Quaternion.Identity,
+                            new Vector3(serial.Length, 0f, 0f)))));
+
+            var pair = await runtime.ResolveProfilesAsync(
+                observation,
+                (state, diagnostic, remediation, left, right, progressObservation) => { },
+                CancellationToken.None);
+
+            Assert.True(pair.IsValid);
+            Assert.Equal("TRACKER-LEFT", pair.Left.TrackerSerial);
+            Assert.Equal("TRACKER-RIGHT", pair.Right.TrackerSerial);
+            Assert.Equal(InternalDriverProfileReadiness.Reused, pair.Left.Readiness);
+            Assert.Equal(InternalDriverProfileReadiness.Reused, pair.Right.Readiness);
+
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore(
+                [
+                    Profile(hand: ControllerHand.Left, trackerSerial: "TRACKER-LEFT"),
+                    Profile(hand: ControllerHand.Right, trackerSerial: "TRACKER-RIGHT"),
+                    Profile(hand: ControllerHand.Right, trackerSerial: "FBT-CHEST"),
+                ]));
+            var ambiguousError = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await runtime.ResolveProfilesAsync(
+                    observation,
+                    (state, diagnostic, remediation, left, right, progressObservation) => { },
+                    CancellationToken.None));
+            Assert.Contains(
+                "Multiple reusable left/right controller-source profile pairs",
+                ambiguousError.Message,
+                StringComparison.Ordinal);
+
+            File.Delete(profilePath);
+            var calibrationError = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await runtime.ResolveProfilesAsync(
+                    observation,
+                    (state, diagnostic, remediation, left, right, progressObservation) => { },
+                    CancellationToken.None));
+            Assert.Contains(
+                "New calibration requires exactly two tracker candidates",
+                calibrationError.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [Theory]
@@ -556,14 +651,16 @@ public sealed class InternalDriverCalibrationTests
     private static CalibrationProfile Profile(
         string controllerRuntime = ControllerRuntimeIdentities.MetaLinkLibOvr,
         string controllerModel = "Quest 2 Touch",
-        string? controllerIdentity = null) => new(
+        string? controllerIdentity = null,
+        ControllerHand hand = ControllerHand.Left,
+        string trackerSerial = "LHR-LEFT") => new(
         CalibrationProfileSchema.CurrentVersion,
-        "Synthetic internal-driver profile",
-        ControllerHand.Left,
+        $"Synthetic internal-driver {hand} profile",
+        hand,
         controllerRuntime,
         controllerModel,
         controllerIdentity,
-        "LHR-LEFT",
+        trackerSerial,
         CalibrationDriverProfiles.LtbTouch,
         ProfileCalibrationPolicy.Auto,
         ProfileCalibrationMode.RotationOnly,
@@ -572,6 +669,44 @@ public sealed class InternalDriverCalibrationTests
         12d,
         new CalibrationProfileQuality(1d, null, null, 0.95d),
         CreatedUtc);
+
+    private static MetaLinkRuntimeSnapshot StoppedMeta() => new(
+        0,
+        0d,
+        new MetaLinkHandSnapshot(
+            MetaLinkHand.Left,
+            MetaLinkReadiness.RuntimeStopped,
+            "not used by profile subset resolution"),
+        new MetaLinkHandSnapshot(
+            MetaLinkHand.Right,
+            MetaLinkReadiness.RuntimeStopped,
+            "not used by profile subset resolution"));
+
+    private sealed class NoopDriverLifecycle : ISteamVrDriverLifecycle
+    {
+        public ValueTask<SteamVrPaths> DiscoverAsync(
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<SteamVrDriverInspection> InspectAsync(
+            string stagedDriverRoot,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<SteamVrDriverLifecycleResult> RegisterAsync(
+            string stagedDriverRoot,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<SteamVrDriverLifecycleResult> RemoveAsync(
+            SteamVrDriverRegistrationReceipt receipt,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public void Dispose()
+        {
+        }
+    }
 
     private static CalibrationProfile LegacyProfile() => new(
         CalibrationProfileSchema.LegacyVersion,

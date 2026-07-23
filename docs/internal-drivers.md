@@ -33,8 +33,10 @@ The intended Lighthouse HMD remains SteamVR's sole HMD.
 The packaged `Ltb.Gui.exe` starts directly in the **First-party internal
 driver** view. Its **Start** button creates a fresh application session and
 runs typed checks for Windows, SteamVR, driver registration and loaded build,
-Meta Link, the sole Lighthouse HMD, both Touch hands, exactly two physical
-trackers, calibration profiles, and the driver feed. It never starts the legacy
+Meta Link, the sole Lighthouse HMD, both Touch hands, the two selected
+controller-source trackers, calibration profiles, and the driver feed. Other
+raw Lighthouse trackers are ignored after saved profiles select the
+controller-mounted pair. It never starts the legacy
 ALVR/VMT/`TrackingOverrides` wizard.
 
 Before pressing **Start**:
@@ -43,8 +45,10 @@ Before pressing **Start**:
    Link or Air Link.
 2. Keep the headset and both Touch controllers awake.
 3. Start SteamVR with the intended Lighthouse HMD as the sole HMD.
-4. Power on exactly two physical Lighthouse trackers and wait until their raw
-   poses are valid.
+4. Power on the two controller-mounted Lighthouse trackers and wait until
+   their raw poses are valid. Saved profiles allow unrelated full-body
+   trackers to remain connected; new association/calibration still requires
+   exactly two candidates so the first pair is unambiguous.
 5. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
 
 LTB transactionally registers the staged `driver_ltb` directory beside the
@@ -208,9 +212,11 @@ without a valid state or heartbeat, `driver_ltb` marks both devices untracked
 and neutralizes every input. When pipe-server setup fails transiently inside
 `driver_ltb`, the receiver retries with capped exponential backoff from 1 s up
 to 30 s rather than abandoning the transport. Reconnect uses a new session; it
-never resumes a stale session or frozen pose. Loss of one associated tracker neutralizes only
-that hand while exact-serial reacquisition is attempted. Loss of Meta readiness
-or an invalid tracker topology neutralizes both hands.
+never resumes a stale session or frozen pose. Loss of one associated tracker
+neutralizes only that hand while exact-serial reacquisition is attempted.
+Unrelated tracker connection, disconnection, or device-index churn does not
+change the selected controller pair. Loss of Meta readiness neutralizes both
+hands.
 
 `driver_ltb` performs no calibration or Meta access. It publishes exactly two
 stable left/right controller roles with the LTB input profile. Haptics are not
