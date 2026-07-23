@@ -35,7 +35,9 @@ no device indexes, VMT slots, driver paths, or settings paths to enter.
 1. Connect Quest to the official Meta Horizon Link runtime and keep both Touch
    controllers awake.
 2. Start SteamVR with the intended Lighthouse HMD as its sole HMD and connect
-   exactly two physical Lighthouse trackers.
+   the two physical Lighthouse trackers mounted to the controllers. Other
+   Lighthouse trackers used for full-body tracking may remain connected when
+   saved left/right profiles identify the controller-mounted pair.
 3. Run `Ltb.Gui.exe` and press **Start**.
 4. If LTB registers or updates `driver_ltb`, restart SteamVR when the GUI asks,
    then press **Start** again.
@@ -56,7 +58,7 @@ Quest + Touch
   -> first-party driver_ltb
   -> exactly two SteamVR controllers
 
-Lighthouse HMD + two physical Lighthouse trackers
+Lighthouse HMD + two selected controller trackers (+ optional other trackers)
   -> SteamVR/OpenVR raw tracker poses
   -> Ltb.App
 ```

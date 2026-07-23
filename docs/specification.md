@@ -730,7 +730,10 @@ Readiness shall be an explicit conjunction of:
 - SteamVR running with the intended Lighthouse HMD as the sole HMD;
 - Meta runtime installed, ABI-compatible, linked, and reporting both Touch
   controllers;
-- two distinct, connected physical tracker identities;
+- two distinct, connected physical tracker identities selected by saved
+  left/right controller profiles or the current exact-two association;
+  unrelated physical trackers may coexist and shall not participate in
+  controller publication;
 - matching valid profiles or a completed calibration;
 - `driver_ltb` registered and loaded as exactly two controllers; and
 - current same-user IPC and heartbeat health.
@@ -800,7 +803,9 @@ differ.
 5. Verify that Bigscreen Beyond is the sole SteamVR HMD and that no Quest HMD or
    Meta-native controller device has entered SteamVR.
 6. Open the invisible Meta session and show per-runtime and per-hand readiness.
-7. Discover two physical Lighthouse trackers by stable identity.
+7. Discover the two controller-mounted Lighthouse trackers by stable identity.
+   Reuse may select them from additional raw Lighthouse trackers; a new
+   association/calibration capture requires exactly two candidates.
 8. Ask the user to keep the Touch controllers observable by Quest cameras when
    full 6DoF is desired.
 9. Guide separate left and right pitch, yaw, roll, and moderate translation
@@ -818,8 +823,9 @@ quaternions, or device indexes.
 
 1. Verify SteamVR, Bigscreen Beyond, Quest Link, Meta controllers, trackers,
    `driver_ltb`, and the same-user pipe.
-2. Load profiles matching both tracker identities and the Meta Link controller
-   runtime.
+2. Load profiles matching both selected controller-source tracker identities
+   and the Meta Link controller runtime. Ignore unrelated raw Lighthouse
+   trackers, including full-body trackers.
 3. Start a fresh feed session and wait for valid two-hand readiness.
 4. Publish complete state and monitor clocks, trackers, Meta runtime, pipe,
    driver watchdog, and SteamVR.
@@ -1007,7 +1013,8 @@ cannot be replaced by Linux fakes:
   inputs, tracking validity, sleep/wake, Link disconnect, and reconnect;
 - prove Quest Link supplies state while Quest and Meta-native controllers do
   not enter SteamVR and Bigscreen Beyond remains the sole HMD;
-- observe two physical tracker streams in raw/uncalibrated space;
+- observe the two selected controller-source tracker streams in
+  raw/uncalibrated space while ignoring unrelated raw trackers;
 - record, replay, calibrate, and validate rotation-only and full-6DoF mounts at
   varied offsets, orientations, motion rates, and partial Quest occlusion;
 - verify static alignment, rapid pitch/yaw/roll, in-place wrist rotation,
@@ -1092,7 +1099,9 @@ The target release is complete only when a Windows user can:
    without redistributed Meta binaries.
 4. Install and register `driver_ltb` transactionally and see exactly two LTB
    controllers with stable left/right roles and the dedicated profile.
-5. Attach and discover one stable Lighthouse tracker identity per controller.
+5. Attach and discover one stable Lighthouse tracker identity per controller,
+   while allowing unrelated Lighthouse trackers to remain connected without
+   changing the selected pair.
 6. Perform the guided multi-axis motions and receive automatic hand
    association and time alignment.
 7. Receive a held-out validated rotation solution for each hand.
