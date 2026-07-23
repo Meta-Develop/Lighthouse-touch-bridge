@@ -612,9 +612,22 @@ public interface IInternalDriverSession : IAsyncDisposable
     ValueTask StopAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>How a newly created first-party session resolves calibration profiles.</summary>
+public enum InternalDriverSessionIntent
+{
+    /// <summary>Reuse an exact matching profile pair when one is available.</summary>
+    NormalStart = 0,
+
+    /// <summary>Bypass reusable profiles and perform a fresh two-hand capture.</summary>
+    Calibrate,
+}
+
 /// <summary>Optional production factory tuning; every path has a zero-input default.</summary>
 public sealed record InternalDriverSessionOptions
 {
+    public InternalDriverSessionIntent Intent { get; init; } =
+        InternalDriverSessionIntent.NormalStart;
+
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(10);
 
     public TimeSpan GuidedCaptureDurationPerHand { get; init; } = TimeSpan.FromSeconds(8);
@@ -633,6 +646,11 @@ public sealed record InternalDriverSessionOptions
 
     internal void Validate()
     {
+        if (!Enum.IsDefined(Intent))
+        {
+            throw new ArgumentOutOfRangeException(nameof(Intent));
+        }
+
         if (PollInterval <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(PollInterval));

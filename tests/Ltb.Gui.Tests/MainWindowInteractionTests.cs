@@ -111,6 +111,52 @@ public sealed class MainWindowInteractionTests
         }
     }
 
+    [AvaloniaFact]
+    public void CalibrationButtonMouseClickStartsExplicitCalibrationAndSharesStopFlow()
+    {
+        var session = new ControlledSession();
+        var factory = new ControlledSessionFactory(session);
+        var viewModel = new InternalDriverViewModel(factory, action => action());
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+        };
+
+        try
+        {
+            window.Show();
+            var calibrationButton = window.FindControl<Button>("CalibrationButton")!;
+            var actionButton = window.FindControl<Button>("ActionButton")!;
+
+            Click(window, calibrationButton);
+            AssertCompletes(
+                session.Started,
+                "The calibration click did not start the controlled session.");
+
+            Assert.Equal([InternalDriverSessionIntent.Calibrate], factory.Intents);
+            Assert.False(viewModel.CalibrationCommand.CanExecute(null));
+            Assert.Equal("Stop", actionButton.Content);
+
+            Click(window, actionButton);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => session.DisposeCallCount == 1 &&
+                        viewModel.ActionButtonText == "Start" &&
+                        viewModel.CurrentPhase == InternalDriverSessionState.Stopped,
+                    InteractionTimeout),
+                "Stop did not complete the explicit calibration session.");
+
+            Assert.True(viewModel.CalibrationCommand.CanExecute(null));
+            Assert.Equal(1, session.StopCallCount);
+            Assert.Equal(1, session.DisposeCallCount);
+        }
+        finally
+        {
+            session.AllowRunExit();
+            window.Close();
+        }
+    }
+
     private static void AssertCompletes(Task task, string message) =>
         Assert.True(task.Wait(InteractionTimeout), message);
 
@@ -131,18 +177,23 @@ public sealed class MainWindowInteractionTests
     private sealed class ControlledSessionFactory(IInternalDriverSession session)
         : IInternalDriverSessionFactory
     {
+        private readonly List<InternalDriverSessionIntent> _intents = [];
+
         public int CreateCount { get; private set; }
 
-        public IInternalDriverSession Create()
+        public IReadOnlyList<InternalDriverSessionIntent> Intents => _intents;
+
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent)
         {
             CreateCount++;
+            _intents.Add(intent);
             return session;
         }
     }
 
     private sealed class ThrowingSessionFactory : IInternalDriverSessionFactory
     {
-        public IInternalDriverSession Create() =>
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent) =>
             throw new InvalidOperationException("synthetic factory failure");
     }
 

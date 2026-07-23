@@ -500,6 +500,12 @@ public sealed class InternalDriverViewModelTests
         await second.Started;
 
         Assert.Equal(2, factory.CreateCount);
+        Assert.Equal(
+            [
+                InternalDriverSessionIntent.NormalStart,
+                InternalDriverSessionIntent.NormalStart,
+            ],
+            factory.Intents);
         Assert.True(first.DisposeCompleted);
         Assert.Equal(InternalDriverSessionState.Active, viewModel.CurrentPhase);
         Assert.True(viewModel.IsReady);
@@ -507,6 +513,38 @@ public sealed class InternalDriverViewModelTests
         second.AllowStop();
         await viewModel.StopAsync();
         await secondRun;
+    }
+
+    [Fact]
+    public async Task CalibrationUsesExplicitIntentAndIsDisabledDuringTheSharedSessionLifecycle()
+    {
+        var session = new ControlledSession(Snapshot(
+            InternalDriverSessionState.Recording,
+            allReady: false));
+        var factory = new QueueSessionFactory(session);
+        await using var viewModel = new InternalDriverViewModel(factory, action => action());
+
+        Assert.True(viewModel.CanCalibrate);
+        Assert.True(viewModel.CalibrationCommand.CanExecute(null));
+
+        var run = viewModel.CalibrateAsync();
+        await session.Started;
+
+        Assert.Equal([InternalDriverSessionIntent.Calibrate], factory.Intents);
+        Assert.False(viewModel.CanCalibrate);
+        Assert.False(viewModel.CalibrationCommand.CanExecute(null));
+        Assert.False(viewModel.CanRemoveDriver);
+
+        await viewModel.StartAsync();
+        await viewModel.CalibrateAsync();
+        Assert.Equal(1, factory.CreateCount);
+
+        session.AllowStop();
+        await viewModel.StopAsync();
+        await run;
+
+        Assert.True(viewModel.CanCalibrate);
+        Assert.True(viewModel.CalibrationCommand.CanExecute(null));
     }
 
     private static InternalDriverViewModel NewViewModel(IInternalDriverSession session) =>
@@ -658,6 +696,7 @@ public sealed class InternalDriverViewModelTests
     private sealed class QueueSessionFactory : IInternalDriverSessionFactory
     {
         private readonly Queue<IInternalDriverSession> _sessions;
+        private readonly List<InternalDriverSessionIntent> _intents = [];
 
         public QueueSessionFactory(params IInternalDriverSession[] sessions)
         {
@@ -666,9 +705,12 @@ public sealed class InternalDriverViewModelTests
 
         public int CreateCount { get; private set; }
 
-        public IInternalDriverSession Create()
+        public IReadOnlyList<InternalDriverSessionIntent> Intents => _intents;
+
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent)
         {
             CreateCount++;
+            _intents.Add(intent);
             return _sessions.Dequeue();
         }
     }

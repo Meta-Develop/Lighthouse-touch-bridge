@@ -25,6 +25,10 @@ public sealed class MainWindowSmokeTests
             Assert.Same(viewModel, window.DataContext);
             Assert.Equal("Stopped", window.FindControl<TextBlock>("PhaseText")!.Text);
             Assert.Equal("Start", window.FindControl<Button>("ActionButton")!.Content);
+            var calibrationButton = window.FindControl<Button>("CalibrationButton");
+            Assert.NotNull(calibrationButton);
+            Assert.Equal("Calibrate / Recalibrate", calibrationButton!.Content);
+            Assert.True(calibrationButton.IsEnabled);
             var readiness = window.FindControl<ListBox>("ReadinessList");
             Assert.NotNull(readiness);
             Assert.Equal(12, readiness!.ItemCount);
@@ -138,7 +142,8 @@ public sealed class MainWindowSmokeTests
 
     private sealed class IdleSessionFactory : IInternalDriverSessionFactory
     {
-        public IInternalDriverSession Create() => new IdleSession();
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent) =>
+            new IdleSession();
     }
 
     private sealed class IdleSession : IInternalDriverSession

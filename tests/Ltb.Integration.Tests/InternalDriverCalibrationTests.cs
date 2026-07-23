@@ -176,7 +176,10 @@ public sealed class InternalDriverCalibrationTests
                 Path.Combine(directory, "events.jsonl"),
                 Path.Combine(directory, "receipts.json"));
             await using var runtime = new ProductionInternalDriverSessionRuntime(
-                new InternalDriverSessionOptions(),
+                new InternalDriverSessionOptions
+                {
+                    Intent = InternalDriverSessionIntent.NormalStart,
+                },
                 paths,
                 new NoopDriverLifecycle());
             var trackerSerials = new[]
@@ -238,6 +241,150 @@ public sealed class InternalDriverCalibrationTests
             Assert.Contains(
                 "New calibration requires exactly two tracker candidates",
                 calibrationError.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExplicitCalibrationDeniesReusableProfilesAndBeginsFreshCaptureFlow()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-explicit-calibration-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var profilePath = Path.Combine(directory, "profiles.json");
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore(
+                [
+                    Profile(hand: ControllerHand.Left, trackerSerial: "TRACKER-LEFT"),
+                    Profile(hand: ControllerHand.Right, trackerSerial: "TRACKER-RIGHT"),
+                ]));
+            var paths = new InternalDriverResolvedPaths(
+                Path.Combine(directory, "settings.json"),
+                profilePath,
+                directory,
+                Path.Combine(directory, "events.jsonl"),
+                Path.Combine(directory, "receipts.json"));
+            var observation = new InternalDriverRuntimeObservation(
+                SteamVrRunning: true,
+                "SteamVR runtime is running.",
+                StoppedMeta(),
+                Devices: [],
+                new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal)
+                {
+                    ["TRACKER-LEFT"] = TrackerSample(10d, RigidTransform.Identity),
+                    ["TRACKER-RIGHT"] = TrackerSample(10d, RigidTransform.Identity),
+                });
+
+            await using (var normalRuntime = new ProductionInternalDriverSessionRuntime(
+                new InternalDriverSessionOptions
+                {
+                    Intent = InternalDriverSessionIntent.NormalStart,
+                },
+                paths,
+                new NoopDriverLifecycle()))
+            {
+                var reused = await normalRuntime.ResolveProfilesAsync(
+                    observation,
+                    (state, diagnostic, remediation, left, right, progressObservation) => { },
+                    CancellationToken.None);
+
+                Assert.Equal(InternalDriverProfileReadiness.Reused, reused.Left.Readiness);
+                Assert.Equal(InternalDriverProfileReadiness.Reused, reused.Right.Readiness);
+            }
+
+            var progressStates = new List<InternalDriverSessionState>();
+            await using var calibrationRuntime = new ProductionInternalDriverSessionRuntime(
+                new InternalDriverSessionOptions
+                {
+                    Intent = InternalDriverSessionIntent.Calibrate,
+                },
+                paths,
+                new NoopDriverLifecycle());
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await calibrationRuntime.ResolveProfilesAsync(
+                    observation,
+                    (state, diagnostic, remediation, left, right, progressObservation) =>
+                        progressStates.Add(state),
+                    cancelled.Token));
+
+            Assert.Contains(InternalDriverSessionState.Recording, progressStates);
+            var retained = CalibrationProfileFile.LoadStore(profilePath);
+            Assert.Equal(2, retained.Profiles.Count);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExplicitCalibrationKeepsTheExactTwoCandidateGateEvenWithReusableProfiles()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-explicit-calibration-gate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var profilePath = Path.Combine(directory, "profiles.json");
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore(
+                [
+                    Profile(hand: ControllerHand.Left, trackerSerial: "TRACKER-LEFT"),
+                    Profile(hand: ControllerHand.Right, trackerSerial: "TRACKER-RIGHT"),
+                ]));
+            var paths = new InternalDriverResolvedPaths(
+                Path.Combine(directory, "settings.json"),
+                profilePath,
+                directory,
+                Path.Combine(directory, "events.jsonl"),
+                Path.Combine(directory, "receipts.json"));
+            await using var runtime = new ProductionInternalDriverSessionRuntime(
+                new InternalDriverSessionOptions
+                {
+                    Intent = InternalDriverSessionIntent.Calibrate,
+                },
+                paths,
+                new NoopDriverLifecycle());
+            var observation = new InternalDriverRuntimeObservation(
+                SteamVrRunning: true,
+                "SteamVR runtime is running.",
+                StoppedMeta(),
+                Devices: [],
+                new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal)
+                {
+                    ["TRACKER-LEFT"] = TrackerSample(10d, RigidTransform.Identity),
+                    ["TRACKER-RIGHT"] = TrackerSample(10d, RigidTransform.Identity),
+                    ["FBT-CHEST"] = TrackerSample(10d, RigidTransform.Identity),
+                    ["FBT-LEFT-FOOT"] = TrackerSample(10d, RigidTransform.Identity),
+                    ["FBT-RIGHT-FOOT"] = TrackerSample(10d, RigidTransform.Identity),
+                });
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await runtime.ResolveProfilesAsync(
+                    observation,
+                    (state, diagnostic, remediation, left, right, progressObservation) => { },
+                    CancellationToken.None));
+
+            Assert.Contains(
+                "Explicit calibration bypasses reusable profiles",
+                error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "requires exactly two tracker candidates",
+                error.Message,
                 StringComparison.Ordinal);
         }
         finally
