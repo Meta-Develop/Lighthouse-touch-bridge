@@ -6,11 +6,10 @@ namespace Ltb.Integration.Tests;
 public sealed class InternalDriverInputProfileTests
 {
     private const string ControllerType = "ltb_touch";
-    private const string ReservedSystemClick = "/input/system/click";
     private const string VrChatAppKey = "steam.app.438100";
 
     [Fact]
-    public void ProfileDeclaresNativeInputsAndLeftOnlyReservedSystemButton()
+    public void ProfileDeclaresEveryNativeInputAndMakesSystemLeftOnly()
     {
         var repositoryRoot = FindRepositoryRoot();
         var inputRoot = Path.Combine(
@@ -35,11 +34,6 @@ public sealed class InternalDriverInputProfileTests
         var sources = profile.GetProperty("input_source");
         var rawPose = sources.GetProperty("/pose/raw");
         Assert.Equal("pose", rawPose.GetProperty("type").GetString());
-        var system = sources.GetProperty("/input/system");
-        Assert.Equal("button", system.GetProperty("type").GetString());
-        Assert.Equal("left", system.GetProperty("side").GetString());
-        Assert.True(system.GetProperty("click").GetBoolean());
-        Assert.False(sources.TryGetProperty("/input/menu", out _));
 
         var nativeSource = File.ReadAllText(Path.Combine(
             repositoryRoot,
@@ -57,12 +51,40 @@ public sealed class InternalDriverInputProfileTests
             .ToArray();
 
         Assert.NotEmpty(nativeComponents);
-        Assert.Contains(ReservedSystemClick, nativeComponents);
+        Assert.Contains("/input/system/click", nativeComponents);
+        Assert.DoesNotContain("/input/menu/click", nativeComponents);
+        Assert.Contains(
+            """CreateBoolean(property_container_, Input::SystemClick, "/input/system/click")""",
+            nativeSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "inputs_[InputIndex(Input::SystemClick)]",
+            nativeSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SystemClickForButtons(hand_, published_input.buttons)",
+            nativeSource,
+            StringComparison.Ordinal);
+        Assert.True(
+            Regex.IsMatch(
+                nativeSource,
+                """\(!left\s*\|\|\s*CreateBoolean\(property_container_, Input::SystemClick, "/input/system/click"\)\)""",
+                RegexOptions.CultureInvariant),
+            "The reserved system component must be created only for the left controller.");
+        Assert.True(
+            Regex.IsMatch(
+                nativeSource,
+                """if \(hand_ == Hand::Left\)\s*\{\s*vr::VRDriverInput\(\)->UpdateBooleanComponent\(\s*inputs_\[InputIndex\(Input::SystemClick\)\]""",
+                RegexOptions.CultureInvariant),
+            "The reserved system component must be updated only for the left controller.");
+        Assert.Equal(2, Regex.Matches(nativeSource, "Input::SystemClick").Count);
+        Assert.DoesNotContain("/input/menu", nativeSource, StringComparison.Ordinal);
         foreach (var componentPath in nativeComponents)
         {
             var separator = componentPath.LastIndexOf('/');
             var sourcePath = componentPath[..separator];
             var component = componentPath[(separator + 1)..];
+
             Assert.True(
                 sources.TryGetProperty(sourcePath, out var source),
                 $"Native component '{componentPath}' has no input-profile source '{sourcePath}'.");
@@ -78,58 +100,13 @@ public sealed class InternalDriverInputProfileTests
                 declared.ValueKind == JsonValueKind.True,
                 $"Native component '{componentPath}' is not declared by the input profile.");
         }
-    }
 
-    [Fact]
-    public void LeftMenuBitDrivesOnlyReservedSteamVrSystemButton()
-    {
-        var repositoryRoot = FindRepositoryRoot();
-        var nativeRoot = Path.Combine(
-            repositoryRoot,
-            "native",
-            "driver_ltb",
-            "src",
-            "openvr");
-        var header = File.ReadAllText(Path.Combine(nativeRoot, "controller_device.hpp"));
-        var source = File.ReadAllText(Path.Combine(nativeRoot, "controller_device.cpp"));
-
-        Assert.Contains("SystemClick", header, StringComparison.Ordinal);
-        Assert.DoesNotContain("MenuClick", header, StringComparison.Ordinal);
-        Assert.DoesNotContain("/input/menu/click", source, StringComparison.Ordinal);
-        Assert.Single(
-            Regex.Matches(source, Regex.Escape(ReservedSystemClick)).Cast<Match>());
-        Assert.Matches(
-            new Regex(
-                """
-                \(!left\s*\|\|\s*
-                CreateBoolean\(\s*
-                    property_container_,\s*
-                    Input::SystemClick,\s*
-                    "/input/system/click"\s*
-                \)\)
-                """,
-                RegexOptions.CultureInvariant |
-                RegexOptions.IgnorePatternWhitespace |
-                RegexOptions.Singleline),
-            source);
-        Assert.Matches(
-            new Regex(
-                """
-                if\s*\(\s*hand_\s*==\s*Hand::Left\s*\)\s*\{\s*
-                    vr::VRDriverInput\(\)->UpdateBooleanComponent\(\s*
-                        inputs_\[InputIndex\(Input::SystemClick\)\],\s*
-                        HasButton\(\s*
-                            published_input\.buttons,\s*
-                            ButtonBit::Menu\s*
-                        \),\s*
-                        input_time_offset\s*
-                    \);\s*
-                \}
-                """,
-                RegexOptions.CultureInvariant |
-                RegexOptions.IgnorePatternWhitespace |
-                RegexOptions.Singleline),
-            source);
+        var system = sources.GetProperty("/input/system");
+        Assert.Equal("button", system.GetProperty("type").GetString());
+        Assert.Equal("left", system.GetProperty("side").GetString());
+        Assert.True(system.GetProperty("click").GetBoolean());
+        Assert.False(system.TryGetProperty("touch", out _));
+        Assert.False(sources.TryGetProperty("/input/menu", out _));
     }
 
     [Fact]
@@ -159,8 +136,6 @@ public sealed class InternalDriverInputProfileTests
             resourcesRoot,
             "localization",
             "localization.json"));
-        var localization = Assert.Single(localizationDocument.RootElement.EnumerateArray());
-        Assert.Equal("System", localization.GetProperty("/input/system").GetString());
 
         var defaultBindings = profile.GetProperty("default_bindings");
         var vrChatBinding = Assert.Single(defaultBindings.EnumerateArray());
@@ -182,8 +157,14 @@ public sealed class InternalDriverInputProfileTests
         AssertBindingOnlyUsesDeclaredSources(legacyBindingDocument.RootElement, sources);
         AssertBindingOnlyUsesDeclaredSources(vrChatDocument.RootElement, sources);
         var legacyJson = File.ReadAllText(legacyBindingPath);
+        var vrChatJson = File.ReadAllText(vrChatBindingPath);
         Assert.Contains("/actions/legacy/in/left_grip_press", legacyJson, StringComparison.Ordinal);
         Assert.Contains("/actions/legacy/in/right_grip_press", legacyJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("/input/system", legacyJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("/input/system", vrChatJson, StringComparison.Ordinal);
+        var localization = Assert.Single(localizationDocument.RootElement.EnumerateArray());
+        Assert.Equal("System", localization.GetProperty("/input/system").GetString());
+        Assert.False(localization.TryGetProperty("/input/menu", out _));
     }
 
     [Fact]
@@ -219,10 +200,14 @@ public sealed class InternalDriverInputProfileTests
         Assert.DoesNotContain(
             automaticMappings,
             mapping =>
-                mapping.From?.Contains("/input/system", StringComparison.Ordinal) == true ||
-                mapping.To?.Contains("/input/system", StringComparison.Ordinal) == true ||
-                mapping.From?.Contains("/input/menu", StringComparison.Ordinal) == true ||
-                mapping.To?.Contains("/input/menu", StringComparison.Ordinal) == true);
+                string.Equals(
+                    mapping.From,
+                    "/user/hand/left/input/system",
+                    StringComparison.Ordinal) ||
+                string.Equals(
+                    mapping.To,
+                    "/user/hand/left/input/menu",
+                    StringComparison.Ordinal));
 
         using var vrChatDocument = Parse(Path.Combine(
             inputRoot,
@@ -242,31 +227,8 @@ public sealed class InternalDriverInputProfileTests
         Assert.Contains("/user/hand/left/input/thumbstick", userPaths);
         Assert.Contains("/user/hand/right/input/thumbstick", userPaths);
         Assert.DoesNotContain(userPaths, path => path.Contains("/input/joystick", StringComparison.Ordinal));
-        Assert.DoesNotContain(userPaths, path => path.Contains("/input/menu", StringComparison.Ordinal));
-        Assert.DoesNotContain(userPaths, path => path.Contains("/input/system", StringComparison.Ordinal));
         Assert.DoesNotContain(userPaths, path => path.Contains("/input/skeleton", StringComparison.Ordinal));
         Assert.DoesNotContain(userPaths, path => path.Contains("/output/haptic", StringComparison.Ordinal));
-
-        var vrChatAppMenuPaths = vrChat
-            .GetProperty("bindings")
-            .GetProperty("/actions/global")
-            .GetProperty("sources")
-            .EnumerateArray()
-            .Where(source =>
-                source.GetProperty("inputs").TryGetProperty("click", out var click) &&
-                string.Equals(
-                    click.GetProperty("output").GetString(),
-                    "/actions/global/in/menu",
-                    StringComparison.Ordinal))
-            .Select(source => source.GetProperty("path").GetString())
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-        Assert.Equal(
-            [
-                "/user/hand/left/input/y",
-                "/user/hand/right/input/b",
-            ],
-            vrChatAppMenuPaths);
 
         var bindingJson = File.ReadAllText(Path.Combine(
             inputRoot,

@@ -1,6 +1,7 @@
 #include "controller_device.hpp"
 
 #include "ltb_driver/build_identity.hpp"
+#include "ltb_driver/controller_input_policy.hpp"
 
 #include "monotonic_clock.hpp"
 
@@ -233,7 +234,7 @@ void ControllerDevice::RunFrame(std::uint64_t now_nanoseconds) {
     if (hand_ == Hand::Left) {
         vr::VRDriverInput()->UpdateBooleanComponent(
             inputs_[InputIndex(Input::SystemClick)],
-            HasButton(published_input.buttons, ButtonBit::Menu),
+            SystemClickForButtons(hand_, published_input.buttons),
             input_time_offset);
     }
     vr::VRDriverInput()->UpdateScalarComponent(
