@@ -237,6 +237,38 @@ public sealed class InternalDriverViewModelTests
     }
 
     [Fact]
+    public async Task HmdRowRendersUnavailableDriverWithValidatedTrackingEvidence()
+    {
+        var session = new ControlledSession(Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready,
+            driver: LoadedDriverEvidence(),
+            hmd: new InternalDriverLighthouseHmdEvidence(
+                "hmd-stable-id",
+                "openvr://device/hmd-stable-id",
+                driverId: null,
+                trackingSystemName: "vendor_tracking",
+                actualTrackingSystemName: "lighthouse",
+                manufacturerName: "Bigscreen",
+                modelNumber: "Beyond 2e")));
+        await using var viewModel = NewViewModel(session);
+
+        var run = viewModel.StartAsync();
+        await session.Started;
+
+        var hmd = Assert.Single(viewModel.ReadinessRows, row => row.Key == "lighthouse-hmd");
+        Assert.Equal("Ready", hmd.Status);
+        Assert.Contains("driver: unavailable", hmd.Detail, StringComparison.Ordinal);
+        Assert.Contains("tracking system: vendor_tracking", hmd.Detail, StringComparison.Ordinal);
+        Assert.Contains("actual tracking system: lighthouse", hmd.Detail, StringComparison.Ordinal);
+
+        session.AllowStop();
+        await viewModel.StopAsync();
+        await run;
+    }
+
+    [Fact]
     public async Task DispatcherOwnsInitialRowsAndEverySnapshotPresentation()
     {
         var dispatcher = new QueuedDispatcher();
