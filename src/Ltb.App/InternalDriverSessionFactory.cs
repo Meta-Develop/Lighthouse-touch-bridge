@@ -212,7 +212,8 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         _rightCaptureEvidence = null;
 
         var calibration = new InternalDriverCalibration(_paths.CalibrationProfileStorePath);
-        var reusable = FindReusablePair(calibration, serials);
+        var explicitRequest = _options.Intent == InternalDriverSessionIntent.Calibrate;
+        var reusable = FindReusablePair(calibration, serials, explicitRequest);
         if (reusable is not null)
         {
             return reusable;
@@ -221,7 +222,9 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         if (serials.Length != 2)
         {
             throw new InvalidOperationException(
-                "No unique reusable left/right controller-source profile pair matched the observed trackers. " +
+                (explicitRequest
+                    ? "Explicit calibration bypasses reusable profiles. "
+                    : "No unique reusable left/right controller-source profile pair matched the observed trackers. ") +
                 "New calibration requires exactly two tracker candidates; power off unrelated trackers and run again.");
         }
 
@@ -268,12 +271,14 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             calibration,
             leftCapture,
             MetaLinkHand.Left,
-            association.Left!.TrackerSerial);
+            association.Left!.TrackerSerial,
+            explicitRequest);
         var right = Calibrate(
             calibration,
             rightCapture,
             MetaLinkHand.Right,
-            association.Right!.TrackerSerial);
+            association.Right!.TrackerSerial,
+            explicitRequest);
         progress(
             InternalDriverSessionState.SaveProfile,
             "Both first-party results passed validation; exact schema-2 profiles were saved and reloaded.",
@@ -374,7 +379,8 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
 
     private static InternalDriverProfilePair? FindReusablePair(
         InternalDriverCalibration calibration,
-        IReadOnlyList<string> serials)
+        IReadOnlyList<string> serials,
+        bool explicitRequest)
     {
         var leftProfiles = new List<InternalDriverProfileLookup>();
         var rightProfiles = new List<InternalDriverProfileLookup>();
@@ -383,11 +389,17 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             var left = calibration.FindReusableProfile(new InternalDriverCalibrationContext(
                 MetaLinkHand.Left,
                 serial,
-                ControllerModel));
+                ControllerModel)
+            {
+                ExplicitRequest = explicitRequest,
+            });
             var right = calibration.FindReusableProfile(new InternalDriverCalibrationContext(
                 MetaLinkHand.Right,
                 serial,
-                ControllerModel));
+                ControllerModel)
+            {
+                ExplicitRequest = explicitRequest,
+            });
 
             if (left.CanReuse)
             {
@@ -623,9 +635,13 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         InternalDriverCalibration calibration,
         GuidedHandCapture capture,
         MetaLinkHand hand,
-        string trackerSerial)
+        string trackerSerial,
+        bool explicitRequest)
     {
-        var context = new InternalDriverCalibrationContext(hand, trackerSerial, ControllerModel);
+        var context = new InternalDriverCalibrationContext(hand, trackerSerial, ControllerModel)
+        {
+            ExplicitRequest = explicitRequest,
+        };
         var retained = new MetaLinkCalibrationCapture(
             hand,
             trackerSerial,
