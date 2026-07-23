@@ -243,6 +243,10 @@ still does not replace the connected-hardware gates.
 - [ ] Exercise every supported button, touch, trigger, grip, and stick input in
   at least two representative SteamVR applications while the Lighthouse
   trackers remain the authoritative pose sources.
+- [ ] Press the left Meta Menu button and confirm it opens and closes the
+  SteamVR dashboard without simultaneously invoking an application menu.
+  Confirm the right controller exposes no dashboard button and VRChat's Quick
+  Menu remains available from Y/B under the bundled binding.
 - [ ] Complete repeated start/stop cycles in one SteamVR session and confirm no
   duplicate devices, stale registration, or feed-session reuse.
 - [ ] Reboot Windows, restore the same runtime/hardware topology, reuse the

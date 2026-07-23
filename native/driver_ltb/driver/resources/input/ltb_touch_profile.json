@@ -48,50 +48,44 @@
       "touch": true,
       "order": 2
     },
-    "/input/menu": {
-      "binding_image_point": [128, 82],
-      "type": "button",
-      "click": true,
-      "order": 3
-    },
     "/input/trigger": {
       "binding_image_point": [206, 54],
       "type": "trigger",
       "value": true,
       "click": true,
       "touch": true,
-      "order": 4
+      "order": 3
     },
     "/input/grip": {
       "binding_image_point": [188, 128],
       "type": "trigger",
       "value": true,
-      "order": 5
+      "order": 4
     },
     "/input/thumbstick": {
       "binding_image_point": [108, 104],
       "type": "joystick",
       "click": true,
       "touch": true,
-      "order": 6
+      "order": 5
     },
     "/input/thumbrest": {
       "binding_image_point": [146, 108],
       "type": "button",
       "touch": true,
-      "order": 7
+      "order": 6
     },
     "/input/index_pointing": {
       "binding_image_point": [218, 88],
       "type": "button",
       "touch": true,
-      "order": 8
+      "order": 7
     },
     "/input/thumb_up": {
       "binding_image_point": [154, 56],
       "type": "button",
       "touch": true,
-      "order": 9
+      "order": 8
     },
     "/pose/raw": {
       "binding_image_point": [128, 96],
