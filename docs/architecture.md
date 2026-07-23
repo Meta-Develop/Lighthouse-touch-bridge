@@ -366,7 +366,16 @@ in calibration or profile code.
 ### Discovered device paths and settings ownership
 
 The OpenVR adapter reads `Prop_RegisteredDeviceType_String` and normalizes a
-valid `<driver>/<device>` value to `/devices/<driver>/<device>`. A fresh VMT
+valid `<driver>/<device>` value to `/devices/<driver>/<device>`. It reads the
+remaining device metadata independently, so an unavailable registered-device
+type does not discard observed manufacturer, model, controller, input-profile,
+version, or tracking-system evidence. `Prop_TrackingSystemName_String` and
+`Prop_ActualTrackingSystemName_String` remain separate observations: the latter
+is not collapsed into, or discarded in favor of, the former. Active-HMD policy
+uses both for positive Lighthouse evidence and runtime-exclusion vetoes. The
+driver ID remains unavailable when it cannot be parsed from a canonical
+registered-device path and is never inferred from those other properties. A
+fresh VMT
 slot might not exist in OpenVR until its first enabled Joint command, so the
 coordinator does not require a descriptor before activation. It uses the
 bounded VMT slot's canonical path only to remove a stale exact LTB mapping,
@@ -957,7 +966,7 @@ This gives each role one explicit acceptance rule:
 | --- | --- | --- |
 | Meta Touch input controller | A connected input controller has a left/right role and matches a known Meta Touch family. When OpenVR supplies an input-profile path, it must also match that family. Orientation-only calibration may proceed when controller position is unavailable; full 6DoF still requires valid position samples. | Current controller runtime, family/model, optional input profile, role, and optional exact serial are runtime observations. A stored profile cannot make an unknown live descriptor supported. |
 | Physical Lighthouse pose source | `CanUseAsPhysicalPoseSource` is true. A connected positional `GenericTracker` can satisfy this without a Vive-specific or Tundra-specific model check. | Exact stable serial remains the profile and reconnect key. VMT registered paths are marked virtual and excluded even though VMT also enumerates as `GenericTracker`, preventing a virtual output from following itself. |
-| Lighthouse HMD | The connected `HeadMountedDisplay` at transient OpenVR index `0` must report positive Lighthouse driver or tracking-system evidence. No manufacturer or model allowlist is used, and LTB does not use an HMD as a physical controller-pose source. | SteamVR chooses the active display. `wizard` and `daily` reject Quest/ALVR/Meta/Oculus evidence and fail closed on missing, duplicate, conflicting, or unknown active-HMD evidence. Windows verification must still prove each real HMD/runtime combination. |
+| Lighthouse HMD | The connected `HeadMountedDisplay` at transient OpenVR index `0` must report positive Lighthouse driver, tracking-system, or actual-tracking-system evidence. No manufacturer or model allowlist is used, and LTB does not use an HMD as a physical controller-pose source. | SteamVR chooses the active display. `wizard` and `daily` reject Quest/ALVR/Meta/Oculus evidence across both tracking-system observations and fail closed on missing, duplicate, conflicting, or unknown active-HMD evidence. Windows verification must still prove each real HMD/runtime combination. |
 
 Stable identity and capability answer different questions. The exact serial
 answers whether a re-enumerated device is the same physical mount; capability
