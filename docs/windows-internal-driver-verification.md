@@ -116,8 +116,9 @@ still does not replace the connected-hardware gates.
   or ambiguous/missing selected tracker in controlled tests and confirm
   readiness fails closed and publication remains neutral.
 - [ ] With saved profiles, connect five raw Lighthouse trackers (the two
-  selected controller trackers plus three full-body trackers) and confirm both
-  LTB controllers remain active; connect/disconnect or re-index only the three
+  selected controller trackers plus three full-body trackers), press **Start**,
+  and confirm the exact left/right pair is reused without capture and both LTB
+  controllers remain active; connect/disconnect or re-index only the three
   unrelated trackers and confirm neither selected hand is neutralized.
 - [ ] Confirm the raw tracker observations use the intended uncalibrated/raw
   tracking universe and stable serial identities through device-index churn.
@@ -185,12 +186,18 @@ still does not replace the connected-hardware gates.
   translation and a direct reason rather than claiming full 6DoF.
 - [ ] Produce poor rotation coverage/quality and confirm calibration fails
   rather than treating it as a rotation-only success.
-- [ ] Stop and start without moving either mount; confirm both exact schema-2
-  profiles are reused with their original selected mode, lag, quality, tracker
-  identity, and `ltb_touch` driver profile.
-- [ ] Move or swap a mount and confirm the affected profile is rejected or
-  recalibration is requested rather than silently reusing an incompatible
-  transform.
+- [ ] Stop and start without moving either mount, including with three
+  unrelated trackers still connected; confirm both exact schema-2 profiles are
+  reused with their original selected mode, lag, quality, tracker identity, and
+  `ltb_touch` driver profile.
+- [ ] Move or swap a mount, stop the session, and press **Calibrate /
+  Recalibrate** with five tracker candidates; confirm fresh calibration is
+  refused with exact-two remediation even though saved profiles exist. Power
+  off the three unrelated trackers and press it again; confirm both hands are
+  captured instead of reusing the saved pair. Force the right-hand attempt to
+  fail after left validation and confirm the complete prior pair and unrelated
+  store entries remain unchanged, then repeat successfully and confirm the new
+  pair replaces the prior pair together.
 
 ## Feed, reconnect, watchdog, and shutdown fail-safe
 

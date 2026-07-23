@@ -78,6 +78,11 @@ translation only when observable, saves schema-2 profiles, then starts a fresh
 IPC feed. No position or poor translation observability may validly select
 rotation-only; bad rotation coverage or quality is a failure.
 
+Explicit recalibration stages both hand results against a private copy of the
+profile store. The complete pair replaces the saved pair only after both hands
+validate; a failed attempt leaves the prior pair and unrelated profiles
+unchanged.
+
 The GUI presents readiness, per-hand tracker/input/publication state, neutral
 reasons, the shared calibration phase, and feed health. The structured JSONL
 log is the durable evidence surface for exact staged/loaded identities, stable
