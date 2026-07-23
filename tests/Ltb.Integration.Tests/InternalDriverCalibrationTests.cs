@@ -393,6 +393,140 @@ public sealed class InternalDriverCalibrationTests
         }
     }
 
+    [Fact]
+    public void ExplicitCalibrationTransactionLeavesPriorPairUntouchedWhenRightValidationFails()
+    {
+        WithTemporaryProfilePath(profilePath =>
+        {
+            var priorLeft = Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "LHR-LEFT",
+                profileName: "Prior left");
+            var priorRight = Profile(
+                hand: ControllerHand.Right,
+                trackerSerial: "LHR-RIGHT",
+                profileName: "Prior right");
+            var unrelated = Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "FBT-CHEST",
+                profileName: "Unrelated profile");
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore([priorLeft, priorRight, unrelated]));
+            var originalBytes = File.ReadAllBytes(profilePath);
+            var replacementTime = CreatedUtc.AddHours(1);
+
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                ProductionInternalDriverSessionRuntime.RunExplicitProfileStoreTransaction<object>(
+                    profilePath,
+                    stagedProfilePath =>
+                    {
+                        var calibration = new InternalDriverCalibration(
+                            stagedProfilePath,
+                            () => replacementTime);
+                        var left = calibration.CalibrateAndSave(
+                            new InternalDriverCalibrationContext(
+                                MetaLinkHand.Left,
+                                "LHR-LEFT",
+                                "Quest 2 Touch")
+                            {
+                                ExplicitRequest = true,
+                            },
+                            SyntheticCapture(MetaLinkHand.Left, "LHR-LEFT"));
+                        Assert.True(left.Success, left.Diagnostic);
+                        Assert.Equal(
+                            replacementTime,
+                            CalibrationProfileFile.LoadStore(stagedProfilePath)
+                                .FindCandidateProfile("LHR-LEFT", ControllerHand.Left)!
+                                .CreatedUtc);
+
+                        var right = calibration.CalibrateAndSave(
+                            new InternalDriverCalibrationContext(
+                                MetaLinkHand.Right,
+                                "LHR-RIGHT",
+                                "Quest 2 Touch")
+                            {
+                                ExplicitRequest = true,
+                            },
+                            RejectedCapture(MetaLinkHand.Right, "LHR-RIGHT"));
+                        Assert.False(right.Success);
+                        throw new InvalidOperationException(right.Diagnostic);
+                    }));
+
+            Assert.Contains("Right calibration rejected", error.Message, StringComparison.Ordinal);
+            Assert.Equal(originalBytes, File.ReadAllBytes(profilePath));
+            var retained = CalibrationProfileFile.LoadStore(profilePath);
+            Assert.Equal("Prior left", retained.FindCandidateProfile(
+                "LHR-LEFT",
+                ControllerHand.Left)!.ProfileName);
+            Assert.Equal("Prior right", retained.FindCandidateProfile(
+                "LHR-RIGHT",
+                ControllerHand.Right)!.ProfileName);
+            Assert.Equal("Unrelated profile", retained.FindCandidateProfile(
+                "FBT-CHEST",
+                ControllerHand.Left)!.ProfileName);
+            Assert.Empty(ExplicitCalibrationStageFiles(profilePath));
+        });
+    }
+
+    [Fact]
+    public void ExplicitCalibrationTransactionCommitsBothProfilesAndPreservesUnrelatedEntries()
+    {
+        WithTemporaryProfilePath(profilePath =>
+        {
+            var priorLeft = Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "LHR-LEFT",
+                profileName: "Prior left");
+            var priorRight = Profile(
+                hand: ControllerHand.Right,
+                trackerSerial: "LHR-RIGHT",
+                profileName: "Prior right");
+            var unrelated = Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "FBT-CHEST",
+                profileName: "Unrelated profile");
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore([priorLeft, priorRight, unrelated]));
+            var replacementLeft = Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "LHR-LEFT",
+                profileName: "Replacement left",
+                createdUtc: CreatedUtc.AddHours(1));
+            var replacementRight = Profile(
+                hand: ControllerHand.Right,
+                trackerSerial: "LHR-RIGHT",
+                profileName: "Replacement right",
+                createdUtc: CreatedUtc.AddHours(1));
+
+            var result = ProductionInternalDriverSessionRuntime
+                .RunExplicitProfileStoreTransaction(
+                    profilePath,
+                    stagedProfilePath =>
+                    {
+                        var staged = CalibrationProfileFile.LoadStore(stagedProfilePath)
+                            .Upsert(replacementLeft)
+                            .Upsert(replacementRight);
+                        CalibrationProfileFile.SaveStore(stagedProfilePath, staged);
+                        return "committed";
+                    });
+
+            Assert.Equal("committed", result);
+            var committed = CalibrationProfileFile.LoadStore(profilePath);
+            Assert.Equal("Replacement left", committed.FindCandidateProfile(
+                "LHR-LEFT",
+                ControllerHand.Left)!.ProfileName);
+            Assert.Equal("Replacement right", committed.FindCandidateProfile(
+                "LHR-RIGHT",
+                ControllerHand.Right)!.ProfileName);
+            Assert.Equal("Unrelated profile", committed.FindCandidateProfile(
+                "FBT-CHEST",
+                ControllerHand.Left)!.ProfileName);
+            Assert.Empty(ExplicitCalibrationStageFiles(profilePath));
+        });
+    }
+
     [Theory]
     [InlineData("different-runtime", "Quest 2 Touch", null)]
     [InlineData("meta_link_libovr", "Different Touch Model", null)]
@@ -728,6 +862,24 @@ public sealed class InternalDriverCalibrationTests
         return new MetaLinkCalibrationCapture(hand, trackerSerial, meta, trackers);
     }
 
+    private static MetaLinkCalibrationCapture RejectedCapture(
+        MetaLinkHand hand,
+        string trackerSerial)
+    {
+        var meta = Enumerable.Range(0, 40)
+            .Select(index => MetaSample(
+                hand,
+                1d + (index / 90d),
+                RigidTransform.Identity))
+            .ToArray();
+        var trackers = Enumerable.Range(0, 40)
+            .Select(index => TrackerSample(
+                1d + (index / 90d),
+                RigidTransform.Identity))
+            .ToArray();
+        return new MetaLinkCalibrationCapture(hand, trackerSerial, meta, trackers);
+    }
+
     private static RigidTransform TrackerPose(double time)
     {
         var seconds = (float)time;
@@ -800,9 +952,11 @@ public sealed class InternalDriverCalibrationTests
         string controllerModel = "Quest 2 Touch",
         string? controllerIdentity = null,
         ControllerHand hand = ControllerHand.Left,
-        string trackerSerial = "LHR-LEFT") => new(
+        string trackerSerial = "LHR-LEFT",
+        string? profileName = null,
+        DateTimeOffset? createdUtc = null) => new(
         CalibrationProfileSchema.CurrentVersion,
-        $"Synthetic internal-driver {hand} profile",
+        profileName ?? $"Synthetic internal-driver {hand} profile",
         hand,
         controllerRuntime,
         controllerModel,
@@ -815,7 +969,13 @@ public sealed class InternalDriverCalibrationTests
         new TrackerToControllerTransform(Vector3.Zero, Quaternion.Identity),
         12d,
         new CalibrationProfileQuality(1d, null, null, 0.95d),
-        CreatedUtc);
+        createdUtc ?? CreatedUtc);
+
+    private static string[] ExplicitCalibrationStageFiles(string profilePath) =>
+        Directory.GetFiles(
+            Path.GetDirectoryName(profilePath)!,
+            $".{Path.GetFileName(profilePath)}.explicit-calibration.*",
+            SearchOption.TopDirectoryOnly);
 
     private static MetaLinkRuntimeSnapshot StoppedMeta() => new(
         0,
