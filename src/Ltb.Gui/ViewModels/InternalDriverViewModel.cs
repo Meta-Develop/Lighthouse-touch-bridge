@@ -657,7 +657,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         }
 
         return $"Stable ID: {hmd.StableDeviceId}; device path: {hmd.DevicePath}; " +
-            $"driver: {hmd.DriverId}; tracking system: {Optional(hmd.TrackingSystemName)}; " +
+            $"driver: {Optional(hmd.DriverId)}; tracking system: {Optional(hmd.TrackingSystemName)}; " +
+            $"actual tracking system: {Optional(hmd.ActualTrackingSystemName)}; " +
             $"manufacturer: {Optional(hmd.ManufacturerName)}; model: {Optional(hmd.ModelNumber)}.";
     }
 

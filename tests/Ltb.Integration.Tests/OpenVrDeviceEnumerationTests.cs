@@ -196,6 +196,39 @@ public sealed class OpenVrDeviceEnumerationTests
     }
 
     [Fact]
+    public void MetadataCompositionPreservesPrimaryAndActualTrackingEvidenceIndependently()
+    {
+        var fallback = OpenVrDeviceMetadataComposer.Compose(
+            "openvr://device/HMD-BEYOND",
+            trackingSystemName: null,
+            actualTrackingSystemName: "lighthouse",
+            manufacturerName: "Bigscreen",
+            modelNumber: "Bigscreen Beyond",
+            controllerType: null,
+            inputProfilePath: null,
+            driverVersion: "hmd-build");
+        var primary = OpenVrDeviceMetadataComposer.Compose(
+            "/devices/vendor/HMD",
+            trackingSystemName: "primary-tracking",
+            actualTrackingSystemName: "actual-tracking",
+            manufacturerName: null,
+            modelNumber: null,
+            controllerType: null,
+            inputProfilePath: null,
+            driverVersion: null);
+
+        Assert.Null(fallback.DriverId);
+        Assert.Null(fallback.TrackingSystemName);
+        Assert.Equal("lighthouse", fallback.ActualTrackingSystemName);
+        Assert.Equal("Bigscreen", fallback.ManufacturerName);
+        Assert.Equal("Bigscreen Beyond", fallback.ModelNumber);
+        Assert.Equal("hmd-build", fallback.DriverVersion);
+        Assert.Equal("vendor", primary.DriverId);
+        Assert.Equal("primary-tracking", primary.TrackingSystemName);
+        Assert.Equal("actual-tracking", primary.ActualTrackingSystemName);
+    }
+
+    [Fact]
     public void SimulatedEnumerationIsDeterministicAndRejectsDuplicateSerials()
     {
         var trackerB = Descriptor("tracker-b", 1);

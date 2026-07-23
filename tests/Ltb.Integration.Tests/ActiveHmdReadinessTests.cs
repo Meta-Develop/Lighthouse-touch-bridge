@@ -25,6 +25,44 @@ public sealed class ActiveHmdReadinessTests
     }
 
     [Fact]
+    public void ConnectedLighthouseHmdWithUnavailableDriverPassesOnTrackingSystemEvidence()
+    {
+        var result = ActiveHmdReadiness.Evaluate(
+        [
+            Descriptor(
+                0,
+                SteamVrDeviceCategory.HeadMountedDisplay,
+                metadata: new SteamVrDeviceMetadata(
+                    driverId: null,
+                    trackingSystemName: "lighthouse",
+                    manufacturerName: "Bigscreen",
+                    modelNumber: "Beyond 2e",
+                    controllerType: null)),
+        ]);
+
+        Assert.True(result.IsReady, result.Diagnostic);
+    }
+
+    [Fact]
+    public void VendorPrimaryWithLighthouseActualTrackingEvidencePasses()
+    {
+        var metadata = OpenVrDeviceMetadataComposer.Compose(
+            "openvr://device/HMD-BEYOND",
+            trackingSystemName: "vendor_tracking",
+            actualTrackingSystemName: "lighthouse",
+            manufacturerName: "Bigscreen",
+            modelNumber: "Beyond 2e",
+            controllerType: null,
+            inputProfilePath: null,
+            driverVersion: "vendor-build");
+
+        var result = ActiveHmdReadiness.Evaluate(
+            [Descriptor(0, SteamVrDeviceCategory.HeadMountedDisplay, metadata: metadata)]);
+
+        Assert.True(result.IsReady, result.Diagnostic);
+    }
+
+    [Fact]
     public void QuestAlvrHmdAtIndexZeroFailsEvenWhenLighthouseHmdExistsElsewhere()
     {
         var devices = new[]
@@ -108,6 +146,84 @@ public sealed class ActiveHmdReadinessTests
     }
 
     [Fact]
+    public void UnavailableDriverWithMissingOrUnknownTrackingFailsClosed()
+    {
+        var missingTracking = ActiveHmdReadiness.Evaluate(
+        [
+            Descriptor(
+                0,
+                SteamVrDeviceCategory.HeadMountedDisplay,
+                metadata: new SteamVrDeviceMetadata(null, null, "Vendor", "HMD", null)),
+        ]);
+        var unknownTracking = ActiveHmdReadiness.Evaluate(
+        [
+            Descriptor(
+                0,
+                SteamVrDeviceCategory.HeadMountedDisplay,
+                metadata: new SteamVrDeviceMetadata(
+                    null,
+                    "future_tracking",
+                    "Vendor",
+                    "HMD",
+                    null)),
+        ]);
+
+        Assert.False(missingTracking.IsReady);
+        Assert.Contains("driver='unavailable'", missingTracking.Diagnostic);
+        Assert.False(unknownTracking.IsReady);
+        Assert.Contains("positive Lighthouse", unknownTracking.Diagnostic);
+        AssertRemediation(missingTracking);
+        AssertRemediation(unknownTracking);
+    }
+
+    [Fact]
+    public void DisallowedPrimaryOrActualTrackingEvidenceVetoesHmd()
+    {
+        var disallowedPrimary = OpenVrDeviceMetadataComposer.Compose(
+            "openvr://device/HMD-BEYOND",
+            trackingSystemName: "Oculus",
+            actualTrackingSystemName: "lighthouse",
+            manufacturerName: "Bigscreen",
+            modelNumber: "Beyond 2e",
+            controllerType: null,
+            inputProfilePath: null,
+            driverVersion: null);
+        var disallowedActual = OpenVrDeviceMetadataComposer.Compose(
+            "/devices/lighthouse/HMD-BEYOND",
+            trackingSystemName: "lighthouse",
+            actualTrackingSystemName: "Oculus",
+            manufacturerName: "Bigscreen",
+            modelNumber: "Beyond 2e",
+            controllerType: null,
+            inputProfilePath: null,
+            driverVersion: null);
+
+        var primaryResult = ActiveHmdReadiness.Evaluate(
+        [
+            Descriptor(
+                0,
+                SteamVrDeviceCategory.HeadMountedDisplay,
+                metadata: disallowedPrimary),
+        ]);
+        var actualResult = ActiveHmdReadiness.Evaluate(
+        [
+            Descriptor(
+                0,
+                SteamVrDeviceCategory.HeadMountedDisplay,
+                metadata: disallowedActual),
+        ]);
+
+        Assert.False(primaryResult.IsReady);
+        Assert.Contains("Quest/ALVR/Meta/Oculus", primaryResult.Diagnostic);
+        Assert.Contains("tracking_system='Oculus'", primaryResult.Diagnostic);
+        Assert.False(actualResult.IsReady);
+        Assert.Contains("Quest/ALVR/Meta/Oculus", actualResult.Diagnostic);
+        Assert.Contains("actual_tracking_system='Oculus'", actualResult.Diagnostic);
+        AssertRemediation(primaryResult);
+        AssertRemediation(actualResult);
+    }
+
+    [Fact]
     public void ConflictingAndDuplicateIndexZeroEvidenceFailsClosed()
     {
         var conflicting = ActiveHmdReadiness.Evaluate(
@@ -163,7 +279,8 @@ public sealed class ActiveHmdReadinessTests
         string manufacturer = "Vendor",
         string model = "Device",
         bool connected = true,
-        string? driverVersion = null)
+        string? driverVersion = null,
+        SteamVrDeviceMetadata? metadata = null)
     {
         var driverForPath = driver ?? "unknown";
         return new SteamVrDeviceDescriptor(
@@ -174,7 +291,7 @@ public sealed class ActiveHmdReadinessTests
             category,
             SteamVrControllerRole.None,
             connected,
-            driver is null
+            metadata ?? (driver is null
                 ? null
                 : new SteamVrDeviceMetadata(
                     driver,
@@ -183,7 +300,7 @@ public sealed class ActiveHmdReadinessTests
                     model,
                     controllerType: null,
                     inputProfilePath: null,
-                    driverVersion: driverVersion));
+                    driverVersion: driverVersion)));
     }
 
     private static void AssertRemediation(ActiveHmdReadinessResult result)

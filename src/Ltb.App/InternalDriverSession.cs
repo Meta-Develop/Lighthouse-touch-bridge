@@ -1335,6 +1335,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             hmd.Identity.DevicePath,
             metadata.DriverId,
             metadata.TrackingSystemName,
+            metadata.ActualTrackingSystemName,
             metadata.ManufacturerName,
             metadata.ModelNumber);
     }

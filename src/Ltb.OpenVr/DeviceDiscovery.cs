@@ -28,7 +28,7 @@ public enum SteamVrControllerRole
 public sealed record SteamVrDeviceMetadata
 {
     public SteamVrDeviceMetadata(
-        string driverId,
+        string? driverId,
         string? trackingSystemName,
         string? manufacturerName,
         string? modelNumber,
@@ -45,7 +45,7 @@ public sealed record SteamVrDeviceMetadata
     }
 
     public SteamVrDeviceMetadata(
-        string driverId,
+        string? driverId,
         string? trackingSystemName,
         string? manufacturerName,
         string? modelNumber,
@@ -63,7 +63,7 @@ public sealed record SteamVrDeviceMetadata
     }
 
     public SteamVrDeviceMetadata(
-        string driverId,
+        string? driverId,
         string? trackingSystemName,
         string? manufacturerName,
         string? modelNumber,
@@ -71,8 +71,7 @@ public sealed record SteamVrDeviceMetadata
         string? inputProfilePath,
         string? driverVersion)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(driverId);
-        DriverId = driverId;
+        DriverId = NormalizeOptional(driverId);
         TrackingSystemName = NormalizeOptional(trackingSystemName);
         ManufacturerName = NormalizeOptional(manufacturerName);
         ModelNumber = NormalizeOptional(modelNumber);
@@ -81,9 +80,21 @@ public sealed record SteamVrDeviceMetadata
         DriverVersion = NormalizeOptional(driverVersion);
     }
 
-    public string DriverId { get; }
+    /// <summary>
+    /// Driver identity parsed from the registered-device path when OpenVR
+    /// reports a canonical path. This remains unavailable when that property
+    /// is absent or invalid; it is never inferred from other metadata.
+    /// </summary>
+    public string? DriverId { get; }
 
     public string? TrackingSystemName { get; }
+
+    /// <summary>
+    /// Literal local tracking-system identity reported by OpenVR. This is kept
+    /// separate from <see cref="TrackingSystemName"/> so aliases and the
+    /// underlying runtime observation retain distinct provenance.
+    /// </summary>
+    public string? ActualTrackingSystemName { get; internal init; }
 
     public string? ManufacturerName { get; }
 

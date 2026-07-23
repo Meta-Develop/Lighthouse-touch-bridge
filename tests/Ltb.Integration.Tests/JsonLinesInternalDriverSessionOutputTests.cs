@@ -170,6 +170,9 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
             Assert.True(root.TryGetProperty("lighthouse_hmd", out var hmd));
             Assert.Equal("HMD-LIGHTHOUSE", hmd.GetProperty("stable_device_id").GetString());
             Assert.Equal(
+                "lighthouse",
+                hmd.GetProperty("actual_tracking_system_name").GetString());
+            Assert.Equal(
                 "RotationOnly",
                 root.GetProperty("left").GetProperty("calibration").GetProperty("selected_mode").GetString());
             Assert.Equal(
@@ -274,6 +277,7 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
                 "HMD-LIGHTHOUSE",
                 "/devices/HMD-LIGHTHOUSE",
                 "lighthouse",
+                "vendor_tracking",
                 "lighthouse",
                 "Example",
                 "Lighthouse HMD"),
