@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(driver_ltb VERSION 0.1.0 LANGUAGES CXX)
+project(driver_ltb VERSION 0.1.1 LANGUAGES CXX)
 
 option(LTB_BUILD_OPENVR_DRIVER "Build the Windows OpenVR driver shell" ${WIN32})
 option(LTB_BUILD_TESTS "Build the portable driver-core tests" ON)

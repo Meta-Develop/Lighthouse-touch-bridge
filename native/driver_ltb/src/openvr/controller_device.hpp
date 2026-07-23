@@ -30,7 +30,7 @@ private:
         PrimaryTouch,
         SecondaryClick,
         SecondaryTouch,
-        MenuClick,
+        SystemClick,
         TriggerValue,
         TriggerClick,
         TriggerTouch,
