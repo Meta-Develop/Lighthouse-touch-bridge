@@ -22,6 +22,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private readonly ObservableCollection<ReadinessGroupViewModel> _readinessGroups = [];
     private long _nextRunGeneration;
     private long _presentedRunGeneration;
+    private long _nextSnapshotSequence;
+    private long _presentedSnapshotSequence;
     private bool _runActive;
     private bool _removeDriverActive;
     private bool _closing;
@@ -58,13 +60,17 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         Action<Action> dispatch,
         Func<IInternalDriverRemover>? removerFactory = null,
         IGuiTimeSource? timeSource = null,
+        IGuiDelayScheduler? delayScheduler = null,
         GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime)
     {
         _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
         _removerFactory = removerFactory ?? (static () => InternalDriverRemoval.Create());
         _timeSource = timeSource ?? SystemGuiTimeSource.Instance;
-        _snapshotCoalescer = new SnapshotPresentationCoalescer(_timeSource);
+        _snapshotCoalescer = new SnapshotPresentationCoalescer(
+            _timeSource,
+            delayScheduler ?? SystemGuiDelayScheduler.Instance,
+            QueueTrailingSnapshot);
         ReadinessRows = new ReadOnlyObservableCollection<ReadinessRowViewModel>(_readinessRows);
         ReadinessGroups = new ReadOnlyObservableCollection<ReadinessGroupViewModel>(_readinessGroups);
         CalibrationGuide = new CalibrationGuideViewModel(_timeSource);
@@ -416,11 +422,13 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         EventHandler<InternalDriverSessionSnapshot> snapshotHandler =
             (_, snapshot) => DispatchSnapshot(generation, snapshot);
         session.SnapshotChanged += snapshotHandler;
-        _snapshotCoalescer.Reset(generation, session.CurrentSnapshot);
+        var initialSnapshot = session.CurrentSnapshot;
+        var initialSequence = NextSnapshotSequence();
+        _snapshotCoalescer.Reset(generation, initialSnapshot);
         DebugDiagnostics.ResetForRun();
         _dispatch(() =>
         {
-            if (!PresentGeneration(generation, session.CurrentSnapshot))
+            if (!PresentGeneration(generation, initialSequence, initialSnapshot))
             {
                 return;
             }
@@ -471,9 +479,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             }
 
             var finalSnapshot = session.CurrentSnapshot;
+            var finalSequence = NextSnapshotSequence();
+            _snapshotCoalescer.CancelPending(generation);
             _dispatch(() =>
             {
-                if (!PresentGeneration(generation, finalSnapshot))
+                if (!PresentGeneration(generation, finalSequence, finalSnapshot))
                 {
                     return;
                 }
@@ -558,6 +568,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             _closing = true;
         }
+        _snapshotCoalescer.Dispose();
 
         _dispatch(() =>
         {
@@ -583,22 +594,43 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private void DispatchSnapshot(long generation, InternalDriverSessionSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        if (!_snapshotCoalescer.ShouldPresent(generation, snapshot))
+        var sequence = NextSnapshotSequence();
+        if (!_snapshotCoalescer.ShouldPresent(generation, sequence, snapshot))
         {
             return;
         }
 
-        _dispatch(() => _ = PresentGeneration(generation, snapshot));
+        QueueSnapshot(generation, sequence, snapshot);
     }
 
-    private bool PresentGeneration(long generation, InternalDriverSessionSnapshot snapshot)
+    private void QueueTrailingSnapshot(
+        long generation,
+        long sequence,
+        InternalDriverSessionSnapshot snapshot) =>
+        QueueSnapshot(generation, sequence, snapshot);
+
+    private void QueueSnapshot(
+        long generation,
+        long sequence,
+        InternalDriverSessionSnapshot snapshot) =>
+        _dispatch(() => _ = PresentGeneration(generation, sequence, snapshot));
+
+    private long NextSnapshotSequence() => Interlocked.Increment(ref _nextSnapshotSequence);
+
+    private bool PresentGeneration(
+        long generation,
+        long sequence,
+        InternalDriverSessionSnapshot snapshot)
     {
-        if (generation < _presentedRunGeneration)
+        if (generation < _presentedRunGeneration ||
+            (generation == _presentedRunGeneration &&
+             sequence <= _presentedSnapshotSequence))
         {
             return false;
         }
 
         _presentedRunGeneration = generation;
+        _presentedSnapshotSequence = sequence;
         ApplySnapshot(snapshot);
         return true;
     }
@@ -1069,13 +1101,18 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 capture.RotationProgress,
                 capture.RotationReady);
             PositionProgress = capture.PositionProgress;
-            PositionProgressStatus = FormatCaptureProgress(
+            PositionProgressStatus = FormatPositionAvailability(
                 capture.PositionProgress,
                 capture.PositionReady);
         }
 
         private static string FormatCaptureProgress(double progress, bool ready) =>
             $"{FormatPercent(progress)} - {(ready ? "ready" : "collecting")}";
+
+        private static string FormatPositionAvailability(double progress, bool available) =>
+            available
+                ? $"{FormatPercent(progress)} observed - available for optional translation evaluation"
+                : $"{FormatPercent(progress)} observed - optional; rotation-only remains normal";
     }
 }
 

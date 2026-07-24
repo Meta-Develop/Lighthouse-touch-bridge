@@ -112,7 +112,9 @@ public sealed class InternalDriverViewModelTests
         Assert.Equal(0.4d, viewModel.LeftHand.RotationProgress);
         Assert.Equal("40.0% - collecting", viewModel.LeftHand.RotationProgressStatus);
         Assert.Equal(0.2d, viewModel.LeftHand.PositionProgress);
-        Assert.Equal("20.0% - collecting", viewModel.LeftHand.PositionProgressStatus);
+        Assert.Equal(
+            "20.0% observed - optional; rotation-only remains normal",
+            viewModel.LeftHand.PositionProgressStatus);
         Assert.Equal(1d, viewModel.RightHand.RotationProgress);
         Assert.Equal("100.0% - ready", viewModel.RightHand.RotationProgressStatus);
         Assert.Equal(0.75d, viewModel.RightHand.PositionProgress);
@@ -204,7 +206,9 @@ public sealed class InternalDriverViewModelTests
         Assert.Equal("30", viewModel.RightHand.CaptureSamples);
         Assert.Equal(0.75d, viewModel.RightHand.RotationProgress);
         Assert.Equal(1d, viewModel.RightHand.PositionProgress);
-        Assert.Equal("100.0% - ready", viewModel.RightHand.PositionProgressStatus);
+        Assert.Equal(
+            "100.0% observed - available for optional translation evaluation",
+            viewModel.RightHand.PositionProgressStatus);
 
         session.AllowStop();
         await viewModel.StopAsync();
@@ -640,6 +644,9 @@ public sealed class InternalDriverViewModelTests
         Assert.Equal(
             DebugDiagnosticsViewModel.MaximumSamples,
             diagnostics.RightTrackerAge.Count);
+        Assert.Equal(
+            DebugDiagnosticsViewModel.MaximumSamples,
+            diagnostics.IterationInterval.Count);
         Assert.True(diagnostics.LeftTrackerAge[0].ElapsedSeconds > 0d);
 
         diagnostics.ResetForRun();
@@ -650,13 +657,77 @@ public sealed class InternalDriverViewModelTests
         diagnostics.IsEnabled = false;
         Assert.Equal(0, diagnostics.RetainedSampleCount);
         Assert.Empty(diagnostics.LeftFrozenLag);
+        Assert.Empty(diagnostics.LeftTrackerHostIngressAge);
+    }
+
+    [Fact]
+    public void TimingHistoryPreservesLowerBoundValuesNullGapsAndTenHertzLimit()
+    {
+        var time = new ManualGuiTimeSource();
+        var diagnostics = new DebugDiagnosticsViewModel(time)
+        {
+            IsEnabled = true,
+        };
+        var timing = TimingSnapshot(
+            iterationMilliseconds: 11d,
+            observeMilliseconds: 2d,
+            publicationMilliseconds: 3d,
+            leftIngressMilliseconds: 4d,
+            rightIngressMilliseconds: null);
+        var snapshot = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            timing: timing);
+
+        Assert.True(diagnostics.TrySample(snapshot, force: true));
+        Assert.Equal(11d, diagnostics.IterationInterval[^1].Value);
+        Assert.Equal(2d, diagnostics.ObserveDuration[^1].Value);
+        Assert.Equal(3d, diagnostics.PairPublicationDuration[^1].Value);
+        Assert.Equal(4d, diagnostics.LeftTrackerHostIngressAge[^1].Value);
+        Assert.Null(diagnostics.RightTrackerHostIngressAge[^1].Value);
+
+        time.Advance(TimeSpan.FromMilliseconds(99));
+        Assert.False(diagnostics.TrySample(snapshot with
+        {
+            Timing = TimingSnapshot(12d, 5d, 6d, 7d, 8d),
+        }));
+        Assert.Single(diagnostics.IterationInterval);
+
+        time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.True(diagnostics.TrySample(snapshot with
+        {
+            Timing = TimingSnapshot(12d, 5d, 6d, 7d, 8d),
+        }));
+        Assert.Equal(12d, diagnostics.IterationInterval[^1].Value);
+        Assert.Equal(8d, diagnostics.RightTrackerHostIngressAge[^1].Value);
+
+        time.Advance(DebugDiagnosticsViewModel.SampleInterval);
+        Assert.True(diagnostics.TrySample(snapshot with { Timing = null }));
+        Assert.Null(diagnostics.IterationInterval[^1].Value);
+        Assert.Null(diagnostics.ObserveDuration[^1].Value);
+        Assert.Null(diagnostics.PairPublicationDuration[^1].Value);
+        Assert.Null(diagnostics.LeftTrackerHostIngressAge[^1].Value);
+        Assert.Null(diagnostics.RightTrackerHostIngressAge[^1].Value);
+
+        diagnostics.ResetForRun();
+        Assert.Empty(diagnostics.IterationInterval);
+        Assert.Empty(diagnostics.ObserveDuration);
+        Assert.Empty(diagnostics.PairPublicationDuration);
+        Assert.Empty(diagnostics.LeftTrackerHostIngressAge);
+        Assert.Empty(diagnostics.RightTrackerHostIngressAge);
     }
 
     [Fact]
     public void ActiveSnapshotPresentationIsCappedButMeaningfulChangesAreImmediate()
     {
         var time = new ManualGuiTimeSource();
-        var coalescer = new SnapshotPresentationCoalescer(time);
+        var scheduler = new ManualGuiDelayScheduler(time);
+        var trailing = new List<(long Generation, long Sequence, InternalDriverSessionSnapshot Snapshot)>();
+        using var coalescer = new SnapshotPresentationCoalescer(
+            time,
+            scheduler,
+            (generation, sequence, snapshot) =>
+                trailing.Add((generation, sequence, snapshot)));
         var active = Snapshot(
             InternalDriverSessionState.Active,
             allReady: true,
@@ -671,21 +742,141 @@ public sealed class InternalDriverViewModelTests
                 LastSuccessfulSequence = 43,
                 LastSuccessfulSendAge = TimeSpan.FromMilliseconds(13),
             },
+            Timing = TimingSnapshot(11d, 2d, 3d, 4d, 5d),
         };
-        Assert.False(coalescer.ShouldPresent(7, fastTelemetryOnly));
+        Assert.False(coalescer.ShouldPresent(7, 1, fastTelemetryOnly));
+        Assert.Equal(1, scheduler.ActiveCount);
+        Assert.Empty(trailing);
 
         time.Advance(SnapshotPresentationCoalescer.ActivePresentationInterval);
-        Assert.True(coalescer.ShouldPresent(7, fastTelemetryOnly));
+        scheduler.RunDue();
+        var flush = Assert.Single(trailing);
+        Assert.Equal(7, flush.Generation);
+        Assert.Equal(1, flush.Sequence);
+        Assert.Same(fastTelemetryOnly, flush.Snapshot);
+        Assert.Equal(0, scheduler.ActiveCount);
+
         Assert.True(coalescer.ShouldPresent(
             7,
+            2,
             fastTelemetryOnly with { Diagnostic = "A changed diagnostic." }));
         Assert.True(coalescer.ShouldPresent(
             7,
+            3,
             fastTelemetryOnly with { Feed = fastTelemetryOnly.Feed with { LastError = "pipe" } }));
         Assert.True(coalescer.ShouldPresent(
             7,
+            4,
             fastTelemetryOnly with { State = InternalDriverSessionState.Faulted }));
-        Assert.True(coalescer.ShouldPresent(8, fastTelemetryOnly));
+        Assert.True(coalescer.ShouldPresent(8, 5, fastTelemetryOnly));
+    }
+
+    [Fact]
+    public void ActiveTrailingFlushKeepsLatestTelemetryAndCannotOutliveStopOrDispose()
+    {
+        var time = new ManualGuiTimeSource();
+        var scheduler = new ManualGuiDelayScheduler(time);
+        var trailing = new List<(long Sequence, InternalDriverSessionSnapshot Snapshot)>();
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready);
+        var coalescer = new SnapshotPresentationCoalescer(
+            time,
+            scheduler,
+            (_, sequence, snapshot) => trailing.Add((sequence, snapshot)));
+        coalescer.Reset(1, active);
+
+        var first = active with
+        {
+            Feed = active.Feed with { LastSuccessfulSequence = 43 },
+        };
+        var latest = active with
+        {
+            Feed = active.Feed with { LastSuccessfulSequence = 44 },
+            Timing = TimingSnapshot(12d, 3d, 4d, 5d, 6d),
+        };
+        Assert.False(coalescer.ShouldPresent(1, 10, first));
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        Assert.False(coalescer.ShouldPresent(1, 11, latest));
+        Assert.Equal(1, scheduler.ActiveCount);
+        Assert.False(coalescer.ShouldPresent(
+            0,
+            12,
+            active with { Diagnostic = "Stale generation diagnostic." }));
+        Assert.Equal(1, scheduler.ActiveCount);
+
+        time.Advance(TimeSpan.FromMilliseconds(60));
+        scheduler.RunDue();
+        var latestFlush = Assert.Single(trailing);
+        Assert.Equal(11, latestFlush.Sequence);
+        Assert.Same(latest, latestFlush.Snapshot);
+        Assert.Equal(
+            12d,
+            latestFlush.Snapshot.Timing?.IterationInterval?.TotalMilliseconds);
+
+        Assert.False(coalescer.ShouldPresent(1, 13, first));
+        var canceledByStop = scheduler.SingleActive;
+        Assert.True(coalescer.ShouldPresent(
+            1,
+            14,
+            active with { State = InternalDriverSessionState.Stopped }));
+        canceledByStop.InvokeEvenIfDisposed();
+        Assert.Single(trailing);
+
+        coalescer.Reset(2, active);
+        Assert.False(coalescer.ShouldPresent(2, 15, latest));
+        var canceledByDispose = scheduler.SingleActive;
+        coalescer.Dispose();
+        canceledByDispose.InvokeEvenIfDisposed();
+        Assert.Single(trailing);
+    }
+
+    [Fact]
+    public async Task ClosingCancelsTrailingFlushAndStillPresentsFinalStoppedSnapshot()
+    {
+        var time = new ManualGuiTimeSource();
+        var scheduler = new ManualGuiDelayScheduler(time);
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready);
+        var session = new ControlledSession(active);
+        await using var viewModel = new InternalDriverViewModel(
+            new QueueSessionFactory(session),
+            action => action(),
+            timeSource: time,
+            delayScheduler: scheduler);
+
+        var run = viewModel.StartAsync();
+        await session.Started;
+        session.Publish(active with
+        {
+            Feed = active.Feed with { LastSuccessfulSequence = 43 },
+        });
+        Assert.Equal(1, scheduler.ActiveCount);
+
+        var closing = viewModel.CloseAsync();
+        await session.StopEntered;
+        Assert.Equal(0, scheduler.ActiveCount);
+        session.AllowStop();
+        await closing;
+        await run;
+        scheduler.RunAllEvenIfDisposed();
+
+        Assert.Equal(InternalDriverSessionState.Stopped, viewModel.CurrentPhase);
+        Assert.False(viewModel.IsRunning);
+    }
+
+    [Fact]
+    public void DiagnosticSeriesOffsetsKeepSimultaneousBinaryStatesInDistinctBands()
+    {
+        Assert.Equal(7d, DiagnosticPlotMath.ApplySeriesOffset(1d, 6d));
+        Assert.Equal(5d, DiagnosticPlotMath.ApplySeriesOffset(1d, 4d));
+        Assert.Equal(3d, DiagnosticPlotMath.ApplySeriesOffset(1d, 2d));
+        Assert.Equal(1d, DiagnosticPlotMath.ApplySeriesOffset(1d, 0d));
+        Assert.Equal(6d, DiagnosticPlotMath.ApplySeriesOffset(0d, 6d));
+        Assert.Equal(4d, DiagnosticPlotMath.ApplySeriesOffset(0d, 4d));
     }
 
     [Theory]
@@ -757,6 +948,25 @@ public sealed class InternalDriverViewModelTests
             rotationReady: rotationProgress == 1d,
             positionReady: positionProgress == 1d);
 
+    private static InternalDriverTimingSnapshot TimingSnapshot(
+        double? iterationMilliseconds,
+        double observeMilliseconds,
+        double publicationMilliseconds,
+        double? leftIngressMilliseconds,
+        double? rightIngressMilliseconds) => new(
+            iterationMilliseconds is { } iteration
+                ? TimeSpan.FromMilliseconds(iteration)
+                : null,
+            TimeSpan.FromMilliseconds(observeMilliseconds),
+            TimeSpan.FromMilliseconds(publicationMilliseconds),
+            leftIngressMilliseconds is { } leftIngress
+                ? TimeSpan.FromMilliseconds(leftIngress)
+                : null,
+            rightIngressMilliseconds is { } rightIngress
+                ? TimeSpan.FromMilliseconds(rightIngress)
+                : null,
+            observedTrackerCount: 2);
+
     private static int CountOccurrences(string value, string needle)
     {
         var count = 0;
@@ -786,7 +996,8 @@ public sealed class InternalDriverViewModelTests
         InternalDriverCalibrationEvidence? leftCalibration = null,
         InternalDriverCalibrationEvidence? rightCalibration = null,
         InternalDriverCaptureEvidence? leftCapture = null,
-        InternalDriverCaptureEvidence? rightCapture = null)
+        InternalDriverCaptureEvidence? rightCapture = null,
+        InternalDriverTimingSnapshot? timing = null)
     {
         var readiness = new InternalDriverSessionReadiness(
             PlatformSupported: allReady,
@@ -849,6 +1060,7 @@ public sealed class InternalDriverViewModelTests
         {
             Driver = driver,
             LighthouseHmd = hmd,
+            Timing = timing,
         };
     }
 
@@ -1052,5 +1264,80 @@ public sealed class InternalDriverViewModelTests
             TimeSpan.FromTicks(endingTimestamp - startingTimestamp);
 
         public void Advance(TimeSpan duration) => _timestamp += duration.Ticks;
+    }
+
+    private sealed class ManualGuiDelayScheduler : IGuiDelayScheduler
+    {
+        private readonly ManualGuiTimeSource _timeSource;
+        private readonly List<ScheduledCallback> _callbacks = [];
+
+        public ManualGuiDelayScheduler(ManualGuiTimeSource timeSource)
+        {
+            _timeSource = timeSource;
+        }
+
+        public int ActiveCount => _callbacks.Count(callback => !callback.IsDisposed);
+
+        public ScheduledCallback SingleActive =>
+            Assert.Single(_callbacks.Where(callback => !callback.IsDisposed));
+
+        public IDisposable Schedule(TimeSpan delay, Action callback)
+        {
+            var scheduled = new ScheduledCallback(
+                _timeSource.GetTimestamp() + delay.Ticks,
+                callback);
+            _callbacks.Add(scheduled);
+            return scheduled;
+        }
+
+        public void RunDue()
+        {
+            foreach (var callback in _callbacks
+                         .Where(callback =>
+                             !callback.IsDisposed &&
+                             callback.DueTimestamp <= _timeSource.GetTimestamp())
+                         .ToArray())
+            {
+                callback.Invoke();
+            }
+        }
+
+        public void RunAllEvenIfDisposed()
+        {
+            foreach (var callback in _callbacks.ToArray())
+            {
+                callback.InvokeEvenIfDisposed();
+            }
+        }
+
+        public sealed class ScheduledCallback : IDisposable
+        {
+            private readonly Action _callback;
+
+            public ScheduledCallback(long dueTimestamp, Action callback)
+            {
+                DueTimestamp = dueTimestamp;
+                _callback = callback;
+            }
+
+            public long DueTimestamp { get; }
+
+            public bool IsDisposed { get; private set; }
+
+            public void Dispose() => IsDisposed = true;
+
+            public void Invoke()
+            {
+                if (IsDisposed)
+                {
+                    return;
+                }
+
+                IsDisposed = true;
+                _callback();
+            }
+
+            public void InvokeEvenIfDisposed() => _callback();
+        }
     }
 }

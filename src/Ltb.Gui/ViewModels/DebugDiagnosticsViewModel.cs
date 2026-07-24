@@ -28,6 +28,11 @@ public sealed class DebugDiagnosticsViewModel : ObservableObject
     private readonly FixedRingBuffer<DiagnosticPoint> _feedReconnecting = new(MaximumSamples);
     private readonly FixedRingBuffer<DiagnosticPoint> _leftFrozenLag = new(MaximumSamples);
     private readonly FixedRingBuffer<DiagnosticPoint> _rightFrozenLag = new(MaximumSamples);
+    private readonly FixedRingBuffer<DiagnosticPoint> _iterationInterval = new(MaximumSamples);
+    private readonly FixedRingBuffer<DiagnosticPoint> _observeDuration = new(MaximumSamples);
+    private readonly FixedRingBuffer<DiagnosticPoint> _pairPublicationDuration = new(MaximumSamples);
+    private readonly FixedRingBuffer<DiagnosticPoint> _leftTrackerHostIngressAge = new(MaximumSamples);
+    private readonly FixedRingBuffer<DiagnosticPoint> _rightTrackerHostIngressAge = new(MaximumSamples);
     private bool _isEnabled;
     private int _version;
     private long? _runStartedTimestamp;
@@ -85,6 +90,18 @@ public sealed class DebugDiagnosticsViewModel : ObservableObject
 
     public IReadOnlyList<DiagnosticPoint> RightFrozenLag => _rightFrozenLag;
 
+    public IReadOnlyList<DiagnosticPoint> IterationInterval => _iterationInterval;
+
+    public IReadOnlyList<DiagnosticPoint> ObserveDuration => _observeDuration;
+
+    public IReadOnlyList<DiagnosticPoint> PairPublicationDuration => _pairPublicationDuration;
+
+    public IReadOnlyList<DiagnosticPoint> LeftTrackerHostIngressAge =>
+        _leftTrackerHostIngressAge;
+
+    public IReadOnlyList<DiagnosticPoint> RightTrackerHostIngressAge =>
+        _rightTrackerHostIngressAge;
+
     public string FrozenLagSummary
     {
         get => _frozenLagSummary;
@@ -137,6 +154,7 @@ public sealed class DebugDiagnosticsViewModel : ObservableObject
                 : 0d);
         Add(_leftFrozenLag, elapsed, snapshot.Left.Calibration?.EstimatedLagMilliseconds);
         Add(_rightFrozenLag, elapsed, snapshot.Right.Calibration?.EstimatedLagMilliseconds);
+        AddTiming(snapshot.Timing, elapsed);
         FrozenLagSummary = FormatFrozenLagSummary(snapshot);
         Version++;
         OnPropertyChanged(nameof(RetainedSampleCount));
@@ -171,6 +189,29 @@ public sealed class DebugDiagnosticsViewModel : ObservableObject
         yield return _feedReconnecting;
         yield return _leftFrozenLag;
         yield return _rightFrozenLag;
+        yield return _iterationInterval;
+        yield return _observeDuration;
+        yield return _pairPublicationDuration;
+        yield return _leftTrackerHostIngressAge;
+        yield return _rightTrackerHostIngressAge;
+    }
+
+    private void AddTiming(InternalDriverTimingSnapshot? timing, double elapsed)
+    {
+        Add(_iterationInterval, elapsed, Milliseconds(timing?.IterationInterval));
+        Add(_observeDuration, elapsed, Milliseconds(timing?.ObserveDuration));
+        Add(
+            _pairPublicationDuration,
+            elapsed,
+            Milliseconds(timing?.PairPublicationDuration));
+        Add(
+            _leftTrackerHostIngressAge,
+            elapsed,
+            Milliseconds(timing?.LeftTrackerHostIngressAgeAtPublish));
+        Add(
+            _rightTrackerHostIngressAge,
+            elapsed,
+            Milliseconds(timing?.RightTrackerHostIngressAgeAtPublish));
     }
 
     private static void Add(

@@ -20,6 +20,14 @@ public sealed class DiagnosticsPlot : Control
         AvaloniaProperty.Register<DiagnosticsPlot, IReadOnlyList<DiagnosticPoint>?>(nameof(Series3));
     public static readonly StyledProperty<IReadOnlyList<DiagnosticPoint>?> Series4Property =
         AvaloniaProperty.Register<DiagnosticsPlot, IReadOnlyList<DiagnosticPoint>?>(nameof(Series4));
+    public static readonly StyledProperty<double> Series1OffsetProperty =
+        AvaloniaProperty.Register<DiagnosticsPlot, double>(nameof(Series1Offset));
+    public static readonly StyledProperty<double> Series2OffsetProperty =
+        AvaloniaProperty.Register<DiagnosticsPlot, double>(nameof(Series2Offset));
+    public static readonly StyledProperty<double> Series3OffsetProperty =
+        AvaloniaProperty.Register<DiagnosticsPlot, double>(nameof(Series3Offset));
+    public static readonly StyledProperty<double> Series4OffsetProperty =
+        AvaloniaProperty.Register<DiagnosticsPlot, double>(nameof(Series4Offset));
     public static readonly StyledProperty<int> RefreshVersionProperty =
         AvaloniaProperty.Register<DiagnosticsPlot, int>(nameof(RefreshVersion));
     public static readonly StyledProperty<double> MinimumProperty =
@@ -46,6 +54,10 @@ public sealed class DiagnosticsPlot : Control
             Series2Property,
             Series3Property,
             Series4Property,
+            Series1OffsetProperty,
+            Series2OffsetProperty,
+            Series3OffsetProperty,
+            Series4OffsetProperty,
             RefreshVersionProperty,
             MinimumProperty,
             MaximumProperty);
@@ -80,6 +92,30 @@ public sealed class DiagnosticsPlot : Control
     {
         get => GetValue(Series4Property);
         set => SetValue(Series4Property, value);
+    }
+
+    public double Series1Offset
+    {
+        get => GetValue(Series1OffsetProperty);
+        set => SetValue(Series1OffsetProperty, value);
+    }
+
+    public double Series2Offset
+    {
+        get => GetValue(Series2OffsetProperty);
+        set => SetValue(Series2OffsetProperty, value);
+    }
+
+    public double Series3Offset
+    {
+        get => GetValue(Series3OffsetProperty);
+        set => SetValue(Series3OffsetProperty, value);
+    }
+
+    public double Series4Offset
+    {
+        get => GetValue(Series4OffsetProperty);
+        set => SetValue(Series4OffsetProperty, value);
     }
 
     public int RefreshVersion
@@ -117,10 +153,38 @@ public sealed class DiagnosticsPlot : Control
         }
 
         var range = DetermineRange();
-        DrawSeries(context, plot, Series1, SeriesPens[0], range.Minimum, range.Maximum);
-        DrawSeries(context, plot, Series2, SeriesPens[1], range.Minimum, range.Maximum);
-        DrawSeries(context, plot, Series3, SeriesPens[2], range.Minimum, range.Maximum);
-        DrawSeries(context, plot, Series4, SeriesPens[3], range.Minimum, range.Maximum);
+        DrawSeries(
+            context,
+            plot,
+            Series1,
+            SeriesPens[0],
+            Series1Offset,
+            range.Minimum,
+            range.Maximum);
+        DrawSeries(
+            context,
+            plot,
+            Series2,
+            SeriesPens[1],
+            Series2Offset,
+            range.Minimum,
+            range.Maximum);
+        DrawSeries(
+            context,
+            plot,
+            Series3,
+            SeriesPens[2],
+            Series3Offset,
+            range.Minimum,
+            range.Maximum);
+        DrawSeries(
+            context,
+            plot,
+            Series4,
+            SeriesPens[3],
+            Series4Offset,
+            range.Minimum,
+            range.Maximum);
     }
 
     private (double Minimum, double Maximum) DetermineRange()
@@ -134,10 +198,10 @@ public sealed class DiagnosticsPlot : Control
 
         minimum = double.PositiveInfinity;
         maximum = double.NegativeInfinity;
-        FindRange(Series1, ref minimum, ref maximum);
-        FindRange(Series2, ref minimum, ref maximum);
-        FindRange(Series3, ref minimum, ref maximum);
-        FindRange(Series4, ref minimum, ref maximum);
+        FindRange(Series1, Series1Offset, ref minimum, ref maximum);
+        FindRange(Series2, Series2Offset, ref minimum, ref maximum);
+        FindRange(Series3, Series3Offset, ref minimum, ref maximum);
+        FindRange(Series4, Series4Offset, ref minimum, ref maximum);
 
         if (!double.IsFinite(minimum) || !double.IsFinite(maximum))
         {
@@ -156,6 +220,7 @@ public sealed class DiagnosticsPlot : Control
 
     private static void FindRange(
         IReadOnlyList<DiagnosticPoint>? series,
+        double offset,
         ref double minimum,
         ref double maximum)
     {
@@ -171,8 +236,9 @@ public sealed class DiagnosticsPlot : Control
                 continue;
             }
 
-            minimum = Math.Min(minimum, value);
-            maximum = Math.Max(maximum, value);
+            var offsetValue = DiagnosticPlotMath.ApplySeriesOffset(value, offset);
+            minimum = Math.Min(minimum, offsetValue);
+            maximum = Math.Max(maximum, offsetValue);
         }
     }
 
@@ -181,6 +247,7 @@ public sealed class DiagnosticsPlot : Control
         Rect plot,
         IReadOnlyList<DiagnosticPoint>? series,
         IPen pen,
+        double offset,
         double minimum,
         double maximum)
     {
@@ -207,7 +274,9 @@ public sealed class DiagnosticsPlot : Control
                 ? 1d
                 : (sample.ElapsedSeconds - earliestSeconds) /
                   DebugDiagnosticsViewModel.WindowSeconds;
-            var yProgress = (value - minimum) / (maximum - minimum);
+            var yProgress =
+                (DiagnosticPlotMath.ApplySeriesOffset(value, offset) - minimum) /
+                (maximum - minimum);
             var point = new Point(
                 plot.Left + (Math.Clamp(xProgress, 0d, 1d) * plot.Width),
                 plot.Bottom - (Math.Clamp(yProgress, 0d, 1d) * plot.Height));
@@ -219,4 +288,9 @@ public sealed class DiagnosticsPlot : Control
             previous = point;
         }
     }
+}
+
+internal static class DiagnosticPlotMath
+{
+    public static double ApplySeriesOffset(double value, double offset) => value + offset;
 }
