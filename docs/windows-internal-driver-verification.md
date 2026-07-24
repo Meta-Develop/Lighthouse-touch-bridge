@@ -213,6 +213,14 @@ still does not replace the connected-hardware gates.
 - [ ] Prevent valid state and heartbeat delivery for more than 500 ms and
   confirm `driver_ltb` marks both devices untracked and neutralizes every
   button, touch, trigger, grip, and stick value.
+- [ ] Continue valid heartbeats while withholding left `HandState` for more
+  than 500 ms. Confirm the left device becomes untracked and neutral while the
+  right remains current; heartbeat traffic must not refresh left-hand state.
+- [ ] Continue valid right `HandState` traffic while withholding left
+  `HandState` for more than 500 ms. Confirm the left device still becomes
+  untracked and neutral; other-hand traffic must not refresh its freshness.
+- [ ] Repeat the two per-hand stale checks with left/right exchanged, then
+  confirm only a fresh ordered state for the stale hand recovers it.
 - [ ] Restore transport and confirm only fresh, ordered state recovers; replay,
   regressing timestamps, malformed packets, and an old session remain rejected
   without partial state publication.
