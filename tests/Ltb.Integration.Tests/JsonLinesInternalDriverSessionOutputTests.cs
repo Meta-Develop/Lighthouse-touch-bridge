@@ -28,6 +28,13 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
                     LastSuccessfulSendAge = TimeSpan.FromMilliseconds(3),
                     LastSuccessfulHeartbeatAge = TimeSpan.FromMilliseconds(4),
                 },
+                Timing = new InternalDriverTimingSnapshot(
+                    iterationInterval: TimeSpan.FromMilliseconds(10),
+                    observeDuration: TimeSpan.FromMilliseconds(2),
+                    pairPublicationDuration: TimeSpan.FromMilliseconds(3),
+                    leftTrackerHostIngressAgeAtPublish: TimeSpan.FromMilliseconds(4),
+                    rightTrackerHostIngressAgeAtPublish: TimeSpan.FromMilliseconds(5),
+                    observedTrackerCount: 5),
             });
 
             var stateTransition = baseline with { State = InternalDriverSessionState.Reconnecting };
@@ -178,6 +185,12 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
             Assert.Equal(
                 24,
                 root.GetProperty("left").GetProperty("capture").GetProperty("sample_count").GetInt32());
+            var timing = root.GetProperty("timing");
+            Assert.True(timing.GetProperty("is_software_lower_bound").GetBoolean());
+            Assert.Equal(3, timing.GetProperty("observed_tracker_count").GetInt32());
+            Assert.Equal(
+                "00:00:00.0010000",
+                timing.GetProperty("observe_duration").GetString());
             Assert.True(root.TryGetProperty("diagnostic", out _));
             Assert.True(root.TryGetProperty("remediation", out _));
         }
@@ -200,6 +213,7 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
         Assert.Equal("Stopped", root.GetProperty("state").GetString());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("driver").ValueKind);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("lighthouse_hmd").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("timing").ValueKind);
         Assert.Equal(
             JsonValueKind.Null,
             root.GetProperty("left").GetProperty("tracker_serial").ValueKind);
@@ -281,6 +295,13 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
                 "lighthouse",
                 "Example",
                 "Lighthouse HMD"),
+            Timing = new InternalDriverTimingSnapshot(
+                iterationInterval: TimeSpan.FromMilliseconds(10),
+                observeDuration: TimeSpan.FromMilliseconds(1),
+                pairPublicationDuration: TimeSpan.FromMilliseconds(2),
+                leftTrackerHostIngressAgeAtPublish: TimeSpan.FromMilliseconds(3),
+                rightTrackerHostIngressAgeAtPublish: TimeSpan.FromMilliseconds(4),
+                observedTrackerCount: 3),
         };
     }
 
