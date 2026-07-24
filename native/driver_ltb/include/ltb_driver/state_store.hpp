@@ -61,6 +61,7 @@ private:
     std::uint64_t last_sequence_{};
     std::uint64_t last_heartbeat_timestamp_{};
     std::array<std::uint64_t, 2> last_hand_timestamps_{};
+    std::array<std::uint64_t, 2> last_hand_arrivals_{};
     std::uint64_t last_arrival_{};
     std::array<HandState, 2> states_{NeutralState(Hand::Left), NeutralState(Hand::Right)};
     std::array<bool, 2> has_state_{};

@@ -551,7 +551,9 @@ void NewSessionRequiresZeroAndResetsState() {
     const auto left = store.Snapshot(Hand::Left, 2'002);
     const auto right = store.Snapshot(Hand::Right, 2'002);
     Require(!left.has_state, "old-session left state survived reset");
-    Require(right.has_state, "new-session right state missing");
+    Require(!left.stale, "new session inherited old-hand freshness");
+    Require(!ltb::driver::IsPosePublishable(left), "reset old hand remained publishable");
+    Require(right.has_state && !right.stale, "new-session right state missing or stale");
 
     Require(
         store.ApplyPacket(HandPacket(1, 0, 25), 2'003) == ApplyError::RetiredSession,
@@ -572,30 +574,81 @@ void PerHandStateIsIsolated() {
     Require(store.Snapshot(Hand::Left, 1'201).state.position.x == 1.0F, "invalid right changed left");
 }
 
-void WatchdogNeutralizesBothHandsAtFiveHundredMilliseconds() {
+void PerHandWatchdogNeutralizesAtFiveHundredMilliseconds() {
     StateStore store;
     Require(store.ApplyPacket(HandPacket(1, 0, 100, Hand::Left), 1'000) == ApplyError::None, "left failed");
     Require(store.ApplyPacket(HandPacket(1, 1, 101, Hand::Right), 1'100) == ApplyError::None, "right failed");
-    Require(!store.Snapshot(Hand::Left, 500'001'099).stale, "state expired before 500 ms");
+    Require(!store.Snapshot(Hand::Left, 500'000'999).stale, "left expired before 500 ms");
+    Require(!store.Snapshot(Hand::Right, 500'001'099).stale, "right expired before 500 ms");
 
-    const auto left = store.Snapshot(Hand::Left, 500'001'100);
+    const auto left = store.Snapshot(Hand::Left, 500'001'000);
+    const auto right_before_expiry = store.Snapshot(Hand::Right, 500'001'000);
+    Require(left.stale, "left did not expire at its 500 ms boundary");
+    Require(!right_before_expiry.stale, "right inherited left's earlier expiry");
+    Require(!ltb::driver::IsPosePublishable(left), "expired left pose remained publishable");
+    Require(left.state.flags == 0 && left.state.buttons == 0, "expired left state was not neutral");
+
     const auto right = store.Snapshot(Hand::Right, 500'001'100);
-    Require(left.stale && right.stale, "500 ms watchdog did not expire both hands");
+    Require(right.stale, "right did not expire at its 500 ms boundary");
     Require(
-        !ltb::driver::IsPosePublishable(left) && !ltb::driver::IsPosePublishable(right),
-        "stale watchdog snapshots remained pose-publishable");
-    Require(left.state.flags == 0 && right.state.flags == 0, "stale flags were not neutral");
-    Require(left.state.buttons == 0 && right.state.touches == 0, "stale digital input was not neutral");
-    Require(left.state.trigger == 0.0F && right.state.stick_x == 0.0F, "stale analog input was not neutral");
+        !ltb::driver::IsPosePublishable(right),
+        "expired right pose remained publishable");
+    Require(right.state.flags == 0 && right.state.touches == 0, "expired right state was not neutral");
+    Require(right.state.trigger == 0.0F && right.state.stick_x == 0.0F, "expired analog input was not neutral");
 }
 
-void HeartbeatRefreshesWatchdogWithoutChangingHandState() {
+void HeartbeatCannotRefreshStaleHandState() {
     StateStore store;
     Require(store.ApplyPacket(HandPacket(1, 0, 100), 1'000) == ApplyError::None, "state failed");
     Require(store.ApplyPacket(HeartbeatPacket(1, 1, 200), 400'000'000) == ApplyError::None, "heartbeat failed");
-    const auto snapshot = store.Snapshot(Hand::Left, 800'000'000);
-    Require(!snapshot.stale, "heartbeat did not refresh watchdog");
-    Require(snapshot.state.position.x == 1.0F, "heartbeat changed state");
+    const auto snapshot = store.Snapshot(Hand::Left, 500'001'000);
+    Require(snapshot.stale, "heartbeat refreshed stale hand state");
+    Require(snapshot.has_state, "heartbeat discarded the stored hand-state identity");
+    Require(!ltb::driver::IsPosePublishable(snapshot), "heartbeat kept stale hand pose publishable");
+    Require(snapshot.state.flags == 0, "heartbeat-kept stale hand was not neutral");
+    const auto session = store.CurrentSession();
+    Require(
+        session.bytes.front() == 1U && session.bytes.back() == 16U,
+        "fresh heartbeat did not preserve session liveness");
+}
+
+void OtherHandTrafficCannotRefreshStaleHandState() {
+    StateStore store;
+    Require(
+        store.ApplyPacket(HandPacket(1, 0, 100, Hand::Left), 1'000) == ApplyError::None,
+        "left failed");
+    Require(
+        store.ApplyPacket(HandPacket(1, 1, 101, Hand::Right), 400'000'000) == ApplyError::None,
+        "right failed");
+
+    const auto left = store.Snapshot(Hand::Left, 500'001'000);
+    const auto right = store.Snapshot(Hand::Right, 500'001'000);
+    Require(left.stale, "right-hand traffic refreshed stale left hand");
+    Require(!ltb::driver::IsPosePublishable(left), "stale left remained pose-publishable");
+    Require(!right.stale && ltb::driver::IsPosePublishable(right), "fresh right became unpublishable");
+}
+
+void FreshHandStateRecoversAfterPerHandExpiry() {
+    StateStore store;
+    Require(
+        store.ApplyPacket(HandPacket(1, 0, 100, Hand::Left), 1'000) == ApplyError::None,
+        "initial left failed");
+    Require(
+        store.ApplyPacket(HeartbeatPacket(1, 1, 200), 400'000'000) == ApplyError::None,
+        "heartbeat failed");
+    Require(
+        store.Snapshot(Hand::Left, 500'001'000).stale,
+        "left did not expire before recovery");
+
+    auto recovered_packet = HandPacket(1, 2, 101, Hand::Left);
+    WriteFloat(recovered_packet, 52, 7.0F);
+    Require(
+        store.ApplyPacket(recovered_packet, 500'001'001) == ApplyError::None,
+        "fresh left recovery was rejected");
+    const auto recovered = store.Snapshot(Hand::Left, 500'001'002);
+    Require(!recovered.stale, "fresh left state did not recover from expiry");
+    Require(ltb::driver::IsPosePublishable(recovered), "recovered left pose was not publishable");
+    Require(recovered.state.position.x == 7.0F, "recovered left state was not published");
 }
 
 void InvalidInputsArePublishedNeutral() {
@@ -696,8 +749,10 @@ int main() {
         {"replay and timestamp rejection", ReplayAndTimestampRegressionAreRejected},
         {"new session reset", NewSessionRequiresZeroAndResetsState},
         {"per-hand isolation", PerHandStateIsIsolated},
-        {"watchdog neutral safety", WatchdogNeutralizesBothHandsAtFiveHundredMilliseconds},
-        {"heartbeat freshness", HeartbeatRefreshesWatchdogWithoutChangingHandState},
+        {"per-hand watchdog neutral safety", PerHandWatchdogNeutralizesAtFiveHundredMilliseconds},
+        {"heartbeat cannot refresh a hand", HeartbeatCannotRefreshStaleHandState},
+        {"other hand cannot refresh a hand", OtherHandTrafficCannotRefreshStaleHandState},
+        {"fresh hand recovery", FreshHandStateRecoversAfterPerHandExpiry},
         {"invalid input neutral safety", InvalidInputsArePublishedNeutral},
         {"publication boundary neutral safety", PublicationBoundaryCannotLatchInputs},
         {"SteamVR system click policy", SystemClickIsLeftMenuOnly},
