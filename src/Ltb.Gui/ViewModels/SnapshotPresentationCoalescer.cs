@@ -11,6 +11,7 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
     public static readonly TimeSpan ActivePresentationInterval = TimeSpan.FromMilliseconds(100);
 
     private readonly object _sync = new();
+    private readonly object _trailingCallbackGate = new();
     private readonly IGuiTimeSource _timeSource;
     private readonly IGuiDelayScheduler _delayScheduler;
     private readonly Action<long, long, InternalDriverSessionSnapshot> _trailingFlush;
@@ -99,18 +100,23 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
 
     public void Dispose()
     {
-        IDisposable? scheduled;
-        lock (_sync)
+        IDisposable? scheduled = null;
+        lock (_trailingCallbackGate)
         {
-            if (_disposed)
+            // Disposal and trailing-callback entry are linearized by this
+            // gate. The production callback only posts to the UI dispatcher,
+            // so the UI thread never waits for UI work while holding it.
+            // Monitor reentrancy also lets a callback dispose itself.
+            lock (_sync)
             {
-                return;
+                if (!_disposed)
+                {
+                    _disposed = true;
+                    _pending = null;
+                    scheduled = _scheduledFlush;
+                    _scheduledFlush = null;
+                }
             }
-
-            _disposed = true;
-            _pending = null;
-            scheduled = _scheduledFlush;
-            _scheduledFlush = null;
         }
 
         scheduled?.Dispose();
@@ -154,7 +160,18 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
         completedSchedule?.Dispose();
         if (flush is { } snapshot)
         {
-            _trailingFlush(snapshot.Generation, snapshot.Sequence, snapshot.Snapshot);
+            lock (_trailingCallbackGate)
+            {
+                lock (_sync)
+                {
+                    if (_disposed)
+                    {
+                        return;
+                    }
+                }
+
+                _trailingFlush(snapshot.Generation, snapshot.Sequence, snapshot.Snapshot);
+            }
         }
     }
 
