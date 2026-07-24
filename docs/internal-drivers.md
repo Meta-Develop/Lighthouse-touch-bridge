@@ -80,9 +80,12 @@ IPC feed. No position or poor translation observability may validly select
 rotation-only; bad rotation coverage or quality is a failure.
 
 Explicit recalibration stages both hand results against a private copy of the
-profile store. The complete pair replaces the saved pair only after both hands
-validate and cancellation has not been requested; a failed or cancelled
-attempt leaves the prior pair and unrelated profiles unchanged.
+profile store. Cancellation and canonical commit share one explicit decision
+boundary after both hands validate: cancellation that wins before that boundary
+leaves the prior pair and unrelated profiles unchanged with no stage residue.
+Once commit wins, the atomic canonical replace completes and is reported as a
+successful saved pair; a later Stop request applies to the session, not to the
+already committed profile transaction.
 
 The GUI presents readiness, per-hand tracker/input/publication state, neutral
 reasons, the shared calibration phase, and feed health. The structured JSONL
@@ -218,10 +221,14 @@ a substitute. Wall time is used only for human-readable provenance.
 Every observation enumerates the current connected physical tracker roster and
 reads that roster through one shared OpenVR pose acquisition. The reusable
 batch access handle is rebuilt whenever a stable serial, registered device
-path, or transient access index changes. The production path requests raw,
-uncalibrated poses with a zero prediction offset. The 10 ms managed loop uses
-absolute monotonic deadlines and skips missed slots, so observation and
-publication work do not accumulate as `work time + 10 ms` drift.
+path, or transient access index changes. Immediately before and after the
+native batch acquisition, the production runtime re-reads serial and path for
+every requested index under the same runtime critical section; index reuse or
+an identity change fails the entire observation closed. The production path
+requests raw, uncalibrated poses with a zero prediction offset. The 10 ms
+managed loop uses absolute monotonic deadlines and skips missed slots, so
+observation and publication work do not accumulate as `work time + 10 ms`
+drift.
 
 The session snapshot and JSONL record expose additive `timing` evidence:
 iteration interval, observation duration, pair-publication duration, each
