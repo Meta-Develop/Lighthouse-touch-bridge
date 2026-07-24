@@ -199,13 +199,11 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     {
         ArgumentNullException.ThrowIfNull(observation);
         ArgumentNullException.ThrowIfNull(progress);
-        var serials = observation.TrackerSamples.Keys
-            .OrderBy(serial => serial, StringComparer.Ordinal)
-            .ToArray();
+        var serials = SnapshotPublishableTrackerSerials(observation);
         if (serials.Length < 2)
         {
             throw new InvalidOperationException(
-                "Profile resolution requires at least two distinct observed tracker serials.");
+                "Profile resolution requires at least two distinct connected, fully tracked physical tracker serials.");
         }
 
         _leftCaptureEvidence = null;
@@ -217,15 +215,6 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         if (reusable is not null)
         {
             return reusable;
-        }
-
-        if (serials.Length != 2)
-        {
-            throw new InvalidOperationException(
-                (explicitRequest
-                    ? "Explicit calibration bypasses reusable profiles. "
-                    : "No unique reusable left/right controller-source profile pair matched the observed trackers. ") +
-                "New calibration requires exactly two tracker candidates; power off unrelated trackers and run again.");
         }
 
         var leftCapture = await CaptureHandAsync(
@@ -240,8 +229,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             cancellationToken).ConfigureAwait(false);
         progress(
             InternalDriverSessionState.Association,
-            "Associating the two raw trackers from separate per-hand angular-speed captures.",
-            "Keep both tracker mounts unchanged while association and calibration finish.");
+            $"Selecting a unique left/right pair from {serials.Length} raw tracker candidates " +
+            "using separate per-hand angular-speed captures.",
+            "Keep both tracker mounts unchanged; unrelated trackers may remain connected, " +
+            "but move only the requested mounted controller.");
         var association = TrackerHandAssociator.Associate(
             ToAssociationCapture(leftCapture),
             ToAssociationCapture(rightCapture));
@@ -267,27 +258,39 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             InternalDriverSessionState.Validation,
             "Running held-out model selection and per-hand calibration quality gates.",
             "Bad rotation will fail; unavailable or unobservable position may select rotation-only.");
-        var profiles = explicitRequest
-            ? RunExplicitProfileStoreTransaction(
-                _paths.CalibrationProfileStorePath,
-                stagedProfileStorePath => CalibratePair(
-                    new InternalDriverCalibration(stagedProfileStorePath),
-                    leftCapture,
-                    rightCapture,
-                    association,
-                    explicitRequest: true))
-            : CalibratePair(
-                calibration,
+        var profiles = RunTwoHandProfileStoreTransaction(
+            _paths.CalibrationProfileStorePath,
+            stagedProfileStorePath => CalibratePair(
+                new InternalDriverCalibration(stagedProfileStorePath),
                 leftCapture,
                 rightCapture,
                 association,
-                explicitRequest: false);
+                explicitRequest));
         progress(
             InternalDriverSessionState.SaveProfile,
             "Both first-party results passed validation; exact schema-2 profiles were saved and reloaded.",
             "Keep the physical tracker mounts fixed for profile reuse.");
         return profiles;
     }
+
+    internal static string[] SnapshotPublishableTrackerSerials(
+        InternalDriverRuntimeObservation observation)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+        return observation.TrackerSamples
+            .Where(pair => IsTrackerCalibrationCandidate(pair.Value))
+            .Select(pair => pair.Key)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(serial => serial, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static bool IsTrackerCalibrationCandidate(PoseSourceSample sample) =>
+        sample.IsConnected &&
+        sample.PoseSample.HasValidOrientation &&
+        sample.PoseSample.HasValidPosition &&
+        sample.Validity.HasFlag(PoseValidity.TrackingValid) &&
+        sample.TrackingResult == PoseTrackingResult.RunningOk;
 
     public IDriverFeed CreateFeed()
     {
@@ -461,6 +464,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             serial => serial,
             _ => double.NegativeInfinity,
             StringComparer.Ordinal);
+        var continuouslyConnected = trackerSerials.ToDictionary(
+            serial => serial,
+            _ => true,
+            StringComparer.Ordinal);
         var startedNanoseconds = GetMonotonicNanoseconds();
         var durationNanoseconds = ToNanoseconds(_options.GuidedCaptureDurationPerHand);
         var reportCadence = new InternalDriverCaptureReportCadence(
@@ -491,11 +498,16 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             {
                 if (observation.TrackerSamples.TryGetValue(serial, out var sample))
                 {
+                    continuouslyConnected[serial] &= sample.IsConnected;
                     if (sample.MonotonicHostTimeSeconds > lastTrackerTimes[serial])
                     {
                         trackerSamples[serial].Add(sample);
                         lastTrackerTimes[serial] = sample.MonotonicHostTimeSeconds;
                     }
+                }
+                else
+                {
+                    continuouslyConnected[serial] = false;
                 }
             }
 
@@ -514,17 +526,17 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
 
         EnsureRotationReady(hand, finalEvidence);
 
-        if (mappedMetaSamples.Samples.Count == 0 ||
-            trackerSamples.Values.Any(samples => samples.Count == 0))
+        if (mappedMetaSamples.Samples.Count == 0)
         {
             throw new InvalidOperationException(
-                $"The {hand} guided capture did not retain Meta and both raw tracker streams.");
+                $"The {hand} guided capture did not retain a valid Meta controller stream.");
         }
 
         return new GuidedHandCapture(
             hand,
             mappedMetaSamples.Samples.ToArray(),
-            trackerSamples);
+            trackerSamples,
+            continuouslyConnected);
     }
 
     private static ulong ToNanoseconds(TimeSpan duration)
@@ -587,14 +599,15 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         _rightCaptureEvidence,
         observation);
 
-    private static HandMotionCapture ToAssociationCapture(GuidedHandCapture capture)
+    internal static HandMotionCapture ToAssociationCapture(GuidedHandCapture capture)
     {
         var controllerSamples = capture.MetaSamples.Select(ToPoseSample).ToArray();
         var candidates = capture.TrackerSamples.Select(pair =>
             new TrackerAssociationCandidate(
                 pair.Key,
                 pair.Value.Select(ToTrackerPoseSample).ToArray(),
-                pair.Value.Any(sample => sample.IsConnected))).ToArray();
+                capture.ContinuouslyConnected.TryGetValue(pair.Key, out var connected) &&
+                connected)).ToArray();
         return new HandMotionCapture(
             MetaLinkCalibrationCapture.ToCalibrationHand(capture.Hand),
             controllerSamples,
@@ -686,10 +699,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     }
 
     /// <summary>
-    /// Stages an explicit two-hand calibration against a private copy and
-    /// commits the complete resulting store only after both hands validate.
+    /// Stages a fresh two-hand calibration against a private copy and commits
+    /// the complete resulting store only after both hands validate.
     /// </summary>
-    internal static TResult RunExplicitProfileStoreTransaction<TResult>(
+    internal static TResult RunTwoHandProfileStoreTransaction<TResult>(
         string profileStorePath,
         Func<string, TResult> stageCalibration)
     {
@@ -704,7 +717,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         var fileName = Path.GetFileName(canonicalPath);
         var stagedPath = Path.Combine(
             directory,
-            $".{fileName}.explicit-calibration.{Guid.NewGuid():N}.stage");
+            $".{fileName}.two-hand-calibration.{Guid.NewGuid():N}.stage");
 
         try
         {
@@ -827,10 +840,11 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
 
     private sealed record TrackerSourceEntry(uint TransientIndex, TrackedPoseSource Source);
 
-    private sealed record GuidedHandCapture(
+    internal sealed record GuidedHandCapture(
         MetaLinkHand Hand,
         IReadOnlyList<MetaLinkControllerSnapshot> MetaSamples,
-        IReadOnlyDictionary<string, List<PoseSourceSample>> TrackerSamples);
+        IReadOnlyDictionary<string, List<PoseSourceSample>> TrackerSamples,
+        IReadOnlyDictionary<string, bool> ContinuouslyConnected);
 }
 
 internal enum InternalDriverSettingsPreparationStatus
