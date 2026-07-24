@@ -38,10 +38,11 @@ controller-source trackers, calibration profiles, and the driver feed. Normal
 **Start** reuses an exact matching left/right profile pair. The separate
 **Calibrate / Recalibrate** button creates the same first-party session while
 explicitly bypassing reusable profiles and capturing both hands again. Fresh
-association requires exactly two tracker candidates, so power off unrelated
-trackers before using it. Other raw Lighthouse trackers are ignored after
-saved profiles select the controller-mounted pair. Neither action starts the
-legacy ALVR/VMT/`TrackingOverrides` wizard.
+association scores every connected physical tracker during separate left- and
+right-hand prompts and accepts only one unambiguous distinct pair. Unrelated
+raw Lighthouse trackers may remain connected and are ignored after association
+or saved-profile selection. Neither action starts the legacy
+ALVR/VMT/`TrackingOverrides` wizard.
 
 Before pressing **Start**:
 
@@ -50,9 +51,9 @@ Before pressing **Start**:
 2. Keep the headset and both Touch controllers awake.
 3. Start SteamVR with the intended Lighthouse HMD as the sole HMD.
 4. Power on the two controller-mounted Lighthouse trackers and wait until
-   their raw poses are valid. Saved profiles allow unrelated full-body
-   trackers to remain connected; new association/calibration still requires
-   exactly two candidates so the first pair is unambiguous.
+   their raw poses are valid. Unrelated full-body trackers may remain connected;
+   during new association move only the mounted controller requested by each
+   prompt so the left/right correlation pair is unambiguous.
 5. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
 
 Once both LTB controllers are ready, the physical left Touch Menu button opens
