@@ -701,6 +701,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             directory,
             $".{fileName}.two-hand-calibration.{Guid.NewGuid():N}.stage");
 
+        using var commitGate = new InternalDriverProfileStoreCommitGate(cancellationToken);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -713,9 +714,12 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             cancellationToken.ThrowIfCancellationRequested();
             var completedStore = CalibrationProfileFile.LoadStore(stagedPath);
             cancellationToken.ThrowIfCancellationRequested();
-            CalibrationProfileFile.SaveStore(canonicalPath, completedStore);
-            _ = CalibrationProfileFile.LoadStore(canonicalPath);
-            return result;
+            return commitGate.Commit(() =>
+            {
+                CalibrationProfileFile.SaveStore(canonicalPath, completedStore);
+                _ = CalibrationProfileFile.LoadStore(canonicalPath);
+                return result;
+            });
         }
         finally
         {
