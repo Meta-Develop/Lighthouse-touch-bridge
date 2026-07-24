@@ -130,3 +130,30 @@ public interface TrackedPoseSource
 
     PoseSourceSample ReadPose();
 }
+
+/// <summary>One device sample from a shared OpenVR pose acquisition.</summary>
+public readonly record struct TrackedPoseBatchSample
+{
+    public TrackedPoseBatchSample(
+        SteamVrDeviceDescriptor device,
+        PoseSourceSample sample)
+    {
+        Device = device ?? throw new ArgumentNullException(nameof(device));
+        Sample = sample;
+    }
+
+    public SteamVrDeviceDescriptor Device { get; }
+
+    public PoseSourceSample Sample { get; }
+}
+
+/// <summary>
+/// Reusable source that samples distinct tracked devices from one logical
+/// OpenVR acquisition and assigns one shared post-call host-ingress timestamp.
+/// </summary>
+public interface TrackedPoseBatchSource
+{
+    IReadOnlyList<SteamVrDeviceDescriptor> Devices { get; }
+
+    IReadOnlyList<TrackedPoseBatchSample> ReadPoses();
+}

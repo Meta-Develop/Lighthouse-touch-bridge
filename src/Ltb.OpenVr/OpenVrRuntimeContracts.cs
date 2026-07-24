@@ -83,7 +83,91 @@ internal interface IOpenVrRuntime : IDisposable
         OpenVrTrackingUniverse trackingUniverse,
         double predictionOffsetSeconds);
 
+    /// <summary>
+    /// Reads several transient indexes for one logical acquisition. Runtime
+    /// implementations may override this to take one native all-device
+    /// snapshot. The default preserves compatibility with deterministic fakes
+    /// and other narrow implementations by delegating to <see cref="ReadPose"/>.
+    /// </summary>
+    IReadOnlyList<OpenVrRuntimePose> ReadPoses(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var indexes = OpenVrRuntimePoseBatchValidation.Validate(
+            transientDeviceIndexes,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(indexes
+            .Select(index => ReadPose(index, trackingUniverse, predictionOffsetSeconds))
+            .ToArray());
+    }
+
     OpenVrRuntimeHealthSnapshot GetRuntimeHealth() => OpenVrRuntimeHealthSnapshot.Running;
+}
+
+internal static class OpenVrRuntimePoseBatchValidation
+{
+    // OpenVR fixes this limit at k_unMaxTrackedDeviceCount. Keep the portable
+    // contract independent of generated Valve types so Linux fakes validate
+    // the same transient-index range as the Windows adapter.
+    public const uint MaximumTrackedDeviceCount = 64;
+
+    public static uint[] Validate(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(transientDeviceIndexes);
+        if (transientDeviceIndexes.Count == 0)
+        {
+            throw new ArgumentException(
+                "A pose batch must request at least one transient device index.",
+                nameof(transientDeviceIndexes));
+        }
+
+        if (!Enum.IsDefined(trackingUniverse))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(trackingUniverse),
+                trackingUniverse,
+                "Tracking universe must be a defined OpenVR frame contract.");
+        }
+
+        if (!double.IsFinite(predictionOffsetSeconds) ||
+            predictionOffsetSeconds < float.MinValue ||
+            predictionOffsetSeconds > float.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(predictionOffsetSeconds),
+                "Prediction offset must be finite and representable by OpenVR's float-seconds API.");
+        }
+
+        var indexes = new uint[transientDeviceIndexes.Count];
+        var distinctIndexes = new HashSet<uint>();
+        for (var index = 0; index < transientDeviceIndexes.Count; index++)
+        {
+            var transientDeviceIndex = transientDeviceIndexes[index];
+            if (transientDeviceIndex >= MaximumTrackedDeviceCount)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(transientDeviceIndexes),
+                    transientDeviceIndex,
+                    $"Transient device indexes must be below {MaximumTrackedDeviceCount}.");
+            }
+
+            if (!distinctIndexes.Add(transientDeviceIndex))
+            {
+                throw new ArgumentException(
+                    $"Transient device index {transientDeviceIndex} was requested more than once.",
+                    nameof(transientDeviceIndexes));
+            }
+
+            indexes[index] = transientDeviceIndex;
+        }
+
+        return indexes;
+    }
 }
 
 internal interface IMonotonicClock

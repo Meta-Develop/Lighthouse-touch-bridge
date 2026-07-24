@@ -134,45 +134,36 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                 MapTrackingUniverse(trackingUniverse),
                 (float)predictionOffsetSeconds,
                 _poseBuffer);
-            var nativePose = _poseBuffer[transientDeviceIndex];
-            var matrix = nativePose.mDeviceToAbsoluteTracking;
-            var hasPose = OpenVrMatrixConverter.TryConvert(
-                new OpenVrMatrix34(
-                    matrix.m0,
-                    matrix.m1,
-                    matrix.m2,
-                    matrix.m3,
-                    matrix.m4,
-                    matrix.m5,
-                    matrix.m6,
-                    matrix.m7,
-                    matrix.m8,
-                    matrix.m9,
-                    matrix.m10,
-                    matrix.m11),
-                out var pose);
+            return MapPose(_poseBuffer[transientDeviceIndex], predictionOffsetSeconds);
+        }
+    }
 
-            var validity = OpenVrPoseValidityMapper.Map(
-                hasPose,
-                nativePose.bPoseIsValid,
-                nativePose.eTrackingResult == ValveVr.ETrackingResult.Fallback_RotationOnly);
+    public IReadOnlyList<OpenVrRuntimePose> ReadPoses(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var indexes = OpenVrRuntimePoseBatchValidation.Validate(
+            transientDeviceIndexes,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            _system.GetDeviceToAbsoluteTrackingPose(
+                MapTrackingUniverse(trackingUniverse),
+                (float)predictionOffsetSeconds,
+                _poseBuffer);
 
-            return new OpenVrRuntimePose(
-                hasPose ? pose : RigidTransform.Identity,
-                validity,
-                nativePose.bDeviceIsConnected,
-                MapTrackingResult((OpenVrTrackingResultCode)(int)nativePose.eTrackingResult),
-                RuntimeTimeSeconds: null,
-                PredictionOffsetSeconds: predictionOffsetSeconds,
-                SampleAgeSeconds: null,
-                MapFiniteVelocity(
-                    nativePose.vVelocity.v0,
-                    nativePose.vVelocity.v1,
-                    nativePose.vVelocity.v2),
-                MapFiniteVelocity(
-                    nativePose.vAngularVelocity.v0,
-                    nativePose.vAngularVelocity.v1,
-                    nativePose.vAngularVelocity.v2));
+            var poses = new OpenVrRuntimePose[indexes.Length];
+            for (var index = 0; index < poses.Length; index++)
+            {
+                poses[index] = MapPose(
+                    _poseBuffer[indexes[index]],
+                    predictionOffsetSeconds);
+            }
+
+            return Array.AsReadOnly(poses);
         }
     }
 
@@ -307,6 +298,50 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
         float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z)
             ? new Vector3(x, y, z)
             : null;
+
+    private static OpenVrRuntimePose MapPose(
+        ValveVr.TrackedDevicePose_t nativePose,
+        double predictionOffsetSeconds)
+    {
+        var matrix = nativePose.mDeviceToAbsoluteTracking;
+        var hasPose = OpenVrMatrixConverter.TryConvert(
+            new OpenVrMatrix34(
+                matrix.m0,
+                matrix.m1,
+                matrix.m2,
+                matrix.m3,
+                matrix.m4,
+                matrix.m5,
+                matrix.m6,
+                matrix.m7,
+                matrix.m8,
+                matrix.m9,
+                matrix.m10,
+                matrix.m11),
+            out var pose);
+
+        var validity = OpenVrPoseValidityMapper.Map(
+            hasPose,
+            nativePose.bPoseIsValid,
+            nativePose.eTrackingResult == ValveVr.ETrackingResult.Fallback_RotationOnly);
+
+        return new OpenVrRuntimePose(
+            hasPose ? pose : RigidTransform.Identity,
+            validity,
+            nativePose.bDeviceIsConnected,
+            MapTrackingResult((OpenVrTrackingResultCode)(int)nativePose.eTrackingResult),
+            RuntimeTimeSeconds: null,
+            PredictionOffsetSeconds: predictionOffsetSeconds,
+            SampleAgeSeconds: null,
+            MapFiniteVelocity(
+                nativePose.vVelocity.v0,
+                nativePose.vVelocity.v1,
+                nativePose.vVelocity.v2),
+            MapFiniteVelocity(
+                nativePose.vAngularVelocity.v0,
+                nativePose.vAngularVelocity.v1,
+                nativePose.vAngularVelocity.v2));
+    }
 
     private static ValveVr.ETrackingUniverseOrigin MapTrackingUniverse(
         OpenVrTrackingUniverse trackingUniverse) => trackingUniverse switch

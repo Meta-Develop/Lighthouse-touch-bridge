@@ -113,6 +113,13 @@ internal abstract class OpenVrPoseSourceAdapter
         // Capture host time only after the native pose has crossed the LTB
         // ingress boundary. It intentionally is not wall-clock time.
         var monotonicHostTimeSeconds = _clock.GetTimestampSeconds();
+        return ToPoseSourceSample(runtimePose, monotonicHostTimeSeconds);
+    }
+
+    internal static PoseSourceSample ToPoseSourceSample(
+        OpenVrRuntimePose runtimePose,
+        double monotonicHostTimeSeconds)
+    {
         var poseSample = new TimestampedPoseSample(
             monotonicHostTimeSeconds,
             runtimePose.Pose,
@@ -127,6 +134,28 @@ internal abstract class OpenVrPoseSourceAdapter
             runtimePose.SampleAgeSeconds,
             runtimePose.LinearVelocityMetersPerSecond,
             runtimePose.AngularVelocityRadiansPerSecond);
+    }
+
+    internal static void ValidateAcquisition(
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        if (!Enum.IsDefined(trackingUniverse))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(trackingUniverse),
+                trackingUniverse,
+                "Tracking universe must be a defined OpenVR frame contract.");
+        }
+
+        if (!double.IsFinite(predictionOffsetSeconds) ||
+            predictionOffsetSeconds < float.MinValue ||
+            predictionOffsetSeconds > float.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(predictionOffsetSeconds),
+                "Prediction offset must be finite and representable by OpenVR's float-seconds API.");
+        }
     }
 }
 
@@ -208,7 +237,7 @@ internal sealed class OpenVrTrackedPoseSourceAdapter :
     {
     }
 
-    private static SteamVrDeviceDescriptor RequireTrackedDevice(SteamVrDeviceDescriptor device)
+    internal static SteamVrDeviceDescriptor RequireTrackedDevice(SteamVrDeviceDescriptor device)
     {
         ArgumentNullException.ThrowIfNull(device);
         if (!device.Capabilities.HasPosition ||
@@ -220,5 +249,78 @@ internal sealed class OpenVrTrackedPoseSourceAdapter :
         }
 
         return device;
+    }
+}
+
+internal sealed class OpenVrTrackedPoseBatchSourceAdapter : TrackedPoseBatchSource
+{
+    private readonly IOpenVrRuntime _runtime;
+    private readonly IMonotonicClock _clock;
+    private readonly OpenVrTrackingUniverse _trackingUniverse;
+    private readonly double _predictionOffsetSeconds;
+    private readonly IReadOnlyList<SteamVrDeviceDescriptor> _devices;
+    private readonly uint[] _transientDeviceIndexes;
+
+    public OpenVrTrackedPoseBatchSourceAdapter(
+        IOpenVrRuntime runtime,
+        IMonotonicClock clock,
+        IEnumerable<SteamVrDeviceDescriptor> devices,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        ArgumentNullException.ThrowIfNull(devices);
+        OpenVrPoseSourceAdapter.ValidateAcquisition(
+            trackingUniverse,
+            predictionOffsetSeconds);
+
+        var snapshot = devices
+            .Select(OpenVrTrackedPoseSourceAdapter.RequireTrackedDevice)
+            .ToArray();
+        if (snapshot.Length == 0)
+        {
+            throw new ArgumentException(
+                "A tracked-pose batch must contain at least one device.",
+                nameof(devices));
+        }
+
+        _transientDeviceIndexes = OpenVrRuntimePoseBatchValidation.Validate(
+            snapshot.Select(device => device.TransientDeviceIndex).ToArray(),
+            trackingUniverse,
+            predictionOffsetSeconds);
+        _devices = Array.AsReadOnly(snapshot);
+        _trackingUniverse = trackingUniverse;
+        _predictionOffsetSeconds = predictionOffsetSeconds;
+    }
+
+    public IReadOnlyList<SteamVrDeviceDescriptor> Devices => _devices;
+
+    public IReadOnlyList<TrackedPoseBatchSample> ReadPoses()
+    {
+        var runtimePoses = _runtime.ReadPoses(
+            _transientDeviceIndexes,
+            _trackingUniverse,
+            _predictionOffsetSeconds);
+        if (runtimePoses.Count != _devices.Count)
+        {
+            throw new InvalidDataException(
+                $"OpenVR returned {runtimePoses.Count} poses for {_devices.Count} requested devices.");
+        }
+
+        // The batch timestamp is deliberately captured once, after the one
+        // logical runtime acquisition has fully crossed the LTB boundary.
+        var monotonicHostTimeSeconds = _clock.GetTimestampSeconds();
+        var samples = new TrackedPoseBatchSample[_devices.Count];
+        for (var index = 0; index < samples.Length; index++)
+        {
+            samples[index] = new TrackedPoseBatchSample(
+                _devices[index],
+                OpenVrPoseSourceAdapter.ToPoseSourceSample(
+                    runtimePoses[index],
+                    monotonicHostTimeSeconds));
+        }
+
+        return Array.AsReadOnly(samples);
     }
 }
