@@ -395,7 +395,7 @@ public sealed class InternalDriverCalibrationTests
     }
 
     [Fact]
-    public void PublishableCandidateRosterIsSortedAndPreservedAcrossBothGuidedCaptures()
+    public void ConnectedPhysicalCandidateRosterRetainsTemporarilyInvalidPose()
     {
         var observation = new InternalDriverRuntimeObservation(
             SteamVrRunning: true,
@@ -418,8 +418,14 @@ public sealed class InternalDriverCalibrationTests
             });
 
         var roster = ProductionInternalDriverSessionRuntime
-            .SnapshotPublishableTrackerSerials(observation);
-        var expected = new[] { "FBT-CHEST", "TRACKER-LEFT", "TRACKER-RIGHT" };
+            .SnapshotConnectedTrackerSerials(observation);
+        var expected = new[]
+        {
+            "FBT-CHEST",
+            "INVALID-POSE",
+            "TRACKER-LEFT",
+            "TRACKER-RIGHT",
+        };
 
         Assert.Equal(expected, roster);
         var left = ProductionInternalDriverSessionRuntime.ToAssociationCapture(
@@ -596,6 +602,44 @@ public sealed class InternalDriverCalibrationTests
             Assert.Equal("Unrelated profile", committed.FindCandidateProfile(
                 "FBT-CHEST",
                 ControllerHand.Left)!.ProfileName);
+            Assert.Empty(TwoHandCalibrationStageFiles(profilePath));
+        });
+    }
+
+    [Fact]
+    public void CancellationAfterStagedCalibrationPreservesCanonicalBytesAndRemovesStage()
+    {
+        WithTemporaryProfilePath(profilePath =>
+        {
+            var prior = new CalibrationProfileStore(
+            [Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "LHR-LEFT",
+                profileName: "Prior left")]);
+            CalibrationProfileFile.SaveStore(profilePath, prior);
+            var originalBytes = File.ReadAllBytes(profilePath);
+            using var cancellation = new CancellationTokenSource();
+
+            Assert.Throws<OperationCanceledException>(() =>
+                ProductionInternalDriverSessionRuntime.RunTwoHandProfileStoreTransaction(
+                    profilePath,
+                    stagedProfilePath =>
+                    {
+                        CalibrationProfileFile.SaveStore(
+                            stagedProfilePath,
+                            new CalibrationProfileStore(
+                            [
+                                Profile(
+                                    hand: ControllerHand.Left,
+                                    trackerSerial: "LHR-LEFT",
+                                    profileName: "Replacement left"),
+                            ]));
+                        cancellation.Cancel();
+                        return "must not commit";
+                    },
+                    cancellation.Token));
+
+            Assert.Equal(originalBytes, File.ReadAllBytes(profilePath));
             Assert.Empty(TwoHandCalibrationStageFiles(profilePath));
         });
     }

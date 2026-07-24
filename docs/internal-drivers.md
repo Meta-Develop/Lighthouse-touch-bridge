@@ -81,8 +81,8 @@ rotation-only; bad rotation coverage or quality is a failure.
 
 Explicit recalibration stages both hand results against a private copy of the
 profile store. The complete pair replaces the saved pair only after both hands
-validate; a failed attempt leaves the prior pair and unrelated profiles
-unchanged.
+validate and cancellation has not been requested; a failed or cancelled
+attempt leaves the prior pair and unrelated profiles unchanged.
 
 The GUI presents readiness, per-hand tracker/input/publication state, neutral
 reasons, the shared calibration phase, and feed health. The structured JSONL
@@ -215,6 +215,22 @@ OpenVR, Meta Link, driver, pipe, or application dependency.
 Each hand uses its own `ovrPoseStatef.TimeInSeconds`. `SensorSampleTime` is not
 a substitute. Wall time is used only for human-readable provenance.
 
+Every observation enumerates the current connected physical tracker roster and
+reads that roster through one shared OpenVR pose acquisition. The reusable
+batch access handle is rebuilt whenever a stable serial, registered device
+path, or transient access index changes. The production path requests raw,
+uncalibrated poses with a zero prediction offset. The 10 ms managed loop uses
+absolute monotonic deadlines and skips missed slots, so observation and
+publication work do not accumulate as `work time + 10 ms` drift.
+
+The session snapshot and JSONL record expose additive `timing` evidence:
+iteration interval, observation duration, pair-publication duration, each
+selected tracker's host-ingress age at its publication boundary, and observed
+tracker count. `is_software_lower_bound` is always true: these measurements
+cover only application-observed software boundaries. They do not measure
+device sampling, SteamVR/compositor, display scanout, or motion-to-photon
+latency, and they do not add pose prediction or extrapolation.
+
 ## Local IPC and fail-safe behavior
 
 IPC v1 is a fixed-layout, little-endian protocol over a local Windows named
@@ -223,9 +239,12 @@ a new unpredictable session identifier and sequence zero. Both endpoints
 reject malformed, non-finite, out-of-range, replayed, or time-regressing data
 without partially updating device state.
 
-The producer sends heartbeats even when state does not change. After 500 ms
-without a valid state or heartbeat, `driver_ltb` marks both devices untracked
-and neutralizes every input. When pipe-server setup fails transiently inside
+The producer sends heartbeats even when state does not change. Global session
+liveness and per-hand state freshness are separate. After 500 ms without any
+valid state or heartbeat, `driver_ltb` marks both devices untracked. After
+500 ms without a valid state for one hand, it marks only that hand untracked
+and neutralizes its inputs; heartbeat or other-hand traffic cannot keep that
+hand's stale state alive. When pipe-server setup fails transiently inside
 `driver_ltb`, the receiver retries with capped exponential backoff from 1 s up
 to 30 s rather than abandoning the transport. Reconnect uses a new session; it
 never resumes a stale session or frozen pose. Loss of one associated tracker

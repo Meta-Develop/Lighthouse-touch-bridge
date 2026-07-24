@@ -559,6 +559,73 @@ public sealed record InternalDriverFeedSnapshot(
         LastError: null);
 }
 
+/// <summary>
+/// Managed-loop timing measured at application boundaries. These values are
+/// software-observed lower bounds and do not include device, compositor,
+/// display, or motion-to-photon latency.
+/// </summary>
+public sealed record InternalDriverTimingSnapshot
+{
+    public InternalDriverTimingSnapshot(
+        TimeSpan? iterationInterval,
+        TimeSpan observeDuration,
+        TimeSpan pairPublicationDuration,
+        TimeSpan? leftTrackerHostIngressAgeAtPublish,
+        TimeSpan? rightTrackerHostIngressAgeAtPublish,
+        int? observedTrackerCount)
+    {
+        IterationInterval = RequireOptionalNonnegative(
+            iterationInterval,
+            nameof(iterationInterval));
+        ObserveDuration = RequireNonnegative(observeDuration, nameof(observeDuration));
+        PairPublicationDuration = RequireNonnegative(
+            pairPublicationDuration,
+            nameof(pairPublicationDuration));
+        LeftTrackerHostIngressAgeAtPublish = RequireOptionalNonnegative(
+            leftTrackerHostIngressAgeAtPublish,
+            nameof(leftTrackerHostIngressAgeAtPublish));
+        RightTrackerHostIngressAgeAtPublish = RequireOptionalNonnegative(
+            rightTrackerHostIngressAgeAtPublish,
+            nameof(rightTrackerHostIngressAgeAtPublish));
+        if (observedTrackerCount is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(observedTrackerCount));
+        }
+
+        ObservedTrackerCount = observedTrackerCount;
+        IsSoftwareLowerBound = true;
+    }
+
+    public TimeSpan? IterationInterval { get; }
+
+    public TimeSpan ObserveDuration { get; }
+
+    public TimeSpan PairPublicationDuration { get; }
+
+    public TimeSpan? LeftTrackerHostIngressAgeAtPublish { get; }
+
+    public TimeSpan? RightTrackerHostIngressAgeAtPublish { get; }
+
+    public int? ObservedTrackerCount { get; }
+
+    public bool IsSoftwareLowerBound { get; }
+
+    private static TimeSpan RequireNonnegative(TimeSpan value, string parameterName)
+    {
+        if (value < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(parameterName);
+        }
+
+        return value;
+    }
+
+    private static TimeSpan? RequireOptionalNonnegative(
+        TimeSpan? value,
+        string parameterName) =>
+        value is { } present ? RequireNonnegative(present, parameterName) : null;
+}
+
 /// <summary>Immutable point-in-time session state for UI, CLI, tests, and structured output.</summary>
 public sealed record InternalDriverSessionSnapshot(
     InternalDriverSessionState State,
@@ -575,6 +642,9 @@ public sealed record InternalDriverSessionSnapshot(
 
     /// <summary>The sole validated active Lighthouse HMD, identified without an OpenVR index.</summary>
     public InternalDriverLighthouseHmdEvidence? LighthouseHmd { get; init; }
+
+    /// <summary>Additive application-observed timing evidence for the current run.</summary>
+    public InternalDriverTimingSnapshot? Timing { get; init; }
 
     internal static InternalDriverSessionSnapshot Initial { get; } = new(
         InternalDriverSessionState.Stopped,

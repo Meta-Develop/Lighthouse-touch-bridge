@@ -111,6 +111,9 @@ public sealed class InternalDriverSessionTests
             snapshot.State == InternalDriverSessionState.WaitingForTrackers ||
             snapshot.Left.NeutralReason == InternalDriverNeutralReason.TrackerTopologyInvalid ||
             snapshot.Right.NeutralReason == InternalDriverNeutralReason.TrackerTopologyInvalid);
+        var readyBeforeProfiles = Assert.Single(output.Snapshots.Where(snapshot =>
+            snapshot.State == InternalDriverSessionState.Ready));
+        Assert.True(readyBeforeProfiles.Readiness.TwoDistinctTrackersReady);
 
         Assert.True(feed.Published.Count >= 4);
         Assert.All(feed.Published.Take(4), state =>
@@ -223,7 +226,7 @@ public sealed class InternalDriverSessionTests
         Assert.False(rightCapture.Right.Capture!.RotationReady);
         Assert.Equal(0.82d, rightCapture.Left.Capture.MotionAxisCoverage);
         Assert.Equal(0.31d, rightCapture.Right.Capture.MotionAxisCoverage);
-        Assert.False(rightCapture.Readiness.TwoDistinctTrackersReady);
+        Assert.True(rightCapture.Readiness.TwoDistinctTrackersReady);
 
         var active = Assert.Single(output.Snapshots.Where(snapshot =>
             snapshot.State == InternalDriverSessionState.Active));
@@ -430,6 +433,20 @@ public sealed class InternalDriverSessionTests
             rotationProgress: 0d,
             positionProgress: 0d,
             positionReady: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new InternalDriverTimingSnapshot(
+            iterationInterval: TimeSpan.FromMilliseconds(-1),
+            observeDuration: TimeSpan.Zero,
+            pairPublicationDuration: TimeSpan.Zero,
+            leftTrackerHostIngressAgeAtPublish: null,
+            rightTrackerHostIngressAgeAtPublish: null,
+            observedTrackerCount: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new InternalDriverTimingSnapshot(
+            iterationInterval: null,
+            observeDuration: TimeSpan.Zero,
+            pairPublicationDuration: TimeSpan.Zero,
+            leftTrackerHostIngressAgeAtPublish: null,
+            rightTrackerHostIngressAgeAtPublish: null,
+            observedTrackerCount: -1));
     }
 
     [Fact]
@@ -552,7 +569,7 @@ public sealed class InternalDriverSessionTests
         var active = Assert.Single(output.Snapshots.Where(snapshot =>
             snapshot.State == InternalDriverSessionState.Active));
         Assert.Equal(2UL, active.Feed.LastSuccessfulSequence);
-        Assert.Equal(TimeSpan.FromMilliseconds(1), active.Feed.LastSuccessfulHeartbeatAge);
+        Assert.Equal(TimeSpan.FromMilliseconds(8), active.Feed.LastSuccessfulHeartbeatAge);
         Assert.Equal(BuildIdentity, active.Driver!.StagedBuildIdentity);
         Assert.True(active.Driver.ExactLoadedBuildReady);
         Assert.Equal(
@@ -570,6 +587,13 @@ public sealed class InternalDriverSessionTests
         Assert.Equal("lighthouse", active.LighthouseHmd.ActualTrackingSystemName);
         Assert.Equal("Bigscreen", active.LighthouseHmd.ManufacturerName);
         Assert.Equal("Beyond", active.LighthouseHmd.ModelNumber);
+        Assert.NotNull(active.Timing);
+        Assert.True(active.Timing.IsSoftwareLowerBound);
+        Assert.Equal(2, active.Timing.ObservedTrackerCount);
+        Assert.True(active.Timing.ObserveDuration >= TimeSpan.Zero);
+        Assert.True(active.Timing.PairPublicationDuration >= TimeSpan.Zero);
+        Assert.NotNull(active.Timing.LeftTrackerHostIngressAgeAtPublish);
+        Assert.NotNull(active.Timing.RightTrackerHostIngressAgeAtPublish);
 
         var dependencyCheck = Assert.Single(output.Snapshots.Where(snapshot =>
             snapshot.State == InternalDriverSessionState.DependencyCheck));
@@ -801,6 +825,7 @@ public sealed class InternalDriverSessionTests
         Assert.Equal(InternalDriverSessionReadiness.Empty, snapshot.Readiness);
         Assert.Null(snapshot.Driver);
         Assert.Null(snapshot.LighthouseHmd);
+        Assert.Null(snapshot.Timing);
         Assert.Equal(DriverFeedReadiness.Stopped, snapshot.Feed.Readiness);
         Assert.Null(snapshot.Feed.SessionId);
         Assert.Null(snapshot.Feed.LastSuccessfulSequence);

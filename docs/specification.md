@@ -366,7 +366,14 @@ non-finite, regressing, or implausibly discontinuous mappings.
 Tracker acquisition shall request `TrackingUniverseRawAndUncalibrated` and
 preserve the runtime timing or prediction metadata needed to map the pose onto
 the same application clock. Host arrival time may be recorded diagnostically,
-but shall not silently replace an available source timestamp.
+but shall not silently replace an available source timestamp. One logical
+observation shall acquire every connected physical tracker candidate through a
+single OpenVR pose batch with one shared post-call host-ingress timestamp and a
+zero prediction offset. The reusable batch access handle shall be rebuilt when
+any candidate's stable serial, registered device path, or transient access
+index changes. Steady-state observation and publication shall advance absolute
+monotonic deadlines, skipping missed slots rather than accumulating work time
+into the configured 10 ms period.
 
 Recordings shall preserve validity, connectivity, tracking result, clock
 mapping, and sample age. Quaternion sign continuity shall be normalized before
@@ -399,10 +406,14 @@ prompt and remain the same for both captures. Association shall fail closed
 when the winning pair lacks a sufficient margin over the runner-up, multiple
 candidates move similarly, correlation is weak, lag is inconsistent, identity
 is ambiguous, or a selected candidate is disconnected or repeatedly invalid.
-An invalid unrelated candidate may be rejected without blocking a unique
-healthy pair. Profiles shall use a stable tracker identity, not a transient
-OpenVR device index. Simultaneous-motion assignment may be added later by
-solving the left/right correlation assignment matrix.
+Candidates with enough samples to estimate correlation remain runner-up
+ambiguity contenders even when they are just below the correlation threshold
+or fail connection/validity health. Thus a late-disconnected correlated
+candidate cannot disappear and permit fallback to a different moving tracker.
+An invalid unrelated candidate with no competitive correlation may be rejected
+without blocking a unique healthy pair. Profiles shall use a stable tracker
+identity, not a transient OpenVR device index. Simultaneous-motion assignment
+may be added later by solving the left/right correlation assignment matrix.
 
 ---
 
@@ -608,11 +619,18 @@ global sequence without being rejected merely because its sample timestamp is
 older than that heartbeat's send timestamp.
 
 The producer shall send periodic heartbeats even when controller state does not
-change. If no valid state or heartbeat arrives for 500 ms, the driver shall
-mark both devices untracked and atomically neutralize every button, touch,
-trigger, grip, and stick. Invalid packets shall not refresh freshness. A fresh
-valid packet may recover only under the active session and ordering rules; a
-reconnect begins a new session at sequence zero.
+change. Session liveness and per-hand state freshness are independent:
+
+- if no valid packet of any kind arrives for 500 ms, the driver shall mark both
+  devices untracked and atomically neutralize every input; and
+- if no valid `HandState` for one hand arrives for 500 ms, the driver shall mark
+  that hand untracked and atomically neutralize that hand's inputs even while
+  heartbeat or other-hand traffic keeps the session live.
+
+Invalid packets shall refresh neither gate. Heartbeats and one hand's state
+shall never refresh the other hand's state age. A fresh valid hand state may
+recover only that hand under the active session and ordering rules; a reconnect
+begins a new session at sequence zero.
 
 Both implementations shall reject bad magic, unsupported version or message
 type, bad length, truncation or trailing bytes, nonzero reserved bits, empty
@@ -755,6 +773,13 @@ age, current IPC session, last accepted sequence, heartbeat age, reconnect
 attempts, and the exact reason a hand is neutral or untracked. “No Meta
 position” and “translation unobservable” are normal rotation-only outcomes;
 bad rotation calibration is a calibration failure.
+
+Additive timing evidence shall report the managed iteration interval,
+observation duration, pair-publication duration, selected tracker
+host-ingress age at each publication boundary, and tracker count. It shall be
+explicitly labeled a software lower bound: it excludes device acquisition,
+SteamVR/compositor, display, and motion-to-photon latency and shall not be
+represented as real-time hardware acceptance.
 
 ---
 
@@ -1123,8 +1148,9 @@ The target release is complete only when a Windows user can:
 10. Restart and reconnect through new sessions while preserving matching
     profiles and monotonic ordering.
 11. Lose a tracker, Meta runtime, pipe, or producer without a frozen hand: by
-    500 ms stale age, affected output is untracked and all stale inputs are
-    neutral.
+    500 ms stale age, each affected output is untracked and all stale inputs
+    are neutral. Heartbeat or other-hand traffic cannot refresh stale state for
+    the affected hand.
 12. Operate without ALVR, VMT, `TrackingOverrides`, haptics, ADB automation,
     cloud accounts, or remote services.
 13. Export logs and recordings sufficient to reproduce a calibration or

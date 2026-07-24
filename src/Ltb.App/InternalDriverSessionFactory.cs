@@ -81,8 +81,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     private readonly InternalDriverSessionOptions _options;
     private readonly InternalDriverResolvedPaths _paths;
     private readonly ISteamVrDriverLifecycle _driverLifecycle;
-    private readonly Dictionary<string, TrackerSourceEntry> _trackerSources =
-        new(StringComparer.Ordinal);
+    private readonly InternalDriverTrackerBatchSampler _trackerBatchSampler;
     private MetaLinkRuntime? _meta;
     private OpenVrSession? _openVr;
     private InternalDriverCaptureEvidence? _leftCaptureEvidence;
@@ -104,6 +103,11 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _driverLifecycle = driverLifecycle ?? throw new ArgumentNullException(nameof(driverLifecycle));
+        _trackerBatchSampler = new InternalDriverTrackerBatchSampler(
+            devices => _openVr!.CreateTrackedPoseBatchSource(
+                devices,
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: 0d));
     }
 
     private static SteamVrDriverLifecycle CreateDefaultLifecycle(
@@ -161,7 +165,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             var health = _openVr.GetRuntimeHealth();
             if (!health.IsRunning)
             {
-                _trackerSources.Clear();
+                _trackerBatchSampler.Reset();
                 _openVr.Dispose();
                 _openVr = null;
                 return new InternalDriverRuntimeObservation(
@@ -183,6 +187,9 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         }
         catch (OpenVrUnavailableException exception)
         {
+            _trackerBatchSampler.Reset();
+            _openVr?.Dispose();
+            _openVr = null;
             return new InternalDriverRuntimeObservation(
                 SteamVrRunning: false,
                 exception.Message,
@@ -199,11 +206,11 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     {
         ArgumentNullException.ThrowIfNull(observation);
         ArgumentNullException.ThrowIfNull(progress);
-        var serials = SnapshotPublishableTrackerSerials(observation);
+        var serials = SnapshotConnectedTrackerSerials(observation);
         if (serials.Length < 2)
         {
             throw new InvalidOperationException(
-                "Profile resolution requires at least two distinct connected, fully tracked physical tracker serials.");
+                "Profile resolution requires at least two distinct connected physical tracker serials.");
         }
 
         _leftCaptureEvidence = null;
@@ -222,11 +229,13 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             serials,
             progress,
             cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         var rightCapture = await CaptureHandAsync(
             MetaLinkHand.Right,
             serials,
             progress,
             cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         progress(
             InternalDriverSessionState.Association,
             $"Selecting a unique left/right pair from {serials.Length} raw tracker candidates " +
@@ -265,7 +274,9 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
                 leftCapture,
                 rightCapture,
                 association,
-                explicitRequest));
+                explicitRequest,
+                cancellationToken),
+            cancellationToken);
         progress(
             InternalDriverSessionState.SaveProfile,
             "Both first-party results passed validation; exact schema-2 profiles were saved and reloaded.",
@@ -273,24 +284,17 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         return profiles;
     }
 
-    internal static string[] SnapshotPublishableTrackerSerials(
+    internal static string[] SnapshotConnectedTrackerSerials(
         InternalDriverRuntimeObservation observation)
     {
         ArgumentNullException.ThrowIfNull(observation);
         return observation.TrackerSamples
-            .Where(pair => IsTrackerCalibrationCandidate(pair.Value))
+            .Where(pair => pair.Value.IsConnected)
             .Select(pair => pair.Key)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(serial => serial, StringComparer.Ordinal)
             .ToArray();
     }
-
-    private static bool IsTrackerCalibrationCandidate(PoseSourceSample sample) =>
-        sample.IsConnected &&
-        sample.PoseSample.HasValidOrientation &&
-        sample.PoseSample.HasValidPosition &&
-        sample.Validity.HasFlag(PoseValidity.TrackingValid) &&
-        sample.TrackingResult == PoseTrackingResult.RunningOk;
 
     public IDriverFeed CreateFeed()
     {
@@ -317,7 +321,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     public ValueTask StopRunAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _trackerSources.Clear();
+        _trackerBatchSampler.Reset();
         _openVr?.Dispose();
         _openVr = null;
         _meta?.Dispose();
@@ -347,40 +351,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
                 device.Capabilities.IsPhysicalPoseSourceEligible &&
                 !device.Capabilities.IsVirtualPoseSource)
             .ToArray();
-        var duplicate = candidates
-            .GroupBy(device => device.StableDeviceId, StringComparer.Ordinal)
-            .FirstOrDefault(group => group.Count() > 1)?.Key;
-        if (duplicate is not null)
-        {
-            throw new InvalidDataException(
-                $"SteamVR enumerated duplicate physical tracker serial '{duplicate}'.");
-        }
-
-        var currentSerials = candidates
-            .Select(candidate => candidate.StableDeviceId)
-            .ToHashSet(StringComparer.Ordinal);
-        foreach (var stale in _trackerSources.Keys.Where(serial => !currentSerials.Contains(serial)).ToArray())
-        {
-            _trackerSources.Remove(stale);
-        }
-
-        var samples = new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal);
-        foreach (var device in candidates)
-        {
-            if (!_trackerSources.TryGetValue(device.StableDeviceId, out var entry) ||
-                entry.TransientIndex != device.TransientDeviceIndex)
-            {
-                var source = _openVr!.CreateTrackedPoseSource(
-                    device,
-                    OpenVrTrackingUniverse.RawAndUncalibrated);
-                entry = new TrackerSourceEntry(device.TransientDeviceIndex, source);
-                _trackerSources[device.StableDeviceId] = entry;
-            }
-
-            samples.Add(device.StableDeviceId, entry.Source.ReadPose());
-        }
-
-        return samples;
+        return _trackerBatchSampler.Read(candidates);
     }
 
     private static InternalDriverProfilePair? FindReusablePair(
@@ -473,6 +444,9 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         var reportCadence = new InternalDriverCaptureReportCadence(
             CaptureProgressInterval,
             startedNanoseconds);
+        var scheduler = new InternalDriverMonotonicDeadlineScheduler(
+            _options.PollInterval,
+            startedNanoseconds);
         InternalDriverRuntimeObservation? latestObservation = null;
         UpdateCaptureEvidence(hand, InternalDriverCaptureEvidence.Empty);
         ReportCaptureEvidence(hand, progress, observation: null);
@@ -517,7 +491,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
                 ReportCaptureEvidence(hand, progress, latestObservation);
             }
 
-            await DelayAsync(_options.PollInterval, cancellationToken).ConfigureAwait(false);
+            await scheduler.WaitForNextAsync(
+                GetMonotonicNanoseconds,
+                DelayAsync,
+                cancellationToken).ConfigureAwait(false);
         }
 
         var finalEvidence = captureEvidence.Evaluate();
@@ -681,20 +658,24 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         GuidedHandCapture leftCapture,
         GuidedHandCapture rightCapture,
         TrackerAssociationResult association,
-        bool explicitRequest)
+        bool explicitRequest,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var left = Calibrate(
             calibration,
             leftCapture,
             MetaLinkHand.Left,
             association.Left!.TrackerSerial,
             explicitRequest);
+        cancellationToken.ThrowIfCancellationRequested();
         var right = Calibrate(
             calibration,
             rightCapture,
             MetaLinkHand.Right,
             association.Right!.TrackerSerial,
             explicitRequest);
+        cancellationToken.ThrowIfCancellationRequested();
         return new InternalDriverProfilePair(left, right);
     }
 
@@ -704,7 +685,8 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     /// </summary>
     internal static TResult RunTwoHandProfileStoreTransaction<TResult>(
         string profileStorePath,
-        Func<string, TResult> stageCalibration)
+        Func<string, TResult> stageCalibration,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileStorePath);
         ArgumentNullException.ThrowIfNull(stageCalibration);
@@ -721,13 +703,16 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var initialStore = File.Exists(canonicalPath)
                 ? CalibrationProfileFile.LoadStore(canonicalPath)
                 : CalibrationProfileStore.Empty;
             CalibrationProfileFile.SaveStore(stagedPath, initialStore);
 
             var result = stageCalibration(stagedPath);
+            cancellationToken.ThrowIfCancellationRequested();
             var completedStore = CalibrationProfileFile.LoadStore(stagedPath);
+            cancellationToken.ThrowIfCancellationRequested();
             CalibrationProfileFile.SaveStore(canonicalPath, completedStore);
             _ = CalibrationProfileFile.LoadStore(canonicalPath);
             return result;
@@ -837,8 +822,6 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             InternalDriverSettingsPreparationStatus.Current,
             "Windows x64 and zero-input LocalApplicationData settings are available.");
     }
-
-    private sealed record TrackerSourceEntry(uint TransientIndex, TrackedPoseSource Source);
 
     internal sealed record GuidedHandCapture(
         MetaLinkHand Hand,

@@ -29,6 +29,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private InternalDriverRuntimeObservation? _lastObservation;
     private InternalDriverCaptureEvidence? _leftCapture;
     private InternalDriverCaptureEvidence? _rightCapture;
+    private InternalDriverTimingSnapshot? _timing;
     private ulong _lastLeftTimestamp;
     private ulong _lastRightTimestamp;
     private long _publicationGeneration;
@@ -379,10 +380,25 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private async ValueTask MonitorActiveAsync(CancellationToken cancellationToken)
     {
         var metaWasLost = false;
+        var startedNanoseconds = _runtime.GetMonotonicNanoseconds();
+        var scheduler = new InternalDriverMonotonicDeadlineScheduler(
+            _options.PollInterval,
+            startedNanoseconds);
+        ulong? previousIterationStartedNanoseconds = null;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var iterationStartedNanoseconds = _runtime.GetMonotonicNanoseconds();
+            TimeSpan? iterationInterval = previousIterationStartedNanoseconds is { } previous
+                ? ElapsedTime(iterationStartedNanoseconds, previous)
+                : null;
+            previousIterationStartedNanoseconds = iterationStartedNanoseconds;
+            var observeStartedNanoseconds = _runtime.GetMonotonicNanoseconds();
             var observation = _runtime.Observe();
+            var observeCompletedNanoseconds = _runtime.GetMonotonicNanoseconds();
+            var observeDuration = ElapsedTime(
+                observeCompletedNanoseconds,
+                observeStartedNanoseconds);
             _lastObservation = observation;
             if (!observation.SteamVrRunning)
             {
@@ -412,7 +428,10 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                     observation,
                     leftReason: InternalDriverNeutralReason.DriverNotReady,
                     rightReason: InternalDriverNeutralReason.DriverNotReady);
-                await _runtime.DelayAsync(_options.PollInterval, cancellationToken).ConfigureAwait(false);
+                await scheduler.WaitForNextAsync(
+                    _runtime.GetMonotonicNanoseconds,
+                    _runtime.DelayAsync,
+                    cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -435,7 +454,10 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                     observation,
                     leftReason: InternalDriverNeutralReason.MetaNotReady,
                     rightReason: InternalDriverNeutralReason.MetaNotReady);
-                await _runtime.DelayAsync(_options.PollInterval, cancellationToken).ConfigureAwait(false);
+                await scheduler.WaitForNextAsync(
+                    _runtime.GetMonotonicNanoseconds,
+                    _runtime.DelayAsync,
+                    cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -458,16 +480,34 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                     rightReason: InternalDriverNeutralReason.FeedReconnecting);
             }
 
+            var pairPublicationStartedNanoseconds = _runtime.GetMonotonicNanoseconds();
             var left = await PublishHandAsync(
                 _profiles!.Left,
                 observation.Meta.Left,
                 observation,
                 cancellationToken).ConfigureAwait(false);
+            var leftPublicationCompletedNanoseconds = _runtime.GetMonotonicNanoseconds();
             var right = await PublishHandAsync(
                 _profiles.Right,
                 observation.Meta.Right,
                 observation,
                 cancellationToken).ConfigureAwait(false);
+            var pairPublicationCompletedNanoseconds = _runtime.GetMonotonicNanoseconds();
+            _timing = new InternalDriverTimingSnapshot(
+                iterationInterval,
+                observeDuration,
+                ElapsedTime(
+                    pairPublicationCompletedNanoseconds,
+                    pairPublicationStartedNanoseconds),
+                TrackerHostIngressAge(
+                    observation,
+                    _profiles.Left.TrackerSerial,
+                    leftPublicationCompletedNanoseconds),
+                TrackerHostIngressAge(
+                    observation,
+                    _profiles.Right.TrackerSerial,
+                    pairPublicationCompletedNanoseconds),
+                observation.TrackerSamples.Count);
             var health = _feed.Health;
             var state = health.Readiness is DriverFeedReadiness.Reconnecting or DriverFeedReadiness.Faulted ||
                 health.IsStale
@@ -491,10 +531,43 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             {
                 Driver = DriverEvidence(observation),
                 LighthouseHmd = LighthouseHmdEvidence(observation),
+                Timing = _timing,
             });
 
-            await _runtime.DelayAsync(_options.PollInterval, cancellationToken).ConfigureAwait(false);
+            await scheduler.WaitForNextAsync(
+                _runtime.GetMonotonicNanoseconds,
+                _runtime.DelayAsync,
+                cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private static TimeSpan ElapsedTime(ulong nowNanoseconds, ulong startedNanoseconds)
+    {
+        var elapsedNanoseconds = nowNanoseconds >= startedNanoseconds
+            ? nowNanoseconds - startedNanoseconds
+            : 0UL;
+        var ticks = Math.Min((ulong)long.MaxValue, elapsedNanoseconds / 100UL);
+        return TimeSpan.FromTicks((long)ticks);
+    }
+
+    private static TimeSpan? TrackerHostIngressAge(
+        InternalDriverRuntimeObservation observation,
+        string trackerSerial,
+        ulong publicationCompletedNanoseconds)
+    {
+        if (!observation.TrackerSamples.TryGetValue(trackerSerial, out var tracker))
+        {
+            return null;
+        }
+
+        var publicationSeconds = publicationCompletedNanoseconds / 1_000_000_000d;
+        var ageSeconds = Math.Max(
+            0d,
+            publicationSeconds - tracker.MonotonicHostTimeSeconds);
+        var ticks = Math.Ceiling(ageSeconds * TimeSpan.TicksPerSecond);
+        return ticks >= long.MaxValue
+            ? TimeSpan.MaxValue
+            : TimeSpan.FromTicks((long)ticks);
     }
 
     private async ValueTask<InternalDriverHandSnapshot> PublishHandAsync(
@@ -1010,6 +1083,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         {
             Driver = retainRunEvidence ? DriverEvidence(observation) : null,
             LighthouseHmd = retainRunEvidence ? LighthouseHmdEvidence(observation) : null,
+            Timing = retainRunEvidence ? _timing : null,
         };
     }
 
@@ -1336,16 +1410,11 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             .Take(2)
             .Count() == 2;
 
-    private static bool ExactlyTwoReadyTrackerCandidates(
-        InternalDriverRuntimeObservation observation) =>
-        observation.TrackerSamples.Count == 2 &&
-        observation.TrackerSamples.Values.All(IsTrackerPublishable);
-
     private bool RequiredTrackersReady(InternalDriverRuntimeObservation observation)
     {
         if (_profiles is not { IsValid: true } profiles)
         {
-            return ExactlyTwoReadyTrackerCandidates(observation);
+            return AtLeastTwoReadyTrackerCandidates(observation);
         }
 
         return observation.TrackerSamples.TryGetValue(
@@ -1445,6 +1514,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         _lastObservation = null;
         _leftCapture = null;
         _rightCapture = null;
+        _timing = null;
         _lastLeftTimestamp = 0;
         _lastRightTimestamp = 0;
         _inputMapper.Reset();
@@ -1458,6 +1528,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         _lastObservation = null;
         _leftCapture = null;
         _rightCapture = null;
+        _timing = null;
         _lastLeftTimestamp = 0;
         _lastRightTimestamp = 0;
     }
