@@ -1,8 +1,54 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Ltb.Gui.App"
-             RequestedThemeVariant="Default">
+             RequestedThemeVariant="Dark">
+  <Application.Resources>
+    <SolidColorBrush x:Key="LtbWindowBrush">#09111A</SolidColorBrush>
+    <SolidColorBrush x:Key="LtbPanelBrush">#111D29</SolidColorBrush>
+    <SolidColorBrush x:Key="LtbPanelRaisedBrush">#172635</SolidColorBrush>
+    <SolidColorBrush x:Key="LtbBorderBrush">#2E485E</SolidColorBrush>
+    <SolidColorBrush x:Key="LtbAccentBrush">#79D8FF</SolidColorBrush>
+    <SolidColorBrush x:Key="LtbGoodBrush">#8BE0A4</SolidColorBrush>
+    <SolidColorBrush x:Key="LtbWarningBrush">#FFBF69</SolidColorBrush>
+    <SolidColorBrush x:Key="LtbMutedTextBrush">#AFC1D2</SolidColorBrush>
+  </Application.Resources>
   <Application.Styles>
     <FluentTheme />
+    <Style Selector="Window">
+      <Setter Property="Background" Value="{DynamicResource LtbWindowBrush}" />
+      <Setter Property="FontSize" Value="14" />
+    </Style>
+    <Style Selector="Border.panel">
+      <Setter Property="Background" Value="{DynamicResource LtbPanelBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource LtbBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="14" />
+    </Style>
+    <Style Selector="Border.raised">
+      <Setter Property="Background" Value="{DynamicResource LtbPanelRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource LtbBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="10" />
+    </Style>
+    <Style Selector="TextBlock.section-title">
+      <Setter Property="FontSize" Value="18" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="{DynamicResource LtbMutedTextBrush}" />
+    </Style>
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="{DynamicResource LtbAccentBrush}" />
+      <Setter Property="Foreground" Value="#071018" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="MinHeight" Value="38" />
+      <Setter Property="Padding" Value="16,8" />
+    </Style>
+    <Style Selector="ProgressBar">
+      <Setter Property="MinHeight" Value="9" />
+      <Setter Property="Foreground" Value="{DynamicResource LtbAccentBrush}" />
+    </Style>
   </Application.Styles>
 </Application>
