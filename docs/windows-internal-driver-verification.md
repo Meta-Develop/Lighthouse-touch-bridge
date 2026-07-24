@@ -191,13 +191,15 @@ still does not replace the connected-hardware gates.
   reused with their original selected mode, lag, quality, tracker identity, and
   `ltb_touch` driver profile.
 - [ ] Move or swap a mount, stop the session, and press **Calibrate /
-  Recalibrate** with five tracker candidates; confirm fresh calibration is
-  refused with exact-two remediation even though saved profiles exist. Power
-  off the three unrelated trackers and press it again; confirm both hands are
-  captured instead of reusing the saved pair. Force the right-hand attempt to
-  fail after left validation and confirm the complete prior pair and unrelated
-  store entries remain unchanged, then repeat successfully and confirm the new
-  pair replaces the prior pair together.
+  Recalibrate** with the two mounted trackers and three unrelated trackers
+  connected; confirm both hands are captured instead of reusing the saved pair,
+  and confirm the mounted tracker serials win the separate left/right motion
+  correlations. Move an unrelated tracker in sync with a prompted hand and
+  confirm ambiguous association fails without selecting either hand. Force the
+  right-hand attempt to fail after left validation and confirm the complete
+  prior pair and unrelated store entries remain byte-for-byte unchanged, then
+  repeat successfully and confirm the new pair replaces the prior pair
+  together with no staging residue.
 
 ## Feed, reconnect, watchdog, and shutdown fail-safe
 

@@ -9,6 +9,9 @@ public sealed class TrackerAssociationTests
 {
     private const string LeftSerial = "LHR-TEST0001";
     private const string RightSerial = "LHR-TEST0002";
+    private const string ChestSerial = "LHR-FBT-CHEST";
+    private const string LeftFootSerial = "LHR-FBT-LEFT-FOOT";
+    private const string RightFootSerial = "LHR-FBT-RIGHT-FOOT";
 
     [Fact]
     public void SerialAssignmentIgnoresReversedCandidateOrderAndReportsSwap()
@@ -65,6 +68,143 @@ public sealed class TrackerAssociationTests
         Assert.Equal(
             TrackerCandidateOrderDiagnostic.ConsistentLeftThenRight,
             result.CandidateOrderDiagnostic);
+    }
+
+    [Fact]
+    public void FiveCandidateAssignmentSelectsUniqueMountedPairByStableSerial()
+    {
+        var leftData = Dataset(seed: 1401, lagMilliseconds: 12d);
+        var rightData = Dataset(seed: 2502, lagMilliseconds: 14d);
+        var leftCapture = Capture(
+            CalibrationHand.Left,
+            leftData.RawControllerSamples,
+            new TrackerAssociationCandidate(ChestSerial, Static(leftData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(RightSerial, Static(leftData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(LeftSerial, leftData.RawTrackerSamples),
+            new TrackerAssociationCandidate(RightFootSerial, Static(leftData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(LeftFootSerial, Static(leftData.RawTrackerSamples)));
+        var rightCapture = Capture(
+            CalibrationHand.Right,
+            rightData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftFootSerial, Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(LeftSerial, Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(ChestSerial, Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(RightSerial, rightData.RawTrackerSamples),
+            new TrackerAssociationCandidate(RightFootSerial, Static(rightData.RawTrackerSamples)));
+
+        var result = TrackerHandAssociator.Associate(leftCapture, rightCapture);
+
+        Assert.True(result.Success, result.Reason);
+        Assert.Equal(LeftSerial, result.Left!.TrackerSerial);
+        Assert.Equal(RightSerial, result.Right!.TrackerSerial);
+        Assert.Equal(10, result.Scores.Count);
+        Assert.Equal(
+            TrackerCandidateOrderDiagnostic.InconsistentBetweenCaptures,
+            result.CandidateOrderDiagnostic);
+    }
+
+    [Fact]
+    public void ThirdCandidateMirroringPromptedHandFailsClosedAsAmbiguous()
+    {
+        var leftData = Dataset(seed: 1501, lagMilliseconds: 12d);
+        var rightData = Dataset(seed: 2602, lagMilliseconds: 14d);
+        var leftCapture = Capture(
+            CalibrationHand.Left,
+            leftData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftSerial, leftData.RawTrackerSamples),
+            new TrackerAssociationCandidate(RightSerial, Static(leftData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(ChestSerial, leftData.RawTrackerSamples));
+        var rightCapture = Capture(
+            CalibrationHand.Right,
+            rightData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftSerial, Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(RightSerial, rightData.RawTrackerSamples),
+            new TrackerAssociationCandidate(ChestSerial, Static(rightData.RawTrackerSamples)));
+
+        var result = TrackerHandAssociator.Associate(leftCapture, rightCapture);
+
+        Assert.False(result.Success);
+        Assert.Equal(TrackerAssociationStatus.Ambiguous, result.Status);
+        Assert.Null(result.Left);
+        Assert.Null(result.Right);
+        Assert.Contains("left capture", result.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("winner/runner-up", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FailedUnrelatedCandidatesDoNotRejectUniqueHealthyPair()
+    {
+        var leftData = Dataset(seed: 1601, lagMilliseconds: 12d);
+        var rightData = Dataset(seed: 2702, lagMilliseconds: 14d);
+        var leftCapture = Capture(
+            CalibrationHand.Left,
+            leftData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftSerial, leftData.RawTrackerSamples),
+            new TrackerAssociationCandidate(RightSerial, Static(leftData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(
+                ChestSerial,
+                Static(leftData.RawTrackerSamples),
+                isConnected: false),
+            new TrackerAssociationCandidate(
+                LeftFootSerial,
+                Invalid(leftData.RawTrackerSamples)));
+        var rightCapture = Capture(
+            CalibrationHand.Right,
+            rightData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftSerial, Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(RightSerial, rightData.RawTrackerSamples),
+            new TrackerAssociationCandidate(
+                ChestSerial,
+                Static(rightData.RawTrackerSamples),
+                isConnected: false),
+            new TrackerAssociationCandidate(
+                LeftFootSerial,
+                Invalid(rightData.RawTrackerSamples)));
+
+        var result = TrackerHandAssociator.Associate(leftCapture, rightCapture);
+
+        Assert.True(result.Success, result.Reason);
+        Assert.Equal(LeftSerial, result.Left!.TrackerSerial);
+        Assert.Equal(RightSerial, result.Right!.TrackerSerial);
+        Assert.Contains(result.Scores, score =>
+            score.TrackerSerial == ChestSerial &&
+            score.Rejection is TrackerAssociationCandidateRejection.Disconnected);
+        Assert.Contains(result.Scores, score =>
+            score.TrackerSerial == LeftFootSerial &&
+            score.Rejection is TrackerAssociationCandidateRejection.RepeatedlyInvalid);
+    }
+
+    [Fact]
+    public void DisconnectedSelectedCandidateDoesNotFallBackToUnrelatedTracker()
+    {
+        var leftData = Dataset(seed: 1701, lagMilliseconds: 12d);
+        var rightData = Dataset(seed: 2802, lagMilliseconds: 14d);
+        var leftCapture = Capture(
+            CalibrationHand.Left,
+            leftData.RawControllerSamples,
+            new TrackerAssociationCandidate(
+                LeftSerial,
+                leftData.RawTrackerSamples,
+                isConnected: false),
+            new TrackerAssociationCandidate(RightSerial, Static(leftData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(ChestSerial, Static(leftData.RawTrackerSamples)));
+        var rightCapture = Capture(
+            CalibrationHand.Right,
+            rightData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftSerial, Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(RightSerial, rightData.RawTrackerSamples),
+            new TrackerAssociationCandidate(ChestSerial, Static(rightData.RawTrackerSamples)));
+
+        var result = TrackerHandAssociator.Associate(leftCapture, rightCapture);
+
+        Assert.False(result.Success);
+        Assert.Equal(TrackerAssociationStatus.InvalidCandidate, result.Status);
+        Assert.Null(result.Left);
+        Assert.Null(result.Right);
+        Assert.Contains(result.Scores, score =>
+            score.Hand is CalibrationHand.Left &&
+            score.TrackerSerial == LeftSerial &&
+            score.Rejection is TrackerAssociationCandidateRejection.Disconnected);
     }
 
     [Fact]

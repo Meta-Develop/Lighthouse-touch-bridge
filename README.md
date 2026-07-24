@@ -46,8 +46,10 @@ no device indexes, VMT slots, driver paths, or settings paths to enter.
 
 Normal **Start** reuses an exact matching left/right profile pair. Press
 **Calibrate / Recalibrate** while stopped to bypass saved profiles and capture
-both hands again; fresh association requires exactly two tracker candidates, so
-power off unrelated trackers first.
+both hands again. Fresh association scores every connected physical tracker
+candidate during separate left- and right-hand motion prompts and fails closed
+unless one distinct pair wins unambiguously, so unrelated trackers may remain
+connected.
 
 See [Internal driver operations](docs/internal-drivers.md) for discovery,
 readiness, calibration, paths, keep-awake guidance, and failure behavior.

@@ -388,16 +388,21 @@ s(t) = ||omega(t)||
 The guided flow shall:
 
 1. ask the user to move only the left mounted controller;
-2. align Meta and tracker angular-speed streams and select the tracker with the
-   strongest valid correlation;
+2. align Meta and every connected physical tracker candidate's angular-speed
+   stream and score the left-hand correlations;
 3. ask the user to move only the right mounted controller; and
-4. confirm the remaining assignment and its correlation.
+4. score the right-hand correlations and select the highest-confidence
+   distinct left/right pair from the complete candidate set.
 
-Association shall fail closed when both tracker candidates move similarly,
-correlation is weak, lag is inconsistent, identity is ambiguous, or a candidate
-is disconnected or repeatedly invalid. Profiles shall use a stable tracker
-identity, not a transient OpenVR device index. Simultaneous-motion assignment
-may be added later by solving the left/right correlation assignment matrix.
+The candidate roster shall be captured by stable identity before the first
+prompt and remain the same for both captures. Association shall fail closed
+when the winning pair lacks a sufficient margin over the runner-up, multiple
+candidates move similarly, correlation is weak, lag is inconsistent, identity
+is ambiguous, or a selected candidate is disconnected or repeatedly invalid.
+An invalid unrelated candidate may be rejected without blocking a unique
+healthy pair. Profiles shall use a stable tracker identity, not a transient
+OpenVR device index. Simultaneous-motion assignment may be added later by
+solving the left/right correlation assignment matrix.
 
 ---
 
@@ -735,7 +740,8 @@ Readiness shall be an explicit conjunction of:
 - Meta runtime installed, ABI-compatible, linked, and reporting both Touch
   controllers;
 - two distinct, connected physical tracker identities selected by saved
-  left/right controller profiles or the current exact-two association;
+  left/right controller profiles or a unique guided association from the
+  current candidate set;
   unrelated physical trackers may coexist and shall not participate in
   controller publication;
 - matching valid profiles or a completed calibration;
@@ -807,9 +813,10 @@ differ.
 5. Verify that Bigscreen Beyond is the sole SteamVR HMD and that no Quest HMD or
    Meta-native controller device has entered SteamVR.
 6. Open the invisible Meta session and show per-runtime and per-hand readiness.
-7. Discover the two controller-mounted Lighthouse trackers by stable identity.
-   Reuse may select them from additional raw Lighthouse trackers; a new
-   association/calibration capture requires exactly two candidates.
+7. Discover connected physical Lighthouse trackers by stable identity. Reuse
+   selects the saved controller-mounted pair from additional raw trackers; a
+   new association/calibration capture scores all candidates and accepts only a
+   unique distinct left/right pair.
 8. Ask the user to keep the Touch controllers observable by Quest cameras when
    full 6DoF is desired.
 9. Guide separate left and right pitch, yaw, roll, and moderate translation
