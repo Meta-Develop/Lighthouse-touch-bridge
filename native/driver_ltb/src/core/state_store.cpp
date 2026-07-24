@@ -76,6 +76,7 @@ void StateStore::ResetForSession(const SessionId& session) noexcept {
     last_sequence_ = 0;
     last_heartbeat_timestamp_ = 0;
     last_hand_timestamps_.fill(0);
+    last_hand_arrivals_.fill(0);
     states_[0] = NeutralState(Hand::Left);
     states_[1] = NeutralState(Hand::Right);
     has_state_.fill(false);
@@ -118,6 +119,7 @@ ApplyError StateStore::ApplyPacket(
     if (decoded.message.type == MessageType::HandState) {
         const auto index = HandIndex(decoded.message.state.hand);
         last_hand_timestamps_[index] = decoded.message.monotonic_nanoseconds;
+        last_hand_arrivals_[index] = arrival_nanoseconds;
         states_[index] = decoded.message.state;
         states_[index].source_timestamp_nanoseconds = decoded.message.monotonic_nanoseconds;
         has_state_[index] = true;
@@ -130,9 +132,15 @@ ApplyError StateStore::ApplyPacket(
 HandSnapshot StateStore::Snapshot(Hand hand, std::uint64_t now_nanoseconds) const noexcept {
     std::scoped_lock lock(mutex_);
     const auto index = HandIndex(hand);
-    const bool clock_regressed = now_nanoseconds < last_arrival_;
-    const bool stale = !has_session_ || clock_regressed ||
+    const bool session_clock_regressed = now_nanoseconds < last_arrival_;
+    const bool session_stale = !has_session_ || session_clock_regressed ||
         now_nanoseconds - last_arrival_ >= kWatchdogTimeoutNanoseconds;
+    const bool hand_clock_regressed =
+        has_state_[index] && now_nanoseconds < last_hand_arrivals_[index];
+    const bool hand_stale = has_state_[index] &&
+        (hand_clock_regressed ||
+            now_nanoseconds - last_hand_arrivals_[index] >= kWatchdogTimeoutNanoseconds);
+    const bool stale = session_stale || hand_stale;
     if (stale) {
         return {.state = NeutralState(hand), .has_state = has_state_[index], .stale = true};
     }
