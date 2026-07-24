@@ -116,6 +116,131 @@ public sealed class OpenVrPoseSourceTests
     }
 
     [Fact]
+    public void BatchSourceUsesOneRuntimeAcquisitionAndOneSharedPostCallIngressTimestamp()
+    {
+        using var runtime = new BatchFakeOpenVrRuntime();
+        var source = new OpenVrTrackedPoseBatchSourceAdapter(
+            runtime,
+            new BatchAssertingClock(runtime, 9876.54321),
+            [
+                TrackerDescriptor("tracker-left", 7),
+                TrackerDescriptor("tracker-right", 11),
+            ],
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            predictionOffsetSeconds: 0.0125);
+
+        var samples = source.ReadPoses();
+
+        Assert.Equal(1, runtime.BatchReadCount);
+        Assert.Equal(new uint[] { 7, 11 }, runtime.LastTransientDeviceIndexes);
+        Assert.Equal(OpenVrTrackingUniverse.RawAndUncalibrated, runtime.LastTrackingUniverse);
+        Assert.Equal(0.0125, runtime.LastPredictionOffsetSeconds);
+        Assert.Collection(
+            samples,
+            left =>
+            {
+                Assert.Equal("tracker-left", left.Device.StableDeviceId);
+                Assert.Equal(9876.54321, left.Sample.MonotonicHostTimeSeconds);
+                Assert.Equal(new Vector3(7f, 0f, 0f), left.Sample.Pose.TranslationMeters);
+            },
+            right =>
+            {
+                Assert.Equal("tracker-right", right.Device.StableDeviceId);
+                Assert.Equal(9876.54321, right.Sample.MonotonicHostTimeSeconds);
+                Assert.Equal(new Vector3(11f, 0f, 0f), right.Sample.Pose.TranslationMeters);
+            });
+    }
+
+    [Fact]
+    public void SessionBatchSourcePreservesReadPoseOnlyFakeCompatibility()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        using var session = new OpenVrSession(runtime);
+        var source = session.CreateTrackedPoseBatchSource(
+            [
+                TrackerDescriptor("tracker-left", 7),
+                TrackerDescriptor("tracker-right", 11),
+            ],
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+
+        var samples = source.ReadPoses();
+
+        Assert.Equal(2, runtime.ReadPoseCount);
+        Assert.Equal(2, samples.Count);
+        Assert.Equal(
+            samples[0].Sample.MonotonicHostTimeSeconds,
+            samples[1].Sample.MonotonicHostTimeSeconds);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsEmptyDuplicateAndOutOfRangeIndexesBeforeRuntimeRead()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        var clock = new AssertingClock(runtime, 1d);
+
+        Assert.Throws<ArgumentException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: 0d));
+        Assert.Throws<ArgumentException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [
+                    TrackerDescriptor("tracker-left", 7),
+                    TrackerDescriptor("tracker-alias", 7),
+                ],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: 0d));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [TrackerDescriptor(
+                    "tracker-out-of-range",
+                    OpenVrRuntimePoseBatchValidation.MaximumTrackedDeviceCount)],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: 0d));
+
+        Assert.Equal(0, runtime.ReadPoseCount);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsInvalidUniverseAndPredictionBeforeRuntimeRead()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        var device = TrackerDescriptor();
+        var clock = new AssertingClock(runtime, 1d);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [device],
+                (OpenVrTrackingUniverse)int.MaxValue,
+                predictionOffsetSeconds: 0d));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [device],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: double.NaN));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [device],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: double.MaxValue));
+
+        Assert.Equal(0, runtime.ReadPoseCount);
+    }
+
+    [Fact]
     public void NativeVelocityMappingPreservesFiniteVectorAndDropsInvalidVectors()
     {
         Assert.Equal(
@@ -348,10 +473,12 @@ public sealed class OpenVrPoseSourceTests
             SteamVrControllerRole.LeftHand,
             true);
 
-    private static SteamVrDeviceDescriptor TrackerDescriptor() =>
+    private static SteamVrDeviceDescriptor TrackerDescriptor(
+        string serialNumber = "tracker-left",
+        uint transientDeviceIndex = 7) =>
         new(
-            new SteamVrDeviceIdentity("tracker-left", "lighthouse/tracker-left"),
-            7,
+            new SteamVrDeviceIdentity(serialNumber, $"lighthouse/{serialNumber}"),
+            transientDeviceIndex,
             SteamVrDeviceCategory.GenericTracker,
             SteamVrControllerRole.None,
             true);
@@ -384,6 +511,8 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
 
     public bool HasReadPose { get; private set; }
 
+    public int ReadPoseCount { get; private set; }
+
     public double? LastPredictionOffsetSeconds { get; private set; }
 
     public OpenVrTrackingUniverse? LastTrackingUniverse { get; private set; }
@@ -396,9 +525,54 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
         double predictionOffsetSeconds)
     {
         HasReadPose = true;
+        ReadPoseCount++;
         LastTrackingUniverse = trackingUniverse;
         LastPredictionOffsetSeconds = predictionOffsetSeconds;
         return _pose;
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
+{
+    public int BatchReadCount { get; private set; }
+
+    public IReadOnlyList<uint> LastTransientDeviceIndexes { get; private set; } = [];
+
+    public OpenVrTrackingUniverse? LastTrackingUniverse { get; private set; }
+
+    public double? LastPredictionOffsetSeconds { get; private set; }
+
+    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => [];
+
+    public OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds) =>
+        throw new InvalidOperationException("The optimized batch path called the single-pose fallback.");
+
+    public IReadOnlyList<OpenVrRuntimePose> ReadPoses(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        BatchReadCount++;
+        LastTransientDeviceIndexes = transientDeviceIndexes.ToArray();
+        LastTrackingUniverse = trackingUniverse;
+        LastPredictionOffsetSeconds = predictionOffsetSeconds;
+        return Array.AsReadOnly(transientDeviceIndexes
+            .Select(index => new OpenVrRuntimePose(
+                new RigidTransform(Quaternion.Identity, new Vector3(index, 0f, 0f)),
+                PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid,
+                IsConnected: true,
+                PoseTrackingResult.RunningOk,
+                RuntimeTimeSeconds: null,
+                PredictionOffsetSeconds: predictionOffsetSeconds,
+                SampleAgeSeconds: null))
+            .ToArray());
     }
 
     public void Dispose()
@@ -420,6 +594,24 @@ internal sealed class AssertingClock : IMonotonicClock
     public double GetTimestampSeconds()
     {
         Assert.True(_runtime.HasReadPose, "Host time was captured before the runtime pose entered LTB.");
+        return _timestamp;
+    }
+}
+
+internal sealed class BatchAssertingClock : IMonotonicClock
+{
+    private readonly BatchFakeOpenVrRuntime _runtime;
+    private readonly double _timestamp;
+
+    public BatchAssertingClock(BatchFakeOpenVrRuntime runtime, double timestamp)
+    {
+        _runtime = runtime;
+        _timestamp = timestamp;
+    }
+
+    public double GetTimestampSeconds()
+    {
+        Assert.Equal(1, _runtime.BatchReadCount);
         return _timestamp;
     }
 }

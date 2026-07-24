@@ -140,6 +140,25 @@ public sealed class OpenVrSession : SteamVrDeviceEnumerator, IDisposable
             predictionOffsetSeconds);
     }
 
+    /// <summary>
+    /// Creates a reusable source that samples the requested distinct tracked
+    /// devices from one logical OpenVR acquisition. All returned samples share
+    /// the same post-call monotonic host-ingress timestamp.
+    /// </summary>
+    public TrackedPoseBatchSource CreateTrackedPoseBatchSource(
+        IEnumerable<SteamVrDeviceDescriptor> devices,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds = 0d)
+    {
+        ThrowIfDisposed();
+        return new OpenVrTrackedPoseBatchSourceAdapter(
+            _runtime,
+            StopwatchMonotonicClock.Instance,
+            devices,
+            trackingUniverse,
+            predictionOffsetSeconds);
+    }
+
     public void Dispose()
     {
         if (_disposed)
