@@ -259,7 +259,7 @@ internal sealed class OpenVrTrackedPoseBatchSourceAdapter : TrackedPoseBatchSour
     private readonly OpenVrTrackingUniverse _trackingUniverse;
     private readonly double _predictionOffsetSeconds;
     private readonly IReadOnlyList<SteamVrDeviceDescriptor> _devices;
-    private readonly uint[] _transientDeviceIndexes;
+    private readonly OpenVrRuntimePoseRequest[] _requests;
 
     public OpenVrTrackedPoseBatchSourceAdapter(
         IOpenVrRuntime runtime,
@@ -285,8 +285,11 @@ internal sealed class OpenVrTrackedPoseBatchSourceAdapter : TrackedPoseBatchSour
                 nameof(devices));
         }
 
-        _transientDeviceIndexes = OpenVrRuntimePoseBatchValidation.Validate(
-            snapshot.Select(device => device.TransientDeviceIndex).ToArray(),
+        _requests = OpenVrRuntimePoseBatchValidation.ValidateRequests(
+            snapshot.Select(device => new OpenVrRuntimePoseRequest(
+                device.TransientDeviceIndex,
+                device.StableDeviceId,
+                device.Identity.DevicePath)).ToArray(),
             trackingUniverse,
             predictionOffsetSeconds);
         _devices = Array.AsReadOnly(snapshot);
@@ -298,8 +301,8 @@ internal sealed class OpenVrTrackedPoseBatchSourceAdapter : TrackedPoseBatchSour
 
     public IReadOnlyList<TrackedPoseBatchSample> ReadPoses()
     {
-        var runtimePoses = _runtime.ReadPoses(
-            _transientDeviceIndexes,
+        var runtimePoses = _runtime.ReadVerifiedPoses(
+            _requests,
             _trackingUniverse,
             _predictionOffsetSeconds);
         if (runtimePoses.Count != _devices.Count)
@@ -314,10 +317,17 @@ internal sealed class OpenVrTrackedPoseBatchSourceAdapter : TrackedPoseBatchSour
         var samples = new TrackedPoseBatchSample[_devices.Count];
         for (var index = 0; index < samples.Length; index++)
         {
+            if (runtimePoses[index].Device != _requests[index])
+            {
+                throw new InvalidDataException(
+                    $"OpenVR returned a different identity for transient device index " +
+                    $"{_requests[index].TransientDeviceIndex}.");
+            }
+
             samples[index] = new TrackedPoseBatchSample(
                 _devices[index],
                 OpenVrPoseSourceAdapter.ToPoseSourceSample(
-                    runtimePoses[index],
+                    runtimePoses[index].Pose,
                     monotonicHostTimeSeconds));
         }
 

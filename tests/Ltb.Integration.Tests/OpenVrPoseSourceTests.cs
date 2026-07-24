@@ -154,7 +154,11 @@ public sealed class OpenVrPoseSourceTests
     [Fact]
     public void SessionBatchSourcePreservesReadPoseOnlyFakeCompatibility()
     {
-        using var runtime = new FakeOpenVrRuntime();
+        using var runtime = new FakeOpenVrRuntime(
+        [
+            RuntimeTracker("tracker-left", 7),
+            RuntimeTracker("tracker-right", 11),
+        ]);
         using var session = new OpenVrSession(runtime);
         var source = session.CreateTrackedPoseBatchSource(
             [
@@ -170,6 +174,24 @@ public sealed class OpenVrPoseSourceTests
         Assert.Equal(
             samples[0].Sample.MonotonicHostTimeSeconds,
             samples[1].Sample.MonotonicHostTimeSeconds);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsTransientIndexReuseAfterEnumeration()
+    {
+        using var runtime = new ReassigningIndexOpenVrRuntime(
+            RuntimeTracker("tracker-left", 7));
+        using var session = new OpenVrSession(runtime);
+        var enumerated = session.EnumerateDevices();
+        var source = session.CreateTrackedPoseBatchSource(
+            enumerated,
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+        runtime.ReplaceDevice(RuntimeTracker("tracker-other", 7));
+
+        var error = Assert.Throws<InvalidDataException>(source.ReadPoses);
+
+        Assert.Contains("no longer resolves", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, runtime.ReadPoseCount);
     }
 
     [Fact]
@@ -483,6 +505,17 @@ public sealed class OpenVrPoseSourceTests
             SteamVrControllerRole.None,
             true);
 
+    private static OpenVrRuntimeDevice RuntimeTracker(
+        string serialNumber,
+        uint transientDeviceIndex) =>
+        new(
+            transientDeviceIndex,
+            serialNumber,
+            $"lighthouse/{serialNumber}",
+            OpenVrRuntimeDeviceClass.GenericTracker,
+            OpenVrRuntimeControllerRole.None,
+            IsConnected: true);
+
     private static void AssertVectorClose(Vector3 expected, Vector3 actual)
     {
         Assert.InRange(Vector3.Distance(expected, actual), 0f, 1e-5f);
@@ -546,7 +579,23 @@ internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
 
     public double? LastPredictionOffsetSeconds { get; private set; }
 
-    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => [];
+    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() =>
+    [
+        new OpenVrRuntimeDevice(
+            7,
+            "tracker-left",
+            "lighthouse/tracker-left",
+            OpenVrRuntimeDeviceClass.GenericTracker,
+            OpenVrRuntimeControllerRole.None,
+            IsConnected: true),
+        new OpenVrRuntimeDevice(
+            11,
+            "tracker-right",
+            "lighthouse/tracker-right",
+            OpenVrRuntimeDeviceClass.GenericTracker,
+            OpenVrRuntimeControllerRole.None,
+            IsConnected: true),
+    ];
 
     public OpenVrRuntimePose ReadPose(
         uint transientDeviceIndex,
@@ -573,6 +622,45 @@ internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
                 PredictionOffsetSeconds: predictionOffsetSeconds,
                 SampleAgeSeconds: null))
             .ToArray());
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+internal sealed class ReassigningIndexOpenVrRuntime : IOpenVrRuntime
+{
+    private OpenVrRuntimeDevice _device;
+
+    public ReassigningIndexOpenVrRuntime(OpenVrRuntimeDevice device)
+    {
+        _device = device;
+    }
+
+    public int ReadPoseCount { get; private set; }
+
+    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => [_device];
+
+    public OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        ReadPoseCount++;
+        return new OpenVrRuntimePose(
+            RigidTransform.Identity,
+            PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid,
+            IsConnected: true,
+            PoseTrackingResult.RunningOk,
+            RuntimeTimeSeconds: null,
+            PredictionOffsetSeconds: predictionOffsetSeconds,
+            SampleAgeSeconds: null);
+    }
+
+    public void ReplaceDevice(OpenVrRuntimeDevice device)
+    {
+        _device = device;
     }
 
     public void Dispose()
