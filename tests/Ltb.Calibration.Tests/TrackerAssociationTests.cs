@@ -132,6 +132,33 @@ public sealed class TrackerAssociationTests
     }
 
     [Fact]
+    public void JustBelowThresholdCorrelationStillBlocksNarrowWinnerMargin()
+    {
+        var winner = new TrackerAssociationCandidateScore(
+            CalibrationHand.Left,
+            LeftSerial,
+            TrackerAssociationCandidateRejection.None,
+            "accepted",
+            Lag(correlation: 0.81d));
+        var weakRunnerUp = new TrackerAssociationCandidateScore(
+            CalibrationHand.Left,
+            ChestSerial,
+            TrackerAssociationCandidateRejection.WeakCorrelation,
+            "just below threshold",
+            Lag(correlation: 0.799d));
+
+        var ambiguity = TrackerHandAssociator.FindPerHandAmbiguity(
+            [winner],
+            [],
+            [winner, weakRunnerUp],
+            minimumMargin: 0.05d);
+
+        Assert.NotNull(ambiguity);
+        Assert.Contains(ChestSerial, ambiguity, StringComparison.Ordinal);
+        Assert.Contains("0.0110", ambiguity, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FailedUnrelatedCandidatesDoNotRejectUniqueHealthyPair()
     {
         var leftData = Dataset(seed: 1601, lagMilliseconds: 12d);
@@ -205,6 +232,51 @@ public sealed class TrackerAssociationTests
             score.Hand is CalibrationHand.Left &&
             score.TrackerSerial == LeftSerial &&
             score.Rejection is TrackerAssociationCandidateRejection.Disconnected);
+    }
+
+    [Fact]
+    public void LateDisconnectedMovingContenderPreventsFallbackToMovingAlternative()
+    {
+        var leftData = Dataset(seed: 1751, lagMilliseconds: 12d);
+        var rightData = Dataset(seed: 2852, lagMilliseconds: 14d);
+        var leftCapture = Capture(
+            CalibrationHand.Left,
+            leftData.RawControllerSamples,
+            new TrackerAssociationCandidate(
+                LeftSerial,
+                leftData.RawTrackerSamples,
+                isConnected: false),
+            new TrackerAssociationCandidate(
+                ChestSerial,
+                leftData.RawTrackerSamples),
+            new TrackerAssociationCandidate(
+                RightSerial,
+                Static(leftData.RawTrackerSamples)));
+        var rightCapture = Capture(
+            CalibrationHand.Right,
+            rightData.RawControllerSamples,
+            new TrackerAssociationCandidate(
+                LeftSerial,
+                Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(
+                ChestSerial,
+                Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(
+                RightSerial,
+                rightData.RawTrackerSamples));
+
+        var result = TrackerHandAssociator.Associate(leftCapture, rightCapture);
+
+        Assert.False(result.Success);
+        Assert.Equal(TrackerAssociationStatus.Ambiguous, result.Status);
+        var disconnected = Assert.Single(result.Scores, score =>
+            score.Hand is CalibrationHand.Left &&
+            score.TrackerSerial == LeftSerial);
+        Assert.Equal(
+            TrackerAssociationCandidateRejection.Disconnected,
+            disconnected.Rejection);
+        Assert.NotNull(disconnected.Lag);
+        Assert.Contains("winner/runner-up", result.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -411,6 +483,15 @@ public sealed class TrackerAssociationTests
                 KnownLagMilliseconds = lagMilliseconds,
                 SampleCount = 240,
             });
+
+    private static LagEstimate Lag(double correlation) =>
+        new(
+            LagSeconds: 0.012d,
+            CorrelationScore: correlation,
+            Confidence: 0.5d,
+            ComparedSampleCount: 100,
+            SearchStepSeconds: 0.001d,
+            MaximumAbsoluteLagSeconds: 0.1d);
 
     private static HandMotionCapture Capture(
         CalibrationHand hand,
