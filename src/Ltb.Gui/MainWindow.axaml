@@ -161,6 +161,7 @@
                                            AutomationProperties.Name="{Binding CalibrationGuide.CueTitle}"
                                            AutomationProperties.HelpText="{Binding CalibrationGuide.CueInstruction}"
                                            Cue="{Binding CalibrationGuide.Cue}"
+                                           IsVisible="{Binding CalibrationGuide.IsVisible}"
                                            IsRightHand="{Binding CalibrationGuide.IsRightHand}"
                                            ReduceMotion="{Binding ReduceMotion}" />
               <StackPanel Grid.Column="1"
@@ -277,7 +278,7 @@
               <TextBlock x:Name="LeftRotationProgressText"
                          Classes="muted"
                          Text="{Binding LeftHand.RotationProgressStatus}" />
-              <TextBlock Text="Position tracking availability" />
+              <TextBlock Text="Position tracking availability (optional)" />
               <ProgressBar x:Name="LeftPositionProgress"
                            Minimum="0"
                            Maximum="1"
@@ -362,7 +363,7 @@
               <TextBlock x:Name="RightRotationProgressText"
                          Classes="muted"
                          Text="{Binding RightHand.RotationProgressStatus}" />
-              <TextBlock Text="Position tracking availability" />
+              <TextBlock Text="Position tracking availability (optional)" />
               <ProgressBar x:Name="RightPositionProgress"
                            Minimum="0"
                            Maximum="1"
@@ -472,7 +473,42 @@
               <TextBlock Classes="muted"
                          Text="Opt-in only · 10 Hz maximum · fixed 600-sample ring · gaps mean unavailable evidence."
                          TextWrapping="Wrap" />
+              <TextBlock x:Name="TimingScopeText"
+                         Classes="warning"
+                         Text="Software lower bound only. Managed application-boundary timing excludes hardware/device acquisition, the SteamVR compositor, display scanout, and motion-to-photon latency."
+                         TextWrapping="Wrap" />
             </StackPanel>
+
+            <Border Classes="raised">
+              <StackPanel Spacing="4">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Managed iteration interval (ms)" />
+                <TextBlock Classes="muted"
+                           Text="Software-observed time between managed-loop iterations." />
+                <controls:DiagnosticsPlot x:Name="IterationIntervalPlot"
+                                          AutomationProperties.Name="Managed iteration interval lower-bound history"
+                                          Series1="{Binding DebugDiagnostics.IterationInterval}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}" />
+                <TextBlock FontWeight="SemiBold"
+                           Text="Managed work duration (ms)" />
+                <TextBlock Classes="muted"
+                           Text="Blue: tracker observation · orange: paired publication" />
+                <controls:DiagnosticsPlot x:Name="ManagedWorkDurationPlot"
+                                          AutomationProperties.Name="Managed observation and publication lower-bound history"
+                                          Series1="{Binding DebugDiagnostics.ObserveDuration}"
+                                          Series2="{Binding DebugDiagnostics.PairPublicationDuration}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}" />
+                <TextBlock FontWeight="SemiBold"
+                           Text="Tracker host-ingress age at publication (ms)" />
+                <TextBlock Classes="muted"
+                           Text="Blue: left · orange: right · missing host timestamps remain gaps" />
+                <controls:DiagnosticsPlot x:Name="HostIngressAgePlot"
+                                          AutomationProperties.Name="Tracker host-ingress age lower-bound history"
+                                          Series1="{Binding DebugDiagnostics.LeftTrackerHostIngressAge}"
+                                          Series2="{Binding DebugDiagnostics.RightTrackerHostIngressAge}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}" />
+              </StackPanel>
+            </Border>
 
             <Border Classes="raised">
               <StackPanel Spacing="4">
@@ -505,16 +541,21 @@
                 <TextBlock FontWeight="SemiBold"
                            Text="Binary session status" />
                 <TextBlock Classes="muted"
-                           Text="Blue/orange: left/right publishing · green/purple: left/right inputs valid. Reconnect/fault is listed separately below."
+                           Text="Fixed bands (off→on): 6→7 left publishing · 4→5 right publishing · 2→3 left inputs valid · 0→1 right inputs valid. Bands preserve simultaneous states without relying on color."
                            TextWrapping="Wrap" />
-                <controls:DiagnosticsPlot AutomationProperties.Name="Publishing and input-valid history"
+                <controls:DiagnosticsPlot x:Name="StatusBandPlot"
+                                          AutomationProperties.Name="Publishing and input-valid fixed-band history"
                                           Series1="{Binding DebugDiagnostics.LeftPublishing}"
                                           Series2="{Binding DebugDiagnostics.RightPublishing}"
                                           Series3="{Binding DebugDiagnostics.LeftInputValid}"
                                           Series4="{Binding DebugDiagnostics.RightInputValid}"
+                                          Series1Offset="6"
+                                          Series2Offset="4"
+                                          Series3Offset="2"
+                                          Series4Offset="0"
                                           RefreshVersion="{Binding DebugDiagnostics.Version}"
-                                          Minimum="-0.1"
-                                          Maximum="1.1" />
+                                          Minimum="-0.5"
+                                          Maximum="7.5" />
                 <TextBlock Classes="muted"
                            Text="Feed reconnect/fault band · blue: reconnecting or faulted" />
                 <controls:DiagnosticsPlot AutomationProperties.Name="Feed reconnect and fault history"

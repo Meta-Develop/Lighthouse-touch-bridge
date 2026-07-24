@@ -41,6 +41,7 @@ public sealed class MotionGuideControl : Control
     private static readonly IPen AccentPen = new Pen(AccentBrush, 3d);
     private readonly DispatcherTimer _timer;
     private double _phase;
+    private bool _attached;
 
     static MotionGuideControl()
     {
@@ -52,8 +53,16 @@ public sealed class MotionGuideControl : Control
         Focusable = false;
         MinHeight = 190d;
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(80), DispatcherPriority.Render, OnTick);
-        AttachedToVisualTree += (_, _) => _timer.Start();
-        DetachedFromVisualTree += (_, _) => _timer.Stop();
+        AttachedToVisualTree += (_, _) =>
+        {
+            _attached = true;
+            UpdateAnimationTimer();
+        };
+        DetachedFromVisualTree += (_, _) =>
+        {
+            _attached = false;
+            UpdateAnimationTimer();
+        };
     }
 
     public MotionGuideCue Cue
@@ -72,6 +81,18 @@ public sealed class MotionGuideControl : Control
     {
         get => GetValue(ReduceMotionProperty);
         set => SetValue(ReduceMotionProperty, value);
+    }
+
+    internal bool IsAnimationTimerRunning => _timer.IsEnabled;
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == ReduceMotionProperty ||
+            change.Property == IsVisibleProperty)
+        {
+            UpdateAnimationTimer();
+        }
     }
 
     public override void Render(DrawingContext context)
@@ -215,10 +236,24 @@ public sealed class MotionGuideControl : Control
     {
         if (ReduceMotion || !IsEffectivelyVisible)
         {
+            UpdateAnimationTimer();
             return;
         }
 
         _phase = (_phase + 0.055d) % 1d;
         InvalidateVisual();
+    }
+
+    private void UpdateAnimationTimer()
+    {
+        var shouldRun = _attached && IsVisible && IsEffectivelyVisible && !ReduceMotion;
+        if (shouldRun)
+        {
+            _timer.Start();
+        }
+        else
+        {
+            _timer.Stop();
+        }
     }
 }

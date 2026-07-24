@@ -90,7 +90,33 @@ public sealed class MainWindowSmokeTests
             Assert.False(window.FindControl<ToggleSwitch>("DebugToggle")!.IsChecked);
             Assert.False(window.FindControl<ToggleSwitch>("ReducedMotionToggle")!.IsChecked);
             Assert.False(window.FindControl<Expander>("MaintenanceExpander")!.IsExpanded);
-            Assert.NotNull(window.FindControl<Ltb.Gui.Controls.MotionGuideControl>("MotionGuide"));
+            var motionGuide =
+                window.FindControl<Ltb.Gui.Controls.MotionGuideControl>("MotionGuide");
+            Assert.NotNull(motionGuide);
+            Assert.False(motionGuide!.IsAnimationTimerRunning);
+            var statusBands = window.FindControl<Ltb.Gui.Controls.DiagnosticsPlot>("StatusBandPlot");
+            Assert.NotNull(statusBands);
+            Assert.Equal(6d, statusBands!.Series1Offset);
+            Assert.Equal(4d, statusBands.Series2Offset);
+            Assert.Equal(2d, statusBands.Series3Offset);
+            Assert.Equal(0d, statusBands.Series4Offset);
+            Assert.Equal(-0.5d, statusBands.Minimum);
+            Assert.Equal(7.5d, statusBands.Maximum);
+            Assert.NotNull(
+                window.FindControl<Ltb.Gui.Controls.DiagnosticsPlot>("IterationIntervalPlot"));
+            Assert.NotNull(
+                window.FindControl<Ltb.Gui.Controls.DiagnosticsPlot>("ManagedWorkDurationPlot"));
+            Assert.NotNull(
+                window.FindControl<Ltb.Gui.Controls.DiagnosticsPlot>("HostIngressAgePlot"));
+            var timingScope = window.FindControl<TextBlock>("TimingScopeText");
+            Assert.NotNull(timingScope);
+            Assert.Contains(
+                "Software lower bound only",
+                timingScope!.Text,
+                StringComparison.Ordinal);
+            Assert.Contains("hardware/device acquisition", timingScope.Text, StringComparison.Ordinal);
+            Assert.Contains("SteamVR compositor", timingScope.Text, StringComparison.Ordinal);
+            Assert.Contains("display scanout", timingScope.Text, StringComparison.Ordinal);
             var visibleText = window.GetVisualDescendants()
                 .OfType<TextBlock>()
                 .Select(text => text.Text ?? string.Empty)
@@ -98,7 +124,7 @@ public sealed class MainWindowSmokeTests
             Assert.Equal(2, visibleText.Count(text => text == "Rotation progress"));
             Assert.Equal(
                 2,
-                visibleText.Count(text => text == "Position tracking availability"));
+                visibleText.Count(text => text == "Position tracking availability (optional)"));
             Assert.DoesNotContain(visibleText, text => text == "Position progress");
             Assert.DoesNotContain(
                 visibleText,
@@ -117,6 +143,38 @@ public sealed class MainWindowSmokeTests
         {
             window.Close();
             viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    }
+
+    [AvaloniaFact]
+    public void MotionGuideTimerRunsOnlyWhileVisibleAndMotionIsEnabled()
+    {
+        var guide = new Ltb.Gui.Controls.MotionGuideControl();
+        var window = new Window
+        {
+            Content = guide,
+        };
+        try
+        {
+            window.Show();
+            Assert.True(guide.IsAnimationTimerRunning);
+
+            guide.ReduceMotion = true;
+            Assert.False(guide.IsAnimationTimerRunning);
+
+            guide.ReduceMotion = false;
+            Assert.True(guide.IsAnimationTimerRunning);
+
+            guide.IsVisible = false;
+            Assert.False(guide.IsAnimationTimerRunning);
+
+            guide.IsVisible = true;
+            Assert.True(guide.IsAnimationTimerRunning);
+        }
+        finally
+        {
+            window.Close();
+            Assert.False(guide.IsAnimationTimerRunning);
         }
     }
 
