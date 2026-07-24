@@ -1,6 +1,7 @@
 using Ltb.App;
 using Ltb.Driver;
 using Ltb.Gui;
+using Ltb.Gui.Controls;
 using Ltb.Gui.ViewModels;
 using Ltb.MetaLink;
 using Ltb.Protocol;
@@ -547,6 +548,164 @@ public sealed class InternalDriverViewModelTests
         Assert.True(viewModel.CalibrationCommand.CanExecute(null));
     }
 
+    [Fact]
+    public void GuidedCalibrationInfersActiveHandAndKeepsProcessingStepperVisible()
+    {
+        var time = new ManualGuiTimeSource();
+        var guide = new CalibrationGuideViewModel(time);
+        var leftRecording = Snapshot(
+            InternalDriverSessionState.Recording,
+            allReady: false,
+            leftCapture: CaptureEvidence(12, 0.25d, 0.5d));
+
+        guide.Update(leftRecording);
+
+        Assert.True(guide.IsVisible);
+        Assert.Equal("Move the left hand only", guide.ActiveHandText);
+        Assert.False(guide.IsRightHand);
+        Assert.Equal(MotionGuideCue.Pitch, guide.Cue);
+        Assert.Equal("Current", guide.Steps.Single(step => step.Title == "Left capture").Status);
+        Assert.Contains("Actual analyzer", guide.EvidenceText, StringComparison.Ordinal);
+
+        time.Advance(TimeSpan.FromSeconds(2));
+        guide.Update(leftRecording);
+        Assert.Equal(MotionGuideCue.Yaw, guide.Cue);
+
+        var rightRecording = leftRecording with
+        {
+            Right = leftRecording.Right with
+            {
+                Capture = CaptureEvidence(3, 0.1d, 0.2d),
+            },
+        };
+        guide.Update(rightRecording);
+        Assert.Equal("Move the right hand only", guide.ActiveHandText);
+        Assert.True(guide.IsRightHand);
+        Assert.Equal(MotionGuideCue.Pitch, guide.Cue);
+        Assert.Equal("Complete", guide.Steps.Single(step => step.Title == "Left capture").Status);
+        Assert.Equal("Current", guide.Steps.Single(step => step.Title == "Right capture").Status);
+
+        guide.Update(rightRecording with { State = InternalDriverSessionState.Association });
+        Assert.True(guide.IsVisible);
+        Assert.Equal(MotionGuideCue.Processing, guide.Cue);
+        Assert.Equal("Current", guide.Steps.Single(step => step.Title == "Associate").Status);
+        Assert.Contains("No user motion", guide.CueInstruction, StringComparison.Ordinal);
+
+        guide.Update(rightRecording with { State = InternalDriverSessionState.SaveProfile });
+        Assert.True(guide.IsVisible);
+        Assert.Equal("Current", guide.Steps.Single(step => step.Title == "Save").Status);
+
+        guide.Update(rightRecording with { State = InternalDriverSessionState.Active });
+        Assert.False(guide.IsVisible);
+    }
+
+    [Fact]
+    public void DebugHistoryIsOptInFixedSizeGapPreservingAndClearedAtBoundaries()
+    {
+        var time = new ManualGuiTimeSource();
+        var diagnostics = new DebugDiagnosticsViewModel(time);
+        var snapshot = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            leftCalibration: CalibrationEvidence(
+                InternalDriverCalibrationMode.RotationOnly,
+                "Retained.",
+                -2.5d,
+                1d,
+                null,
+                null,
+                0.9d,
+                DateTimeOffset.UnixEpoch));
+
+        Assert.False(diagnostics.TrySample(snapshot, force: true));
+        Assert.Equal(0, diagnostics.RetainedSampleCount);
+
+        diagnostics.IsEnabled = true;
+        Assert.True(diagnostics.TrySample(snapshot, force: true));
+        time.Advance(DebugDiagnosticsViewModel.SampleInterval);
+        Assert.True(diagnostics.TrySample(
+            snapshot with { Left = snapshot.Left with { PoseAge = null } },
+            force: true));
+        Assert.Null(diagnostics.LeftTrackerAge[^1].Value);
+        Assert.Contains("frozen", diagnostics.FrozenLagSummary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not a live estimator", diagnostics.FrozenLagSummary, StringComparison.Ordinal);
+
+        for (var index = 0; index < DebugDiagnosticsViewModel.MaximumSamples + 8; index++)
+        {
+            time.Advance(DebugDiagnosticsViewModel.SampleInterval);
+            Assert.True(diagnostics.TrySample(snapshot, force: true));
+        }
+
+        Assert.Equal(DebugDiagnosticsViewModel.MaximumSamples, diagnostics.RetainedSampleCount);
+        Assert.Equal(
+            DebugDiagnosticsViewModel.MaximumSamples,
+            diagnostics.RightTrackerAge.Count);
+        Assert.True(diagnostics.LeftTrackerAge[0].ElapsedSeconds > 0d);
+
+        diagnostics.ResetForRun();
+        Assert.Equal(0, diagnostics.RetainedSampleCount);
+        diagnostics.TrySample(snapshot, force: true);
+        Assert.Equal(1, diagnostics.RetainedSampleCount);
+
+        diagnostics.IsEnabled = false;
+        Assert.Equal(0, diagnostics.RetainedSampleCount);
+        Assert.Empty(diagnostics.LeftFrozenLag);
+    }
+
+    [Fact]
+    public void ActiveSnapshotPresentationIsCappedButMeaningfulChangesAreImmediate()
+    {
+        var time = new ManualGuiTimeSource();
+        var coalescer = new SnapshotPresentationCoalescer(time);
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready);
+        coalescer.Reset(7, active);
+
+        var fastTelemetryOnly = active with
+        {
+            Left = active.Left with { PoseAge = TimeSpan.FromMilliseconds(8) },
+            Feed = active.Feed with
+            {
+                LastSuccessfulSequence = 43,
+                LastSuccessfulSendAge = TimeSpan.FromMilliseconds(13),
+            },
+        };
+        Assert.False(coalescer.ShouldPresent(7, fastTelemetryOnly));
+
+        time.Advance(SnapshotPresentationCoalescer.ActivePresentationInterval);
+        Assert.True(coalescer.ShouldPresent(7, fastTelemetryOnly));
+        Assert.True(coalescer.ShouldPresent(
+            7,
+            fastTelemetryOnly with { Diagnostic = "A changed diagnostic." }));
+        Assert.True(coalescer.ShouldPresent(
+            7,
+            fastTelemetryOnly with { Feed = fastTelemetryOnly.Feed with { LastError = "pipe" } }));
+        Assert.True(coalescer.ShouldPresent(
+            7,
+            fastTelemetryOnly with { State = InternalDriverSessionState.Faulted }));
+        Assert.True(coalescer.ShouldPresent(8, fastTelemetryOnly));
+    }
+
+    [Theory]
+    [InlineData(GuiEvidenceOrigin.LiveRuntime, "LIVE SESSION DATA")]
+    [InlineData(GuiEvidenceOrigin.ScriptedSimulation, "SIMULATED DATA")]
+    [InlineData(GuiEvidenceOrigin.OfflineReplay, "OFFLINE REPLAY")]
+    public async Task EvidenceOriginIsExplicitlyLabeled(
+        GuiEvidenceOrigin origin,
+        string expectedLabel)
+    {
+        await using var viewModel = new InternalDriverViewModel(
+            new QueueSessionFactory(),
+            action => action(),
+            timeSource: new ManualGuiTimeSource(),
+            evidenceOrigin: origin);
+
+        Assert.Equal(expectedLabel, viewModel.EvidenceOriginLabel);
+        Assert.False(string.IsNullOrWhiteSpace(viewModel.EvidenceOriginDetail));
+    }
+
     private static InternalDriverViewModel NewViewModel(IInternalDriverSession session) =>
         new(new QueueSessionFactory(session), action => action());
 
@@ -881,5 +1040,17 @@ public sealed class InternalDriverViewModelTests
                 action();
             }
         }
+    }
+
+    private sealed class ManualGuiTimeSource : IGuiTimeSource
+    {
+        private long _timestamp;
+
+        public long GetTimestamp() => _timestamp;
+
+        public TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) =>
+            TimeSpan.FromTicks(endingTimestamp - startingTimestamp);
+
+        public void Advance(TimeSpan duration) => _timestamp += duration.Ticks;
     }
 }

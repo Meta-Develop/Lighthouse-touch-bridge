@@ -13,10 +13,13 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private readonly IInternalDriverSessionFactory _sessionFactory;
     private readonly Action<Action> _dispatch;
     private readonly Func<IInternalDriverRemover> _removerFactory;
+    private readonly IGuiTimeSource _timeSource;
+    private readonly SnapshotPresentationCoalescer _snapshotCoalescer;
     private readonly object _lifecycleSync = new();
     private readonly Dictionary<string, ReadinessRowViewModel> _rowByKey =
         new(StringComparer.Ordinal);
     private readonly ObservableCollection<ReadinessRowViewModel> _readinessRows = [];
+    private readonly ObservableCollection<ReadinessGroupViewModel> _readinessGroups = [];
     private long _nextRunGeneration;
     private long _presentedRunGeneration;
     private bool _runActive;
@@ -46,16 +49,27 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private string _feedSendAge = "None";
     private int _feedReconnectAttempts;
     private string _feedError = "None";
+    private bool _reduceMotion;
+    private bool _isDebugEnabled;
+    private InternalDriverSessionSnapshot? _latestPresentedSnapshot;
 
     public InternalDriverViewModel(
         IInternalDriverSessionFactory sessionFactory,
         Action<Action> dispatch,
-        Func<IInternalDriverRemover>? removerFactory = null)
+        Func<IInternalDriverRemover>? removerFactory = null,
+        IGuiTimeSource? timeSource = null,
+        GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime)
     {
         _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
         _removerFactory = removerFactory ?? (static () => InternalDriverRemoval.Create());
+        _timeSource = timeSource ?? SystemGuiTimeSource.Instance;
+        _snapshotCoalescer = new SnapshotPresentationCoalescer(_timeSource);
         ReadinessRows = new ReadOnlyObservableCollection<ReadinessRowViewModel>(_readinessRows);
+        ReadinessGroups = new ReadOnlyObservableCollection<ReadinessGroupViewModel>(_readinessGroups);
+        CalibrationGuide = new CalibrationGuideViewModel(_timeSource);
+        DebugDiagnostics = new DebugDiagnosticsViewModel(_timeSource);
+        (EvidenceOriginLabel, EvidenceOriginDetail) = EvidenceOrigin(evidenceOrigin);
         LeftHand = new InternalDriverHandViewModel("Left hand");
         RightHand = new InternalDriverHandViewModel("Right hand");
         ActionCommand = new RelayCommand(
@@ -83,16 +97,38 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             NewRow("profiles", "Profiles / calibration"),
             NewRow("feed", "Driver feed"),
         };
+        var groups = new[]
+        {
+            NewGroup("Host and runtime", rows[0], rows[1], rows[7]),
+            NewGroup("First-party driver", rows[2], rows[3], rows[11]),
+            NewGroup("Touch inputs and trackers", rows[4], rows[5], rows[6], rows[8], rows[9]),
+            NewGroup("Calibration profiles", rows[10]),
+        };
         _dispatch(() =>
         {
             foreach (var row in rows)
             {
                 _readinessRows.Add(row);
             }
+
+            foreach (var group in groups)
+            {
+                _readinessGroups.Add(group);
+            }
         });
     }
 
     public ReadOnlyObservableCollection<ReadinessRowViewModel> ReadinessRows { get; }
+
+    public ReadOnlyObservableCollection<ReadinessGroupViewModel> ReadinessGroups { get; }
+
+    public CalibrationGuideViewModel CalibrationGuide { get; }
+
+    public DebugDiagnosticsViewModel DebugDiagnostics { get; }
+
+    public string EvidenceOriginLabel { get; }
+
+    public string EvidenceOriginDetail { get; }
 
     public InternalDriverHandViewModel LeftHand { get; }
 
@@ -239,6 +275,30 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         private set => SetProperty(ref _feedError, value);
     }
 
+    public bool ReduceMotion
+    {
+        get => _reduceMotion;
+        set => SetProperty(ref _reduceMotion, value);
+    }
+
+    public bool IsDebugEnabled
+    {
+        get => _isDebugEnabled;
+        set
+        {
+            if (!SetProperty(ref _isDebugEnabled, value))
+            {
+                return;
+            }
+
+            DebugDiagnostics.IsEnabled = value;
+            if (value && _latestPresentedSnapshot is { } snapshot)
+            {
+                _ = DebugDiagnostics.TrySample(snapshot, force: true);
+            }
+        }
+    }
+
     public RelayCommand ActionCommand { get; }
 
     public RelayCommand CalibrationCommand { get; }
@@ -356,6 +416,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         EventHandler<InternalDriverSessionSnapshot> snapshotHandler =
             (_, snapshot) => DispatchSnapshot(generation, snapshot);
         session.SnapshotChanged += snapshotHandler;
+        _snapshotCoalescer.Reset(generation, session.CurrentSnapshot);
+        DebugDiagnostics.ResetForRun();
         _dispatch(() =>
         {
             if (!PresentGeneration(generation, session.CurrentSnapshot))
@@ -513,9 +575,19 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         return row;
     }
 
+    private static ReadinessGroupViewModel NewGroup(
+        string title,
+        params ReadinessRowViewModel[] rows) =>
+        new(title, Array.AsReadOnly(rows));
+
     private void DispatchSnapshot(long generation, InternalDriverSessionSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        if (!_snapshotCoalescer.ShouldPresent(generation, snapshot))
+        {
+            return;
+        }
+
         _dispatch(() => _ = PresentGeneration(generation, snapshot));
     }
 
@@ -533,6 +605,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplySnapshot(InternalDriverSessionSnapshot snapshot)
     {
+        _latestPresentedSnapshot = snapshot;
         CurrentPhase = snapshot.State;
         PhaseText = SplitPascalCase(snapshot.State.ToString());
         Diagnostic = snapshot.Diagnostic;
@@ -552,6 +625,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         RightHand.Update(snapshot.Right);
         UpdateRows(snapshot);
         UpdateFeed(snapshot);
+        CalibrationGuide.Update(snapshot);
+        _ = DebugDiagnostics.TrySample(snapshot);
     }
 
     private void UpdateRows(InternalDriverSessionSnapshot snapshot)
@@ -721,6 +796,21 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         : "None";
 
     private static string Flag(bool value) => value ? "yes" : "no";
+
+    private static (string Label, string Detail) EvidenceOrigin(GuiEvidenceOrigin origin) =>
+        origin switch
+        {
+            GuiEvidenceOrigin.LiveRuntime => (
+                "LIVE SESSION DATA",
+                "Current process observations; this label is not a hardware compatibility certification."),
+            GuiEvidenceOrigin.ScriptedSimulation => (
+                "SIMULATED DATA",
+                "Deterministic scripted evidence; no live runtime or hardware claim."),
+            GuiEvidenceOrigin.OfflineReplay => (
+                "OFFLINE REPLAY",
+                "Recorded evidence replay; values are not current live-runtime health."),
+            _ => throw new ArgumentOutOfRangeException(nameof(origin)),
+        };
 
     private static string SplitPascalCase(string value)
     {
@@ -987,4 +1077,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         private static string FormatCaptureProgress(double progress, bool ready) =>
             $"{FormatPercent(progress)} - {(ready ? "ready" : "collecting")}";
     }
+}
+
+public enum GuiEvidenceOrigin
+{
+    LiveRuntime = 0,
+    ScriptedSimulation,
+    OfflineReplay,
 }

@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:Ltb.Gui.ViewModels"
+        xmlns:controls="using:Ltb.Gui.Controls"
         x:Class="Ltb.Gui.MainWindow"
         x:DataType="vm:InternalDriverViewModel"
         Title="Lighthouse Touch Bridge - Internal Driver"
@@ -9,275 +10,568 @@
         MinWidth="760"
         MinHeight="620">
   <DockPanel Margin="16">
-    <Border DockPanel.Dock="Bottom"
-            Margin="0,12,0,0"
-            Padding="10"
-            BorderBrush="Gray"
-            BorderThickness="1"
-            CornerRadius="4">
-      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
-        <TextBlock x:Name="LegacyNotice"
-                   VerticalAlignment="Center"
-                   Text="Unsupported compile-only migration code: the legacy ALVR / VMT / TrackingOverrides wizard is not used by Start."
-                   TextWrapping="Wrap" />
-        <Button x:Name="CalibrationButton"
-                Grid.Column="1"
-                MinWidth="176"
-                Content="Calibrate / Recalibrate"
-                Command="{Binding CalibrationCommand}"
-                ToolTip.Tip="Start a fresh two-hand calibration capture without reusing saved profiles." />
-        <Button x:Name="ActionButton"
-                Grid.Column="2"
-                MinWidth="112"
-                Content="{Binding ActionButtonText}"
-                Command="{Binding ActionCommand}" />
-      </Grid>
+    <!-- Status and primary actions stay visible while the evidence surface scrolls. -->
+    <Border DockPanel.Dock="Top"
+            Classes="panel"
+            Margin="0,0,0,12">
+      <StackPanel Spacing="9">
+        <Grid ColumnDefinitions="*,Auto"
+              ColumnSpacing="16">
+          <StackPanel>
+            <TextBlock FontSize="24"
+                       FontWeight="Bold"
+                       Text="Lighthouse Touch Bridge" />
+            <StackPanel Orientation="Horizontal"
+                        Spacing="8">
+              <TextBlock x:Name="PhaseText"
+                         FontSize="18"
+                         FontWeight="SemiBold"
+                         Text="{Binding PhaseText}" />
+              <TextBlock Text="·" />
+              <TextBlock x:Name="OverallStatusText"
+                         FontSize="18"
+                         FontWeight="SemiBold"
+                         Text="{Binding OverallStatus}" />
+            </StackPanel>
+          </StackPanel>
+          <Border Grid.Column="1"
+                  Classes="raised"
+                  Padding="10,6"
+                  ToolTip.Tip="{Binding EvidenceOriginDetail}">
+            <StackPanel>
+              <TextBlock HorizontalAlignment="Right"
+                         FontSize="11"
+                         FontWeight="Bold"
+                         Text="{Binding EvidenceOriginLabel}" />
+              <TextBlock Classes="muted"
+                         MaxWidth="260"
+                         FontSize="12"
+                         Text="{Binding EvidenceOriginDetail}"
+                         TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <WrapPanel Orientation="Horizontal">
+          <Button x:Name="CalibrationButton"
+                  Classes="primary"
+                  MinWidth="188"
+                  Margin="0,0,8,4"
+                  AutomationProperties.Name="Calibrate or recalibrate"
+                  AutomationProperties.HelpText="Start a fresh two-hand calibration capture without reusing saved profiles."
+                  Content="Calibrate / Recalibrate"
+                  Command="{Binding CalibrationCommand}"
+                  ToolTip.Tip="Start a fresh two-hand calibration capture without reusing saved profiles." />
+          <Button x:Name="ActionButton"
+                  MinWidth="112"
+                  MinHeight="38"
+                  Margin="0,0,16,4"
+                  AutomationProperties.Name="{Binding ActionButtonText}"
+                  Content="{Binding ActionButtonText}"
+                  Command="{Binding ActionCommand}" />
+          <ToggleSwitch x:Name="ReducedMotionToggle"
+                        Margin="0,0,16,4"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="Reduce motion"
+                        AutomationProperties.HelpText="Stops decorative motion in the calibration guide."
+                        Content="Reduce motion"
+                        IsChecked="{Binding ReduceMotion}" />
+          <ToggleSwitch x:Name="DebugToggle"
+                        VerticalAlignment="Center"
+                        Margin="0,0,0,4"
+                        AutomationProperties.Name="Debug diagnostics"
+                        AutomationProperties.HelpText="Retains up to 60 seconds of session-local diagnostic samples while enabled."
+                        Content="Debug diagnostics"
+                        IsChecked="{Binding IsDebugEnabled}" />
+        </WrapPanel>
+      </StackPanel>
     </Border>
 
-    <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+    <ScrollViewer x:Name="EvidenceScrollViewer"
+                  HorizontalScrollBarVisibility="Disabled"
                   VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="12">
-        <TextBlock FontSize="26"
-                   FontWeight="Bold"
-                   Text="First-party internal driver" />
-
-        <Border Padding="12"
-                BorderBrush="Gray"
-                BorderThickness="1"
-                CornerRadius="4">
+        <Border Classes="panel">
           <StackPanel Spacing="5">
-            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
-              <TextBlock FontWeight="Bold" Text="Current phase" />
-              <TextBlock x:Name="PhaseText"
-                         Grid.Column="1"
-                         FontSize="20"
-                         FontWeight="Bold"
-                         Text="{Binding PhaseText}" />
-              <TextBlock x:Name="OverallStatusText"
-                         Grid.Column="2"
-                         FontWeight="Bold"
-                         Text="{Binding OverallStatus}" />
-            </Grid>
             <TextBlock x:Name="DiagnosticText"
+                       FontWeight="SemiBold"
                        Text="{Binding Diagnostic}"
                        TextWrapping="Wrap" />
             <TextBlock x:Name="RemediationText"
-                       FontStyle="Italic"
+                       Classes="muted"
                        Text="{Binding Remediation}"
                        TextWrapping="Wrap" />
             <TextBlock x:Name="RestartRequiredText"
+                       Foreground="{DynamicResource LtbWarningBrush}"
                        FontWeight="Bold"
                        IsVisible="{Binding RestartRequired}"
-                       Text="SteamVR restart required before readiness can pass." />
+                       Text="SteamVR restart required before readiness can pass."
+                       TextWrapping="Wrap" />
             <TextBlock x:Name="LastErrorText"
                        Text="{Binding LastError, StringFormat='Last error: {0}'}"
                        TextWrapping="Wrap" />
           </StackPanel>
         </Border>
 
-        <Border Padding="10"
-                BorderBrush="Gray"
-                BorderThickness="1"
-                CornerRadius="4">
-          <StackPanel Spacing="6">
-            <TextBlock FontSize="18" FontWeight="Bold" Text="Readiness" />
-            <ListBox x:Name="ReadinessList"
-                     ItemsSource="{Binding ReadinessRows}">
-              <ListBox.ItemTemplate>
-                <DataTemplate x:DataType="vm:ReadinessRowViewModel">
-                  <Grid ColumnDefinitions="190,120,*"
-                        ColumnSpacing="10"
-                        Margin="2,3">
-                    <TextBlock FontWeight="Bold" Text="{Binding Title}" />
-                    <TextBlock Grid.Column="1" Text="{Binding Status}" />
-                    <TextBlock Grid.Column="2"
-                               Text="{Binding Detail}"
-                               TextWrapping="Wrap" />
-                  </Grid>
+        <Border x:Name="CalibrationWorkspace"
+                Classes="panel"
+                IsVisible="{Binding CalibrationGuide.IsVisible}">
+          <StackPanel Spacing="10">
+            <Grid ColumnDefinitions="*,Auto"
+                  ColumnSpacing="10">
+              <StackPanel>
+                <TextBlock Classes="section-title"
+                           Text="Guided calibration" />
+                <TextBlock FontSize="17"
+                           FontWeight="SemiBold"
+                           Text="{Binding CalibrationGuide.ActiveHandText}" />
+              </StackPanel>
+              <TextBlock Grid.Column="1"
+                         Classes="muted"
+                         VerticalAlignment="Center"
+                         Text="Conceptual guide · analyzer evidence below" />
+            </Grid>
+
+            <ItemsControl ItemsSource="{Binding CalibrationGuide.Steps}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <WrapPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:CalibrationStepViewModel">
+                  <Border Classes="raised"
+                          Padding="8,5"
+                          Margin="0,0,7,5">
+                    <StackPanel Orientation="Horizontal"
+                                Spacing="5">
+                      <TextBlock FontWeight="SemiBold"
+                                 Text="{Binding Title}" />
+                      <TextBlock Classes="muted"
+                                 Text="{Binding Status}" />
+                    </StackPanel>
+                  </Border>
                 </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Grid ColumnDefinitions="2*,3*"
+                  ColumnSpacing="16">
+              <controls:MotionGuideControl x:Name="MotionGuide"
+                                           AutomationProperties.Name="{Binding CalibrationGuide.CueTitle}"
+                                           AutomationProperties.HelpText="{Binding CalibrationGuide.CueInstruction}"
+                                           Cue="{Binding CalibrationGuide.Cue}"
+                                           IsRightHand="{Binding CalibrationGuide.IsRightHand}"
+                                           ReduceMotion="{Binding ReduceMotion}" />
+              <StackPanel Grid.Column="1"
+                          VerticalAlignment="Center"
+                          Spacing="8">
+                <TextBlock FontSize="22"
+                           FontWeight="Bold"
+                           Text="{Binding CalibrationGuide.CueTitle}" />
+                <TextBlock Text="{Binding CalibrationGuide.CueInstruction}"
+                           TextWrapping="Wrap" />
+                <Border Classes="raised">
+                  <StackPanel Spacing="4">
+                    <TextBlock FontWeight="SemiBold"
+                               Text="Actual capture evidence" />
+                    <TextBlock Text="{Binding CalibrationGuide.EvidenceText}"
+                               TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+                <TextBlock Classes="muted"
+                           Text="Movement drawings are guidance only. Readiness and solve decisions come from the actual analyzer evidence, not the illustration or its timing."
+                           TextWrapping="Wrap" />
+              </StackPanel>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <Border Classes="panel">
+          <StackPanel Spacing="8">
+            <TextBlock Classes="section-title"
+                       Text="Readiness" />
+            <ItemsControl x:Name="ReadinessList"
+                          ItemsSource="{Binding ReadinessGroups}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <WrapPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:ReadinessGroupViewModel">
+                  <Border Classes="raised"
+                          Width="430"
+                          MinHeight="104"
+                          Margin="0,0,8,8">
+                    <StackPanel Spacing="5">
+                      <TextBlock FontWeight="SemiBold"
+                                 Text="{Binding Title}" />
+                      <ItemsControl ItemsSource="{Binding Rows}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:ReadinessRowViewModel">
+                            <Grid ColumnDefinitions="150,86,*"
+                                  ColumnSpacing="8"
+                                  Margin="0,2">
+                              <TextBlock FontWeight="SemiBold"
+                                         Text="{Binding Title}"
+                                         TextWrapping="Wrap" />
+                              <TextBlock Grid.Column="1"
+                                         Text="{Binding Status}"
+                                         TextWrapping="Wrap" />
+                              <TextBlock Grid.Column="2"
+                                         Classes="muted"
+                                         Text="{Binding Detail}"
+                                         TextWrapping="Wrap" />
+                            </Grid>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
           </StackPanel>
         </Border>
 
         <Grid ColumnDefinitions="*,12,*">
           <Border Grid.Column="0"
-                  Padding="10"
-                  BorderBrush="Gray"
-                  BorderThickness="1"
-                  CornerRadius="4">
-            <StackPanel Spacing="4">
-              <TextBlock FontSize="18" FontWeight="Bold" Text="{Binding LeftHand.Title}" />
-              <TextBlock x:Name="LeftTrackerText"
-                         Text="{Binding LeftHand.TrackerSerial, StringFormat='Tracker: {0}'}" />
-              <TextBlock Text="{Binding LeftHand.TrackerStatus, StringFormat='Tracker state: {0}'}" />
-              <TextBlock x:Name="LeftPoseText"
-                         Text="{Binding LeftHand.PoseStatus, StringFormat='Pose: {0}'}" />
-              <TextBlock Text="{Binding LeftHand.PoseAge, StringFormat='Pose age: {0}'}" />
-              <TextBlock Text="{Binding LeftHand.InputStatus, StringFormat='Input: {0}'}" />
-              <TextBlock Text="{Binding LeftHand.ProfileStatus, StringFormat='Profile: {0}'}" />
-              <TextBlock Text="{Binding LeftHand.PublishingStatus, StringFormat='Output: {0}'}" />
-              <TextBlock x:Name="LeftNeutralReasonText"
-                         Text="{Binding LeftHand.NeutralReason, StringFormat='Neutral reason: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock FontWeight="Bold" Text="Calibration evidence" />
-              <TextBlock x:Name="LeftCalibrationModeText"
-                         Text="{Binding LeftHand.CalibrationMode, StringFormat='Mode: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="LeftCalibrationReasonText"
-                         Text="{Binding LeftHand.CalibrationReason, StringFormat='Selection reason: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="LeftCalibrationLagText"
-                         Text="{Binding LeftHand.CalibrationLag, StringFormat='Estimated lag: {0}'}" />
-              <TextBlock x:Name="LeftCalibrationQualityText"
-                         Text="{Binding LeftHand.CalibrationQuality, StringFormat='Quality: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="LeftCalibrationCreatedText"
-                         Text="{Binding LeftHand.CalibrationCreated, StringFormat='Created: {0}'}" />
-              <TextBlock FontWeight="Bold" Text="Capture evidence" />
-              <TextBlock x:Name="LeftCaptureSamplesText"
-                         Text="{Binding LeftHand.CaptureSamples, StringFormat='Samples: {0}'}" />
-              <TextBlock x:Name="LeftCaptureValidityText"
-                         Text="{Binding LeftHand.CaptureValidity, StringFormat='Validity: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="LeftCaptureMotionText"
-                         Text="{Binding LeftHand.CaptureMotion, StringFormat='Motion: {0}'}"
-                         TextWrapping="Wrap" />
+                  Classes="panel">
+            <StackPanel Spacing="6">
+              <TextBlock Classes="section-title"
+                         Text="{Binding LeftHand.Title}" />
+              <Grid ColumnDefinitions="Auto,*"
+                    RowDefinitions="Auto,Auto,Auto,Auto"
+                    ColumnSpacing="8"
+                    RowSpacing="3">
+                <TextBlock Text="Tracker" />
+                <TextBlock x:Name="LeftTrackerText"
+                           Grid.Column="1"
+                           FontWeight="SemiBold"
+                           Text="{Binding LeftHand.TrackerSerial}" />
+                <TextBlock Grid.Row="1"
+                           Text="Pose" />
+                <TextBlock x:Name="LeftPoseText"
+                           Grid.Row="1"
+                           Grid.Column="1"
+                           Text="{Binding LeftHand.PoseStatus}" />
+                <TextBlock Grid.Row="2"
+                           Text="Output" />
+                <TextBlock Grid.Row="2"
+                           Grid.Column="1"
+                           Text="{Binding LeftHand.PublishingStatus}" />
+                <TextBlock Grid.Row="3"
+                           Text="Neutral reason" />
+                <TextBlock x:Name="LeftNeutralReasonText"
+                           Grid.Row="3"
+                           Grid.Column="1"
+                           Text="{Binding LeftHand.NeutralReason}"
+                           TextWrapping="Wrap" />
+              </Grid>
               <TextBlock Text="Rotation progress" />
               <ProgressBar x:Name="LeftRotationProgress"
                            Minimum="0"
                            Maximum="1"
                            Value="{Binding LeftHand.RotationProgress}" />
               <TextBlock x:Name="LeftRotationProgressText"
+                         Classes="muted"
                          Text="{Binding LeftHand.RotationProgressStatus}" />
-              <TextBlock Text="Position progress" />
+              <TextBlock Text="Position tracking availability" />
               <ProgressBar x:Name="LeftPositionProgress"
                            Minimum="0"
                            Maximum="1"
                            Value="{Binding LeftHand.PositionProgress}" />
               <TextBlock x:Name="LeftPositionProgressText"
+                         Classes="muted"
                          Text="{Binding LeftHand.PositionProgressStatus}" />
-              <TextBlock Text="{Binding LeftHand.Diagnostic}"
-                         TextWrapping="Wrap" />
+              <Expander Header="Detailed evidence"
+                        IsExpanded="False">
+                <StackPanel Spacing="4"
+                            Margin="0,6,0,0">
+                  <TextBlock FontWeight="SemiBold"
+                             Text="Calibration evidence" />
+                  <TextBlock x:Name="LeftCalibrationModeText"
+                             Text="{Binding LeftHand.CalibrationMode, StringFormat='Mode: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="LeftCalibrationReasonText"
+                             Text="{Binding LeftHand.CalibrationReason, StringFormat='Selection reason: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="LeftCalibrationLagText"
+                             Text="{Binding LeftHand.CalibrationLag, StringFormat='Estimated lag: {0}'}" />
+                  <TextBlock x:Name="LeftCalibrationQualityText"
+                             Text="{Binding LeftHand.CalibrationQuality, StringFormat='Quality: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="LeftCalibrationCreatedText"
+                             Text="{Binding LeftHand.CalibrationCreated, StringFormat='Created: {0}'}" />
+                  <TextBlock FontWeight="SemiBold"
+                             Text="Capture evidence" />
+                  <TextBlock x:Name="LeftCaptureSamplesText"
+                             Text="{Binding LeftHand.CaptureSamples, StringFormat='Samples: {0}'}" />
+                  <TextBlock x:Name="LeftCaptureValidityText"
+                             Text="{Binding LeftHand.CaptureValidity, StringFormat='Validity: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="LeftCaptureMotionText"
+                             Text="{Binding LeftHand.CaptureMotion, StringFormat='Motion: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding LeftHand.Diagnostic}"
+                             TextWrapping="Wrap" />
+                </StackPanel>
+              </Expander>
             </StackPanel>
           </Border>
 
           <Border Grid.Column="2"
-                  Padding="10"
-                  BorderBrush="Gray"
-                  BorderThickness="1"
-                  CornerRadius="4">
-            <StackPanel Spacing="4">
-              <TextBlock FontSize="18" FontWeight="Bold" Text="{Binding RightHand.Title}" />
-              <TextBlock x:Name="RightTrackerText"
-                         Text="{Binding RightHand.TrackerSerial, StringFormat='Tracker: {0}'}" />
-              <TextBlock Text="{Binding RightHand.TrackerStatus, StringFormat='Tracker state: {0}'}" />
-              <TextBlock x:Name="RightPoseText"
-                         Text="{Binding RightHand.PoseStatus, StringFormat='Pose: {0}'}" />
-              <TextBlock Text="{Binding RightHand.PoseAge, StringFormat='Pose age: {0}'}" />
-              <TextBlock Text="{Binding RightHand.InputStatus, StringFormat='Input: {0}'}" />
-              <TextBlock Text="{Binding RightHand.ProfileStatus, StringFormat='Profile: {0}'}" />
-              <TextBlock Text="{Binding RightHand.PublishingStatus, StringFormat='Output: {0}'}" />
-              <TextBlock x:Name="RightNeutralReasonText"
-                         Text="{Binding RightHand.NeutralReason, StringFormat='Neutral reason: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock FontWeight="Bold" Text="Calibration evidence" />
-              <TextBlock x:Name="RightCalibrationModeText"
-                         Text="{Binding RightHand.CalibrationMode, StringFormat='Mode: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="RightCalibrationReasonText"
-                         Text="{Binding RightHand.CalibrationReason, StringFormat='Selection reason: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="RightCalibrationLagText"
-                         Text="{Binding RightHand.CalibrationLag, StringFormat='Estimated lag: {0}'}" />
-              <TextBlock x:Name="RightCalibrationQualityText"
-                         Text="{Binding RightHand.CalibrationQuality, StringFormat='Quality: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="RightCalibrationCreatedText"
-                         Text="{Binding RightHand.CalibrationCreated, StringFormat='Created: {0}'}" />
-              <TextBlock FontWeight="Bold" Text="Capture evidence" />
-              <TextBlock x:Name="RightCaptureSamplesText"
-                         Text="{Binding RightHand.CaptureSamples, StringFormat='Samples: {0}'}" />
-              <TextBlock x:Name="RightCaptureValidityText"
-                         Text="{Binding RightHand.CaptureValidity, StringFormat='Validity: {0}'}"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="RightCaptureMotionText"
-                         Text="{Binding RightHand.CaptureMotion, StringFormat='Motion: {0}'}"
-                         TextWrapping="Wrap" />
+                  Classes="panel">
+            <StackPanel Spacing="6">
+              <TextBlock Classes="section-title"
+                         Text="{Binding RightHand.Title}" />
+              <Grid ColumnDefinitions="Auto,*"
+                    RowDefinitions="Auto,Auto,Auto,Auto"
+                    ColumnSpacing="8"
+                    RowSpacing="3">
+                <TextBlock Text="Tracker" />
+                <TextBlock x:Name="RightTrackerText"
+                           Grid.Column="1"
+                           FontWeight="SemiBold"
+                           Text="{Binding RightHand.TrackerSerial}" />
+                <TextBlock Grid.Row="1"
+                           Text="Pose" />
+                <TextBlock x:Name="RightPoseText"
+                           Grid.Row="1"
+                           Grid.Column="1"
+                           Text="{Binding RightHand.PoseStatus}" />
+                <TextBlock Grid.Row="2"
+                           Text="Output" />
+                <TextBlock Grid.Row="2"
+                           Grid.Column="1"
+                           Text="{Binding RightHand.PublishingStatus}" />
+                <TextBlock Grid.Row="3"
+                           Text="Neutral reason" />
+                <TextBlock x:Name="RightNeutralReasonText"
+                           Grid.Row="3"
+                           Grid.Column="1"
+                           Text="{Binding RightHand.NeutralReason}"
+                           TextWrapping="Wrap" />
+              </Grid>
               <TextBlock Text="Rotation progress" />
               <ProgressBar x:Name="RightRotationProgress"
                            Minimum="0"
                            Maximum="1"
                            Value="{Binding RightHand.RotationProgress}" />
               <TextBlock x:Name="RightRotationProgressText"
+                         Classes="muted"
                          Text="{Binding RightHand.RotationProgressStatus}" />
-              <TextBlock Text="Position progress" />
+              <TextBlock Text="Position tracking availability" />
               <ProgressBar x:Name="RightPositionProgress"
                            Minimum="0"
                            Maximum="1"
                            Value="{Binding RightHand.PositionProgress}" />
               <TextBlock x:Name="RightPositionProgressText"
+                         Classes="muted"
                          Text="{Binding RightHand.PositionProgressStatus}" />
-              <TextBlock Text="{Binding RightHand.Diagnostic}"
-                         TextWrapping="Wrap" />
+              <Expander Header="Detailed evidence"
+                        IsExpanded="False">
+                <StackPanel Spacing="4"
+                            Margin="0,6,0,0">
+                  <TextBlock FontWeight="SemiBold"
+                             Text="Calibration evidence" />
+                  <TextBlock x:Name="RightCalibrationModeText"
+                             Text="{Binding RightHand.CalibrationMode, StringFormat='Mode: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="RightCalibrationReasonText"
+                             Text="{Binding RightHand.CalibrationReason, StringFormat='Selection reason: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="RightCalibrationLagText"
+                             Text="{Binding RightHand.CalibrationLag, StringFormat='Estimated lag: {0}'}" />
+                  <TextBlock x:Name="RightCalibrationQualityText"
+                             Text="{Binding RightHand.CalibrationQuality, StringFormat='Quality: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="RightCalibrationCreatedText"
+                             Text="{Binding RightHand.CalibrationCreated, StringFormat='Created: {0}'}" />
+                  <TextBlock FontWeight="SemiBold"
+                             Text="Capture evidence" />
+                  <TextBlock x:Name="RightCaptureSamplesText"
+                             Text="{Binding RightHand.CaptureSamples, StringFormat='Samples: {0}'}" />
+                  <TextBlock x:Name="RightCaptureValidityText"
+                             Text="{Binding RightHand.CaptureValidity, StringFormat='Validity: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="RightCaptureMotionText"
+                             Text="{Binding RightHand.CaptureMotion, StringFormat='Motion: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding RightHand.Diagnostic}"
+                             TextWrapping="Wrap" />
+                </StackPanel>
+              </Expander>
             </StackPanel>
           </Border>
         </Grid>
 
-        <Border Padding="10"
-                BorderBrush="Gray"
-                BorderThickness="1"
-                CornerRadius="4">
-          <StackPanel Spacing="4">
-            <TextBlock FontSize="18" FontWeight="Bold" Text="Driver feed health" />
-            <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto"
-                  ColumnSpacing="10" RowSpacing="3">
-              <TextBlock Grid.Row="0" Text="State" />
-              <TextBlock x:Name="FeedStateText" Grid.Row="0" Grid.Column="1" Text="{Binding FeedState}" />
-              <TextBlock Grid.Row="1" Text="Session" />
+        <Border Classes="panel">
+          <Expander Header="Driver feed health"
+                    IsExpanded="False">
+            <Grid Margin="0,8,0,0"
+                  ColumnDefinitions="160,*"
+                  RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+                  ColumnSpacing="10"
+                  RowSpacing="3">
+              <TextBlock Grid.Row="0"
+                         Text="State" />
+              <TextBlock x:Name="FeedStateText"
+                         Grid.Row="0"
+                         Grid.Column="1"
+                         Text="{Binding FeedState}" />
+              <TextBlock Grid.Row="1"
+                         Text="Session" />
               <TextBlock x:Name="FeedSessionText"
-                         Grid.Row="1" Grid.Column="1" Text="{Binding FeedSession}" />
-              <TextBlock Grid.Row="2" Text="Sequence" />
+                         Grid.Row="1"
+                         Grid.Column="1"
+                         Text="{Binding FeedSession}"
+                         TextWrapping="Wrap" />
+              <TextBlock Grid.Row="2"
+                         Text="Sequence" />
               <TextBlock x:Name="FeedSequenceText"
-                         Grid.Row="2" Grid.Column="1" Text="{Binding FeedSequence}" />
-              <TextBlock Grid.Row="3" Text="Heartbeat age" />
+                         Grid.Row="2"
+                         Grid.Column="1"
+                         Text="{Binding FeedSequence}" />
+              <TextBlock Grid.Row="3"
+                         Text="Heartbeat age" />
               <TextBlock x:Name="FeedHeartbeatText"
-                         Grid.Row="3" Grid.Column="1" Text="{Binding FeedHeartbeatAge}" />
-              <TextBlock Grid.Row="4" Text="Last send age" />
-              <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding FeedSendAge}" />
-              <TextBlock Grid.Row="5" Text="Reconnect attempts" />
+                         Grid.Row="3"
+                         Grid.Column="1"
+                         Text="{Binding FeedHeartbeatAge}" />
+              <TextBlock Grid.Row="4"
+                         Text="Last send age" />
+              <TextBlock Grid.Row="4"
+                         Grid.Column="1"
+                         Text="{Binding FeedSendAge}" />
+              <TextBlock Grid.Row="5"
+                         Text="Reconnect attempts" />
               <TextBlock x:Name="FeedReconnectText"
-                         Grid.Row="5" Grid.Column="1" Text="{Binding FeedReconnectAttempts}" />
-              <TextBlock Grid.Row="6" Text="Error" />
+                         Grid.Row="5"
+                         Grid.Column="1"
+                         Text="{Binding FeedReconnectAttempts}" />
+              <TextBlock Grid.Row="6"
+                         Text="Error" />
               <TextBlock x:Name="FeedErrorText"
                          Grid.Row="6"
                          Grid.Column="1"
                          Text="{Binding FeedError}"
                          TextWrapping="Wrap" />
             </Grid>
+          </Expander>
+        </Border>
+
+        <Border x:Name="DebugDrawer"
+                Classes="panel"
+                IsVisible="{Binding IsDebugEnabled}">
+          <StackPanel Spacing="12">
+            <StackPanel>
+              <TextBlock Classes="section-title"
+                         Text="Debug diagnostics · last 60 seconds" />
+              <TextBlock Classes="muted"
+                         Text="Opt-in only · 10 Hz maximum · fixed 600-sample ring · gaps mean unavailable evidence."
+                         TextWrapping="Wrap" />
+            </StackPanel>
+
+            <Border Classes="raised">
+              <StackPanel Spacing="4">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Tracker pose age (ms)" />
+                <TextBlock Classes="muted"
+                           Text="Blue: left · orange: right" />
+                <controls:DiagnosticsPlot AutomationProperties.Name="Tracker pose age history"
+                                          Series1="{Binding DebugDiagnostics.LeftTrackerAge}"
+                                          Series2="{Binding DebugDiagnostics.RightTrackerAge}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}" />
+              </StackPanel>
+            </Border>
+
+            <Border Classes="raised">
+              <StackPanel Spacing="4">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Producer IPC age (ms)" />
+                <TextBlock Classes="muted"
+                           Text="Blue: last successful send · orange: heartbeat" />
+                <controls:DiagnosticsPlot AutomationProperties.Name="Producer IPC age history"
+                                          Series1="{Binding DebugDiagnostics.SendAge}"
+                                          Series2="{Binding DebugDiagnostics.HeartbeatAge}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}" />
+              </StackPanel>
+            </Border>
+
+            <Border Classes="raised">
+              <StackPanel Spacing="4">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Binary session status" />
+                <TextBlock Classes="muted"
+                           Text="Blue/orange: left/right publishing · green/purple: left/right inputs valid. Reconnect/fault is listed separately below."
+                           TextWrapping="Wrap" />
+                <controls:DiagnosticsPlot AutomationProperties.Name="Publishing and input-valid history"
+                                          Series1="{Binding DebugDiagnostics.LeftPublishing}"
+                                          Series2="{Binding DebugDiagnostics.RightPublishing}"
+                                          Series3="{Binding DebugDiagnostics.LeftInputValid}"
+                                          Series4="{Binding DebugDiagnostics.RightInputValid}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}"
+                                          Minimum="-0.1"
+                                          Maximum="1.1" />
+                <TextBlock Classes="muted"
+                           Text="Feed reconnect/fault band · blue: reconnecting or faulted" />
+                <controls:DiagnosticsPlot AutomationProperties.Name="Feed reconnect and fault history"
+                                          MinHeight="72"
+                                          Series1="{Binding DebugDiagnostics.FeedReconnecting}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}"
+                                          Minimum="-0.1"
+                                          Maximum="1.1" />
+                <TextBlock Text="{Binding FeedReconnectAttempts, StringFormat='Current reconnect attempts: {0}'}" />
+              </StackPanel>
+            </Border>
+
+            <Border Classes="raised">
+              <StackPanel Spacing="4">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Completed profile lag estimate (ms)" />
+                <TextBlock Classes="muted"
+                           Text="Blue: left · orange: right. Frozen profile evidence; this is not a live correlation or residual estimator."
+                           TextWrapping="Wrap" />
+                <controls:DiagnosticsPlot AutomationProperties.Name="Completed profile lag history"
+                                          Series1="{Binding DebugDiagnostics.LeftFrozenLag}"
+                                          Series2="{Binding DebugDiagnostics.RightFrozenLag}"
+                                          RefreshVersion="{Binding DebugDiagnostics.Version}" />
+                <TextBlock Text="{Binding DebugDiagnostics.FrozenLagSummary}"
+                           TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
           </StackPanel>
         </Border>
 
-        <Border Padding="10"
-                BorderBrush="Gray"
-                BorderThickness="1"
-                CornerRadius="4">
-          <StackPanel Spacing="6">
-            <TextBlock FontSize="18" FontWeight="Bold" Text="Driver registration maintenance" />
-            <TextBlock TextWrapping="Wrap"
-                       Text="Removes the driver_ltb SteamVR registration and restores the activateMultipleDrivers state recorded when LTB registered the driver. Unrelated drivers are never modified. Stop the session first; restart SteamVR afterwards to complete the removal." />
-            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
-              <Button x:Name="RemoveDriverButton"
-                      MinWidth="140"
-                      Content="Remove driver"
-                      Command="{Binding RemoveDriverCommand}" />
-              <TextBlock x:Name="RemoveDriverStatusText"
-                         Grid.Column="1"
-                         VerticalAlignment="Center"
-                         Text="{Binding RemoveDriverStatus}"
+        <Border Classes="panel">
+          <Expander x:Name="MaintenanceExpander"
+                    Header="Maintenance and legacy migration notice"
+                    IsExpanded="False">
+            <StackPanel Margin="0,8,0,0"
+                        Spacing="8">
+              <TextBlock x:Name="LegacyNotice"
+                         Classes="muted"
+                         Text="Unsupported compile-only migration code: the legacy ALVR / VMT / TrackingOverrides wizard is not used by Start."
                          TextWrapping="Wrap" />
-            </Grid>
-          </StackPanel>
+              <TextBlock Text="Removing driver_ltb restores only the registration state recorded when LTB registered it. Stop this session first, then restart SteamVR."
+                         TextWrapping="Wrap" />
+              <WrapPanel Orientation="Horizontal">
+                <Button x:Name="RemoveDriverButton"
+                        MinWidth="140"
+                        Margin="0,0,12,4"
+                        AutomationProperties.Name="Remove first-party driver registration"
+                        Content="Remove driver"
+                        Command="{Binding RemoveDriverCommand}" />
+                <TextBlock x:Name="RemoveDriverStatusText"
+                           MaxWidth="650"
+                           VerticalAlignment="Center"
+                           Text="{Binding RemoveDriverStatus}"
+                           TextWrapping="Wrap" />
+              </WrapPanel>
+            </StackPanel>
+          </Expander>
         </Border>
       </StackPanel>
     </ScrollViewer>

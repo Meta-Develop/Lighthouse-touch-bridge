@@ -1,5 +1,8 @@
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Headless.XUnit;
+using Avalonia.Styling;
 using Avalonia.VisualTree;
 using Ltb.App;
 using Ltb.Gui.ViewModels;
@@ -23,15 +26,17 @@ public sealed class MainWindowSmokeTests
             window.Show();
 
             Assert.Same(viewModel, window.DataContext);
+            Assert.Equal(ThemeVariant.Dark, Application.Current!.RequestedThemeVariant);
             Assert.Equal("Stopped", window.FindControl<TextBlock>("PhaseText")!.Text);
             Assert.Equal("Start", window.FindControl<Button>("ActionButton")!.Content);
             var calibrationButton = window.FindControl<Button>("CalibrationButton");
             Assert.NotNull(calibrationButton);
             Assert.Equal("Calibrate / Recalibrate", calibrationButton!.Content);
             Assert.True(calibrationButton.IsEnabled);
-            var readiness = window.FindControl<ListBox>("ReadinessList");
+            var readiness = window.FindControl<ItemsControl>("ReadinessList");
             Assert.NotNull(readiness);
-            Assert.Equal(12, readiness!.ItemCount);
+            Assert.Equal(4, readiness!.ItemCount);
+            Assert.Equal(12, viewModel.ReadinessRows.Count);
             Assert.Equal(
                 [
                     "Windows x64",
@@ -80,14 +85,21 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<ProgressBar>("RightPositionProgress"));
             Assert.NotNull(window.FindControl<TextBlock>("LeftPositionProgressText"));
             Assert.NotNull(window.FindControl<TextBlock>("RightPositionProgressText"));
+            Assert.False(window.FindControl<Border>("CalibrationWorkspace")!.IsVisible);
+            Assert.False(window.FindControl<Border>("DebugDrawer")!.IsVisible);
+            Assert.False(window.FindControl<ToggleSwitch>("DebugToggle")!.IsChecked);
+            Assert.False(window.FindControl<ToggleSwitch>("ReducedMotionToggle")!.IsChecked);
+            Assert.False(window.FindControl<Expander>("MaintenanceExpander")!.IsExpanded);
+            Assert.NotNull(window.FindControl<Ltb.Gui.Controls.MotionGuideControl>("MotionGuide"));
             var visibleText = window.GetVisualDescendants()
                 .OfType<TextBlock>()
                 .Select(text => text.Text ?? string.Empty)
                 .ToArray();
-            Assert.Equal(2, visibleText.Count(text => text == "Calibration evidence"));
-            Assert.Equal(2, visibleText.Count(text => text == "Capture evidence"));
             Assert.Equal(2, visibleText.Count(text => text == "Rotation progress"));
-            Assert.Equal(2, visibleText.Count(text => text == "Position progress"));
+            Assert.Equal(
+                2,
+                visibleText.Count(text => text == "Position tracking availability"));
+            Assert.DoesNotContain(visibleText, text => text == "Position progress");
             Assert.DoesNotContain(
                 visibleText,
                 text => text.Contains("Global calibration phase estimate", StringComparison.Ordinal));
@@ -100,6 +112,44 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<TextBlock>("FeedHeartbeatText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedReconnectText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedErrorText"));
+        }
+        finally
+        {
+            window.Close();
+            viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    }
+
+    [AvaloniaFact]
+    public void PrimaryActionsRemainPinnedAndUsableAtMinimumSizeWithLargeText()
+    {
+        var viewModel = new InternalDriverViewModel(
+            new IdleSessionFactory(),
+            action => action());
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+            Width = 760,
+            Height = 620,
+            FontSize = 20,
+        };
+        try
+        {
+            window.Show();
+
+            var scrollViewer = window.FindControl<ScrollViewer>("EvidenceScrollViewer");
+            var calibration = window.FindControl<Button>("CalibrationButton");
+            var action = window.FindControl<Button>("ActionButton");
+            Assert.NotNull(scrollViewer);
+            Assert.NotNull(calibration);
+            Assert.NotNull(action);
+            Assert.True(calibration!.Bounds.Width >= calibration.MinWidth);
+            Assert.True(action!.Bounds.Width >= action.MinWidth);
+            Assert.DoesNotContain(scrollViewer!, calibration.GetVisualAncestors());
+            Assert.DoesNotContain(scrollViewer, action.GetVisualAncestors());
+            Assert.Equal(ScrollBarVisibility.Disabled, scrollViewer.HorizontalScrollBarVisibility);
+            Assert.True(window.Bounds.Width >= window.MinWidth);
+            Assert.True(window.Bounds.Height >= window.MinHeight);
         }
         finally
         {
