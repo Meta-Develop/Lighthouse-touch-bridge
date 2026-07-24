@@ -644,6 +644,50 @@ public sealed class InternalDriverCalibrationTests
         });
     }
 
+    [Fact]
+    public void CancellationAfterCommitBoundaryDoesNotRelabelCompletedReplaceAsCanceled()
+    {
+        WithTemporaryProfilePath(profilePath =>
+        {
+            var prior = new CalibrationProfileStore(
+            [Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "LHR-LEFT",
+                profileName: "Prior left")]);
+            var replacement = new CalibrationProfileStore(
+            [Profile(
+                hand: ControllerHand.Left,
+                trackerSerial: "LHR-LEFT",
+                profileName: "Committed replacement")]);
+            CalibrationProfileFile.SaveStore(profilePath, prior);
+            using var cancellation = new CancellationTokenSource();
+            using var commitGate = new InternalDriverProfileStoreCommitGate(
+                cancellation.Token);
+
+            var result = commitGate.Commit(() =>
+            {
+                cancellation.Cancel();
+                CalibrationProfileFile.SaveStore(profilePath, replacement);
+                return "committed";
+            });
+
+            Assert.Equal("committed", result);
+            Assert.True(cancellation.IsCancellationRequested);
+            Assert.Equal(
+                InternalDriverProfileStoreCommitState.Committed,
+                commitGate.State);
+            Assert.Equal(
+                "Committed replacement",
+                CalibrationProfileFile.LoadStore(profilePath)
+                    .FindCandidateProfile("LHR-LEFT", ControllerHand.Left)!
+                    .ProfileName);
+            Assert.Empty(TwoHandCalibrationStageFiles(profilePath));
+            Assert.Empty(Directory.EnumerateFiles(
+                Path.GetDirectoryName(profilePath)!,
+                $".{Path.GetFileName(profilePath)}.*.tmp"));
+        });
+    }
+
     [Theory]
     [InlineData("different-runtime", "Quest 2 Touch", null)]
     [InlineData("meta_link_libovr", "Different Touch Model", null)]
