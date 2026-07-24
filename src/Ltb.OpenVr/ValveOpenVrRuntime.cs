@@ -167,6 +167,52 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
         }
     }
 
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var validated = OpenVrRuntimePoseBatchValidation.ValidateRequests(
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            foreach (var request in validated)
+            {
+                _ = RequireCurrentPoseIdentity(request);
+            }
+
+            _system.GetDeviceToAbsoluteTrackingPose(
+                MapTrackingUniverse(trackingUniverse),
+                (float)predictionOffsetSeconds,
+                _poseBuffer);
+
+            // Recheck after the native acquisition as well. The process lock
+            // serializes all LTB runtime operations; the second check also
+            // rejects an OpenVR topology change observed during the call.
+            var observedDevices = new OpenVrRuntimePoseRequest[validated.Length];
+            for (var index = 0; index < validated.Length; index++)
+            {
+                observedDevices[index] = RequireCurrentPoseIdentity(validated[index]);
+            }
+
+            var poses = new OpenVrRuntimeVerifiedPose[validated.Length];
+            for (var index = 0; index < poses.Length; index++)
+            {
+                var request = validated[index];
+                poses[index] = new OpenVrRuntimeVerifiedPose(
+                    observedDevices[index],
+                    MapPose(
+                        _poseBuffer[request.TransientDeviceIndex],
+                        predictionOffsetSeconds));
+            }
+
+            return Array.AsReadOnly(poses);
+        }
+    }
+
     public OpenVrRuntimeHealthSnapshot GetRuntimeHealth()
     {
         lock (_sync)
@@ -259,6 +305,38 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
         return error == ValveVr.ETrackedPropertyError.TrackedProp_Success
             ? builder.ToString()
             : null;
+    }
+
+    private OpenVrRuntimePoseRequest RequireCurrentPoseIdentity(
+        OpenVrRuntimePoseRequest expected)
+    {
+        var nativeClass = _system.GetTrackedDeviceClass(expected.TransientDeviceIndex);
+        var serialNumber = nativeClass == ValveVr.ETrackedDeviceClass.Invalid
+            ? null
+            : ReadStringProperty(
+                expected.TransientDeviceIndex,
+                ValveVr.ETrackedDeviceProperty.Prop_SerialNumber_String);
+        var registeredDeviceType = nativeClass == ValveVr.ETrackedDeviceClass.Invalid
+            ? null
+            : ReadStringProperty(
+                expected.TransientDeviceIndex,
+                ValveVr.ETrackedDeviceProperty.Prop_RegisteredDeviceType_String);
+        var devicePath = string.IsNullOrWhiteSpace(serialNumber)
+            ? null
+            : OpenVrDevicePath.Resolve(registeredDeviceType, serialNumber);
+        if (string.Equals(serialNumber, expected.StableSerial, StringComparison.Ordinal) &&
+            string.Equals(devicePath, expected.DevicePath, StringComparison.Ordinal))
+        {
+            return new OpenVrRuntimePoseRequest(
+                expected.TransientDeviceIndex,
+                serialNumber!,
+                devicePath!);
+        }
+
+        throw new InvalidDataException(
+            $"OpenVR transient device index {expected.TransientDeviceIndex} changed identity: " +
+            $"expected serial '{expected.StableSerial}' at path '{expected.DevicePath}', observed " +
+            $"serial '{serialNumber ?? "<unavailable>"}' at path '{devicePath ?? "<unavailable>"}'.");
     }
 
     private static OpenVrRuntimeDeviceClass MapDeviceClass(

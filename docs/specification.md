@@ -371,9 +371,12 @@ observation shall acquire every connected physical tracker candidate through a
 single OpenVR pose batch with one shared post-call host-ingress timestamp and a
 zero prediction offset. The reusable batch access handle shall be rebuilt when
 any candidate's stable serial, registered device path, or transient access
-index changes. Steady-state observation and publication shall advance absolute
-monotonic deadlines, skipping missed slots rather than accumulating work time
-into the configured 10 ms period.
+index changes. Production acquisition shall revalidate every requested index's
+stable serial and registered path immediately before and after the native batch
+read inside one runtime critical section; an index reuse or identity mismatch
+shall reject the complete observation. Steady-state observation and publication
+shall advance absolute monotonic deadlines, skipping missed slots rather than
+accumulating work time into the configured 10 ms period.
 
 Recordings shall preserve validity, connectivity, tracking result, clock
 mapping, and sample age. Quaternion sign continuity shall be normalized before
@@ -822,6 +825,12 @@ the reason translation was not selected. Schema migration shall be explicit
 and reversible; target code shall not silently relabel an `ALVR` profile as a
 Meta Link profile because its source timing and controller identity contracts
 differ.
+
+Two-hand profile replacement shall stage both validated hand results before one
+canonical commit decision. Cancellation and commit start shall be linearized:
+if cancellation wins, canonical bytes remain unchanged and staging residue is
+removed; if commit start wins, the atomic canonical replacement completes and
+is reported as successful even if a session Stop is requested concurrently.
 
 ---
 
