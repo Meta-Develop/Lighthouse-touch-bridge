@@ -233,15 +233,16 @@ public sealed class InternalDriverCalibrationTests
                 StringComparison.Ordinal);
 
             File.Delete(profilePath);
-            var calibrationError = await Assert.ThrowsAsync<InvalidOperationException>(
+            var progressStates = new List<InternalDriverSessionState>();
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 async () => await runtime.ResolveProfilesAsync(
                     observation,
-                    (state, diagnostic, remediation, left, right, progressObservation) => { },
-                    CancellationToken.None));
-            Assert.Contains(
-                "New calibration requires exactly two tracker candidates",
-                calibrationError.Message,
-                StringComparison.Ordinal);
+                    (state, diagnostic, remediation, left, right, progressObservation) =>
+                        progressStates.Add(state),
+                    cancelled.Token));
+            Assert.Contains(InternalDriverSessionState.Recording, progressStates);
         }
         finally
         {
@@ -329,7 +330,7 @@ public sealed class InternalDriverCalibrationTests
     }
 
     [Fact]
-    public async Task ExplicitCalibrationKeepsTheExactTwoCandidateGateEvenWithReusableProfiles()
+    public async Task ExplicitCalibrationWithFiveCandidatesBeginsFreshCaptureDespiteReusableProfiles()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -372,20 +373,20 @@ public sealed class InternalDriverCalibrationTests
                     ["FBT-RIGHT-FOOT"] = TrackerSample(10d, RigidTransform.Identity),
                 });
 
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            var originalBytes = File.ReadAllBytes(profilePath);
+            var progressStates = new List<InternalDriverSessionState>();
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 async () => await runtime.ResolveProfilesAsync(
                     observation,
-                    (state, diagnostic, remediation, left, right, progressObservation) => { },
-                    CancellationToken.None));
+                    (state, diagnostic, remediation, left, right, progressObservation) =>
+                        progressStates.Add(state),
+                    cancelled.Token));
 
-            Assert.Contains(
-                "Explicit calibration bypasses reusable profiles",
-                error.Message,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                "requires exactly two tracker candidates",
-                error.Message,
-                StringComparison.Ordinal);
+            Assert.Contains(InternalDriverSessionState.Recording, progressStates);
+            Assert.Equal(originalBytes, File.ReadAllBytes(profilePath));
         }
         finally
         {
@@ -394,7 +395,66 @@ public sealed class InternalDriverCalibrationTests
     }
 
     [Fact]
-    public void ExplicitCalibrationTransactionLeavesPriorPairUntouchedWhenRightValidationFails()
+    public void PublishableCandidateRosterIsSortedAndPreservedAcrossBothGuidedCaptures()
+    {
+        var observation = new InternalDriverRuntimeObservation(
+            SteamVrRunning: true,
+            "SteamVR runtime is running.",
+            StoppedMeta(),
+            Devices: [],
+            new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal)
+            {
+                ["TRACKER-RIGHT"] = TrackerSample(10d, RigidTransform.Identity),
+                ["DISCONNECTED"] = UnpublishableTrackerSample(
+                    10d,
+                    isConnected: false,
+                    trackingResult: PoseTrackingResult.RunningOk),
+                ["TRACKER-LEFT"] = TrackerSample(10d, RigidTransform.Identity),
+                ["FBT-CHEST"] = TrackerSample(10d, RigidTransform.Identity),
+                ["INVALID-POSE"] = UnpublishableTrackerSample(
+                    10d,
+                    isConnected: true,
+                    trackingResult: PoseTrackingResult.RunningOutOfRange),
+            });
+
+        var roster = ProductionInternalDriverSessionRuntime
+            .SnapshotPublishableTrackerSerials(observation);
+        var expected = new[] { "FBT-CHEST", "TRACKER-LEFT", "TRACKER-RIGHT" };
+
+        Assert.Equal(expected, roster);
+        var left = ProductionInternalDriverSessionRuntime.ToAssociationCapture(
+            GuidedCapture(MetaLinkHand.Left, roster));
+        var right = ProductionInternalDriverSessionRuntime.ToAssociationCapture(
+            GuidedCapture(MetaLinkHand.Right, roster));
+        Assert.Equal(expected, left.TrackerCandidates.Select(candidate => candidate.TrackerSerial));
+        Assert.Equal(expected, right.TrackerCandidates.Select(candidate => candidate.TrackerSerial));
+    }
+
+    [Fact]
+    public void AssociationCaptureUsesContinuousConnectionEvidence()
+    {
+        var roster = new[] { "TRACKER-LEFT", "TRACKER-RIGHT", "FBT-CHEST" };
+        var capture = GuidedCapture(
+            MetaLinkHand.Left,
+            roster,
+            discontinuousSerial: "TRACKER-LEFT");
+
+        var associationCapture = ProductionInternalDriverSessionRuntime
+            .ToAssociationCapture(capture);
+
+        Assert.False(associationCapture.TrackerCandidates.Single(candidate =>
+            candidate.TrackerSerial == "TRACKER-LEFT").IsConnected);
+        Assert.True(associationCapture.TrackerCandidates.Single(candidate =>
+            candidate.TrackerSerial == "TRACKER-RIGHT").IsConnected);
+        Assert.True(associationCapture.TrackerCandidates.Single(candidate =>
+            candidate.TrackerSerial == "FBT-CHEST").IsConnected);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FreshCalibrationTransactionLeavesPriorPairUntouchedWhenRightValidationFails(
+        bool explicitRequest)
     {
         WithTemporaryProfilePath(profilePath =>
         {
@@ -417,7 +477,7 @@ public sealed class InternalDriverCalibrationTests
             var replacementTime = CreatedUtc.AddHours(1);
 
             var error = Assert.Throws<InvalidOperationException>(() =>
-                ProductionInternalDriverSessionRuntime.RunExplicitProfileStoreTransaction<object>(
+                ProductionInternalDriverSessionRuntime.RunTwoHandProfileStoreTransaction<object>(
                     profilePath,
                     stagedProfilePath =>
                     {
@@ -430,7 +490,7 @@ public sealed class InternalDriverCalibrationTests
                                 "LHR-LEFT",
                                 "Quest 2 Touch")
                             {
-                                ExplicitRequest = true,
+                                ExplicitRequest = explicitRequest,
                             },
                             SyntheticCapture(MetaLinkHand.Left, "LHR-LEFT"));
                         Assert.True(left.Success, left.Diagnostic);
@@ -446,7 +506,7 @@ public sealed class InternalDriverCalibrationTests
                                 "LHR-RIGHT",
                                 "Quest 2 Touch")
                             {
-                                ExplicitRequest = true,
+                                ExplicitRequest = explicitRequest,
                             },
                             RejectedCapture(MetaLinkHand.Right, "LHR-RIGHT"));
                         Assert.False(right.Success);
@@ -465,12 +525,15 @@ public sealed class InternalDriverCalibrationTests
             Assert.Equal("Unrelated profile", retained.FindCandidateProfile(
                 "FBT-CHEST",
                 ControllerHand.Left)!.ProfileName);
-            Assert.Empty(ExplicitCalibrationStageFiles(profilePath));
+            Assert.Empty(TwoHandCalibrationStageFiles(profilePath));
         });
     }
 
-    [Fact]
-    public void ExplicitCalibrationTransactionCommitsBothProfilesAndPreservesUnrelatedEntries()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FreshCalibrationTransactionCommitsBothProfilesAndPreservesUnrelatedEntries(
+        bool explicitRequest)
     {
         WithTemporaryProfilePath(profilePath =>
         {
@@ -489,41 +552,51 @@ public sealed class InternalDriverCalibrationTests
             CalibrationProfileFile.SaveStore(
                 profilePath,
                 new CalibrationProfileStore([priorLeft, priorRight, unrelated]));
-            var replacementLeft = Profile(
-                hand: ControllerHand.Left,
-                trackerSerial: "LHR-LEFT",
-                profileName: "Replacement left",
-                createdUtc: CreatedUtc.AddHours(1));
-            var replacementRight = Profile(
-                hand: ControllerHand.Right,
-                trackerSerial: "LHR-RIGHT",
-                profileName: "Replacement right",
-                createdUtc: CreatedUtc.AddHours(1));
+            var replacementTime = CreatedUtc.AddHours(1);
 
             var result = ProductionInternalDriverSessionRuntime
-                .RunExplicitProfileStoreTransaction(
+                .RunTwoHandProfileStoreTransaction(
                     profilePath,
                     stagedProfilePath =>
                     {
-                        var staged = CalibrationProfileFile.LoadStore(stagedProfilePath)
-                            .Upsert(replacementLeft)
-                            .Upsert(replacementRight);
-                        CalibrationProfileFile.SaveStore(stagedProfilePath, staged);
+                        var calibration = new InternalDriverCalibration(
+                            stagedProfilePath,
+                            () => replacementTime);
+                        var left = calibration.CalibrateAndSave(
+                            new InternalDriverCalibrationContext(
+                                MetaLinkHand.Left,
+                                "LHR-LEFT",
+                                "Quest 2 Touch")
+                            {
+                                ExplicitRequest = explicitRequest,
+                            },
+                            SyntheticCapture(MetaLinkHand.Left, "LHR-LEFT"));
+                        Assert.True(left.Success, left.Diagnostic);
+                        var right = calibration.CalibrateAndSave(
+                            new InternalDriverCalibrationContext(
+                                MetaLinkHand.Right,
+                                "LHR-RIGHT",
+                                "Quest 2 Touch")
+                            {
+                                ExplicitRequest = explicitRequest,
+                            },
+                            SyntheticCapture(MetaLinkHand.Right, "LHR-RIGHT"));
+                        Assert.True(right.Success, right.Diagnostic);
                         return "committed";
                     });
 
             Assert.Equal("committed", result);
             var committed = CalibrationProfileFile.LoadStore(profilePath);
-            Assert.Equal("Replacement left", committed.FindCandidateProfile(
+            Assert.Equal(replacementTime, committed.FindCandidateProfile(
                 "LHR-LEFT",
-                ControllerHand.Left)!.ProfileName);
-            Assert.Equal("Replacement right", committed.FindCandidateProfile(
+                ControllerHand.Left)!.CreatedUtc);
+            Assert.Equal(replacementTime, committed.FindCandidateProfile(
                 "LHR-RIGHT",
-                ControllerHand.Right)!.ProfileName);
+                ControllerHand.Right)!.CreatedUtc);
             Assert.Equal("Unrelated profile", committed.FindCandidateProfile(
                 "FBT-CHEST",
                 ControllerHand.Left)!.ProfileName);
-            Assert.Empty(ExplicitCalibrationStageFiles(profilePath));
+            Assert.Empty(TwoHandCalibrationStageFiles(profilePath));
         });
     }
 
@@ -942,6 +1015,47 @@ public sealed class InternalDriverCalibrationTests
         linearVelocityMetersPerSecond: new Vector3(0.1f, 0.2f, 0.3f),
         angularVelocityRadiansPerSecond: new Vector3(0.4f, 0.5f, 0.6f));
 
+    private static PoseSourceSample UnpublishableTrackerSample(
+        double timeSeconds,
+        bool isConnected,
+        PoseTrackingResult trackingResult) => new(
+        new TimestampedPoseSample(
+            timeSeconds,
+            RigidTransform.Identity,
+            PoseValidity.Orientation | PoseValidity.Position),
+        isConnected,
+        trackingResult);
+
+    private static ProductionInternalDriverSessionRuntime.GuidedHandCapture GuidedCapture(
+        MetaLinkHand hand,
+        IReadOnlyList<string> trackerSerials,
+        string? discontinuousSerial = null)
+    {
+        var meta = new[]
+        {
+            MetaSample(
+                hand,
+                mappedTimeSeconds: 10d,
+                RigidTransform.Identity),
+        };
+        var trackers = trackerSerials.ToDictionary(
+            serial => serial,
+            serial => new List<PoseSourceSample>
+            {
+                TrackerSample(10d, RigidTransform.Identity),
+            },
+            StringComparer.Ordinal);
+        var continuity = trackerSerials.ToDictionary(
+            serial => serial,
+            serial => !string.Equals(serial, discontinuousSerial, StringComparison.Ordinal),
+            StringComparer.Ordinal);
+        return new ProductionInternalDriverSessionRuntime.GuidedHandCapture(
+            hand,
+            meta,
+            trackers,
+            continuity);
+    }
+
     private static InternalDriverCalibrationContext Context() => new(
         MetaLinkHand.Left,
         "LHR-LEFT",
@@ -971,10 +1085,10 @@ public sealed class InternalDriverCalibrationTests
         new CalibrationProfileQuality(1d, null, null, 0.95d),
         createdUtc ?? CreatedUtc);
 
-    private static string[] ExplicitCalibrationStageFiles(string profilePath) =>
+    private static string[] TwoHandCalibrationStageFiles(string profilePath) =>
         Directory.GetFiles(
             Path.GetDirectoryName(profilePath)!,
-            $".{Path.GetFileName(profilePath)}.explicit-calibration.*",
+            $".{Path.GetFileName(profilePath)}.two-hand-calibration.*",
             SearchOption.TopDirectoryOnly);
 
     private static MetaLinkRuntimeSnapshot StoppedMeta() => new(
