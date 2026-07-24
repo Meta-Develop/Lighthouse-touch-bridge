@@ -833,6 +833,75 @@ public sealed class InternalDriverViewModelTests
     }
 
     [Fact]
+    public async Task DisposeSuppressesFlushExtractedBeforeTrailingCallbackStarts()
+    {
+        var time = new ManualGuiTimeSource();
+        using var scheduler = new BlockingHandleDisposeGuiDelayScheduler();
+        var trailing = new List<InternalDriverSessionSnapshot>();
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready);
+        var coalescer = new SnapshotPresentationCoalescer(
+            time,
+            scheduler,
+            (_, _, snapshot) => trailing.Add(snapshot));
+        coalescer.Reset(1, active);
+        Assert.False(coalescer.ShouldPresent(
+            1,
+            1,
+            active with
+            {
+                Feed = active.Feed with { LastSuccessfulSequence = 43 },
+            }));
+
+        time.Advance(SnapshotPresentationCoalescer.ActivePresentationInterval);
+        var flush = Task.Run(scheduler.Invoke);
+        Assert.True(scheduler.HandleDisposeEntered.Wait(TimeSpan.FromSeconds(5)));
+
+        coalescer.Dispose();
+        scheduler.AllowHandleDispose.Set();
+        await flush.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Empty(trailing);
+    }
+
+    [Fact]
+    public async Task TrailingCallbackCanDisposeItsOwnCoalescer()
+    {
+        var time = new ManualGuiTimeSource();
+        var scheduler = new ManualGuiDelayScheduler(time);
+        var trailingCount = 0;
+        SnapshotPresentationCoalescer? coalescer = null;
+        coalescer = new SnapshotPresentationCoalescer(
+            time,
+            scheduler,
+            (_, _, _) =>
+            {
+                trailingCount++;
+                coalescer!.Dispose();
+            });
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready);
+        coalescer.Reset(1, active);
+        Assert.False(coalescer.ShouldPresent(
+            1,
+            1,
+            active with
+            {
+                Feed = active.Feed with { LastSuccessfulSequence = 43 },
+            }));
+
+        time.Advance(SnapshotPresentationCoalescer.ActivePresentationInterval);
+        await Task.Run(scheduler.RunDue).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, trailingCount);
+        Assert.False(coalescer.ShouldPresent(1, 2, active));
+    }
+
+    [Fact]
     public async Task ClosingCancelsTrailingFlushAndStillPresentsFinalStoppedSnapshot()
     {
         var time = new ManualGuiTimeSource();
@@ -1338,6 +1407,52 @@ public sealed class InternalDriverViewModelTests
             }
 
             public void InvokeEvenIfDisposed() => _callback();
+        }
+    }
+
+    private sealed class BlockingHandleDisposeGuiDelayScheduler : IGuiDelayScheduler, IDisposable
+    {
+        private Action? _callback;
+
+        public ManualResetEventSlim HandleDisposeEntered { get; } = new();
+
+        public ManualResetEventSlim AllowHandleDispose { get; } = new();
+
+        public IDisposable Schedule(TimeSpan delay, Action callback)
+        {
+            Assert.Null(_callback);
+            _callback = callback;
+            return new BlockingHandle(this);
+        }
+
+        public void Invoke()
+        {
+            Assert.NotNull(_callback);
+            _callback();
+        }
+
+        public void Dispose()
+        {
+            AllowHandleDispose.Set();
+            HandleDisposeEntered.Dispose();
+            AllowHandleDispose.Dispose();
+        }
+
+        private sealed class BlockingHandle(BlockingHandleDisposeGuiDelayScheduler owner)
+            : IDisposable
+        {
+            private int _disposed;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
+
+                owner.HandleDisposeEntered.Set();
+                Assert.True(owner.AllowHandleDispose.Wait(TimeSpan.FromSeconds(5)));
+            }
         }
     }
 }
