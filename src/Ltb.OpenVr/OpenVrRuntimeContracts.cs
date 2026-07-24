@@ -113,63 +113,16 @@ internal interface IOpenVrRuntime : IDisposable
     }
 
     /// <summary>
-    /// Revalidates every transient index against its stable identity before
-    /// reading one logical pose batch. The Valve production implementation
-    /// performs identity validation and acquisition inside one runtime lock.
+    /// Returns one logical pose batch together with the identity actually
+    /// verified for each transient index. Every implementation must define this
+    /// contract explicitly: deterministic fakes may use one immutable logical
+    /// snapshot, while production implementations must keep identity validation
+    /// and acquisition in one runtime critical section.
     /// </summary>
     IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
         IReadOnlyList<OpenVrRuntimePoseRequest> requests,
         OpenVrTrackingUniverse trackingUniverse,
-        double predictionOffsetSeconds)
-    {
-        var validated = OpenVrRuntimePoseBatchValidation.ValidateRequests(
-            requests,
-            trackingUniverse,
-            predictionOffsetSeconds);
-        var currentDevices = EnumerateDevices();
-        var currentByIndex = new Dictionary<uint, OpenVrRuntimeDevice>();
-        foreach (var device in currentDevices)
-        {
-            if (!currentByIndex.TryAdd(device.TransientDeviceIndex, device))
-            {
-                throw new InvalidDataException(
-                    $"OpenVR enumerated transient device index {device.TransientDeviceIndex} more than once.");
-            }
-        }
-
-        var observedDevices = new OpenVrRuntimePoseRequest[validated.Length];
-        for (var index = 0; index < validated.Length; index++)
-        {
-            var request = validated[index];
-            if (!currentByIndex.TryGetValue(request.TransientDeviceIndex, out var current) ||
-                !string.Equals(current.SerialNumber, request.StableSerial, StringComparison.Ordinal) ||
-                !string.Equals(current.DevicePath, request.DevicePath, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    $"OpenVR transient device index {request.TransientDeviceIndex} no longer resolves to " +
-                    $"serial '{request.StableSerial}' at path '{request.DevicePath}'.");
-            }
-
-            observedDevices[index] = new OpenVrRuntimePoseRequest(
-                current.TransientDeviceIndex,
-                current.SerialNumber,
-                current.DevicePath);
-        }
-
-        var poses = ReadPoses(
-            validated.Select(request => request.TransientDeviceIndex).ToArray(),
-            trackingUniverse,
-            predictionOffsetSeconds);
-        if (poses.Count != validated.Length)
-        {
-            throw new InvalidDataException(
-                $"OpenVR returned {poses.Count} poses for {validated.Length} identity-verified requests.");
-        }
-
-        return Array.AsReadOnly(observedDevices
-            .Select((device, index) => new OpenVrRuntimeVerifiedPose(device, poses[index]))
-            .ToArray());
-    }
+        double predictionOffsetSeconds);
 
     OpenVrRuntimeHealthSnapshot GetRuntimeHealth() => OpenVrRuntimeHealthSnapshot.Running;
 }

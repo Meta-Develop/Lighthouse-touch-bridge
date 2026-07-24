@@ -152,7 +152,7 @@ public sealed class OpenVrPoseSourceTests
     }
 
     [Fact]
-    public void SessionBatchSourcePreservesReadPoseOnlyFakeCompatibility()
+    public void SessionBatchSourceUsesExplicitDeterministicFakeSnapshot()
     {
         using var runtime = new FakeOpenVrRuntime(
         [
@@ -192,6 +192,23 @@ public sealed class OpenVrPoseSourceTests
 
         Assert.Contains("no longer resolves", error.Message, StringComparison.Ordinal);
         Assert.Equal(0, runtime.ReadPoseCount);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsTransientIndexReuseDuringExplicitFakeAcquisition()
+    {
+        using var runtime = new ReassigningIndexOpenVrRuntime(
+            RuntimeTracker("tracker-left", 7));
+        using var session = new OpenVrSession(runtime);
+        var source = session.CreateTrackedPoseBatchSource(
+            session.EnumerateDevices(),
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+        runtime.ReplaceDeviceDuringNextRead(RuntimeTracker("tracker-other", 7));
+
+        var error = Assert.Throws<InvalidDataException>(source.ReadPoses);
+
+        Assert.Contains("no longer resolves", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, runtime.ReadPoseCount);
     }
 
     [Fact]
@@ -531,7 +548,7 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
         IReadOnlyList<OpenVrRuntimeDevice>? devices = null,
         OpenVrRuntimePose? pose = null)
     {
-        _devices = devices ?? [];
+        _devices = Array.AsReadOnly((devices ?? []).ToArray());
         _pose = pose ?? new OpenVrRuntimePose(
             RigidTransform.Identity,
             PoseValidity.None,
@@ -564,6 +581,26 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
         return _pose;
     }
 
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var observed = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            _devices,
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(observed
+            .Select(device => new OpenVrRuntimeVerifiedPose(
+                device,
+                ReadPose(
+                    device.TransientDeviceIndex,
+                    trackingUniverse,
+                    predictionOffsetSeconds)))
+            .ToArray());
+    }
+
     public void Dispose()
     {
     }
@@ -571,15 +608,7 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
 
 internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
 {
-    public int BatchReadCount { get; private set; }
-
-    public IReadOnlyList<uint> LastTransientDeviceIndexes { get; private set; } = [];
-
-    public OpenVrTrackingUniverse? LastTrackingUniverse { get; private set; }
-
-    public double? LastPredictionOffsetSeconds { get; private set; }
-
-    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() =>
+    private static readonly IReadOnlyList<OpenVrRuntimeDevice> Devices = Array.AsReadOnly(
     [
         new OpenVrRuntimeDevice(
             7,
@@ -595,7 +624,17 @@ internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
             OpenVrRuntimeDeviceClass.GenericTracker,
             OpenVrRuntimeControllerRole.None,
             IsConnected: true),
-    ];
+    ]);
+
+    public int BatchReadCount { get; private set; }
+
+    public IReadOnlyList<uint> LastTransientDeviceIndexes { get; private set; } = [];
+
+    public OpenVrTrackingUniverse? LastTrackingUniverse { get; private set; }
+
+    public double? LastPredictionOffsetSeconds { get; private set; }
+
+    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => Devices;
 
     public OpenVrRuntimePose ReadPose(
         uint transientDeviceIndex,
@@ -624,6 +663,25 @@ internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
             .ToArray());
     }
 
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var observed = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            Devices,
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        var poses = ReadPoses(
+            observed.Select(device => device.TransientDeviceIndex).ToArray(),
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(observed
+            .Select((device, index) => new OpenVrRuntimeVerifiedPose(device, poses[index]))
+            .ToArray());
+    }
+
     public void Dispose()
     {
     }
@@ -632,6 +690,7 @@ internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
 internal sealed class ReassigningIndexOpenVrRuntime : IOpenVrRuntime
 {
     private OpenVrRuntimeDevice _device;
+    private OpenVrRuntimeDevice? _replacementDuringNextRead;
 
     public ReassigningIndexOpenVrRuntime(OpenVrRuntimeDevice device)
     {
@@ -648,6 +707,12 @@ internal sealed class ReassigningIndexOpenVrRuntime : IOpenVrRuntime
         double predictionOffsetSeconds)
     {
         ReadPoseCount++;
+        if (_replacementDuringNextRead is { } replacement)
+        {
+            _device = replacement;
+            _replacementDuringNextRead = null;
+        }
+
         return new OpenVrRuntimePose(
             RigidTransform.Identity,
             PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid,
@@ -658,13 +723,80 @@ internal sealed class ReassigningIndexOpenVrRuntime : IOpenVrRuntime
             SampleAgeSeconds: null);
     }
 
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var before = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            [_device],
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        var poses = before
+            .Select(device => ReadPose(
+                device.TransientDeviceIndex,
+                trackingUniverse,
+                predictionOffsetSeconds))
+            .ToArray();
+        var after = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            [_device],
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(after
+            .Select((device, index) => new OpenVrRuntimeVerifiedPose(device, poses[index]))
+            .ToArray());
+    }
+
     public void ReplaceDevice(OpenVrRuntimeDevice device)
     {
         _device = device;
     }
 
+    public void ReplaceDeviceDuringNextRead(OpenVrRuntimeDevice device)
+    {
+        _replacementDuringNextRead = device;
+    }
+
     public void Dispose()
     {
+    }
+}
+
+internal static class DeterministicOpenVrRuntimeSnapshot
+{
+    public static OpenVrRuntimePoseRequest[] VerifyRequests(
+        IReadOnlyList<OpenVrRuntimeDevice> devices,
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var validated = OpenVrRuntimePoseBatchValidation.ValidateRequests(
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        var currentByIndex = devices.ToDictionary(device => device.TransientDeviceIndex);
+        var observed = new OpenVrRuntimePoseRequest[validated.Length];
+        for (var index = 0; index < validated.Length; index++)
+        {
+            var request = validated[index];
+            if (!currentByIndex.TryGetValue(request.TransientDeviceIndex, out var current) ||
+                !string.Equals(current.SerialNumber, request.StableSerial, StringComparison.Ordinal) ||
+                !string.Equals(current.DevicePath, request.DevicePath, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"OpenVR transient device index {request.TransientDeviceIndex} no longer resolves to " +
+                    $"serial '{request.StableSerial}' at path '{request.DevicePath}'.");
+            }
+
+            observed[index] = new OpenVrRuntimePoseRequest(
+                current.TransientDeviceIndex,
+                current.SerialNumber,
+                current.DevicePath);
+        }
+
+        return observed;
     }
 }
 
