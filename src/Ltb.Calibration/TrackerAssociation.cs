@@ -199,8 +199,9 @@ public sealed record TrackerAssociationResult(
 }
 
 /// <summary>
-/// Associates two trackers to hands from angular-speed magnitude correlation.
-/// It never compares world-space directions or assumes runtime device order.
+/// Selects a unique left/right tracker pair from two or more candidates using
+/// angular-speed magnitude correlation. It never compares world-space
+/// directions or assumes runtime device order.
 /// </summary>
 public static class TrackerHandAssociator
 {
