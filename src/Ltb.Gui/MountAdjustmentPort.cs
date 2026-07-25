@@ -212,9 +212,14 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
 {
     private readonly object _sync = new();
     private readonly object _publicationSync = new();
+    private readonly Dictionary<long, int> _activeRequestRevisions = [];
     private IInternalDriverSession? _session;
     private IInternalDriverMountAdjustmentControl? _control;
+    private EventHandler<InternalDriverSessionSnapshot>? _sessionSnapshotHandler;
+    private EventHandler<InternalDriverMountAdjustmentSnapshot>? _mountAdjustmentHandler;
     private MountAdjustmentSnapshot _snapshot = MountAdjustmentSnapshot.Unavailable;
+    private long _bindingGeneration;
+    private long _bindingLocalRevision;
 
     public event EventHandler<MountAdjustmentSnapshot>? SnapshotChanged;
 
@@ -238,19 +243,39 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
             lock (_sync)
             {
                 Unsubscribe();
+                var generation = checked(++_bindingGeneration);
                 _session = session;
                 _control = session as IInternalDriverMountAdjustmentControl;
-                _session.SnapshotChanged += OnSessionSnapshotChanged;
+                _activeRequestRevisions.Clear();
+                _sessionSnapshotHandler = (sender, current) =>
+                    OnSessionSnapshotChanged(
+                        generation,
+                        session,
+                        sender,
+                        current);
+                _session.SnapshotChanged += _sessionSnapshotHandler;
                 if (_control is not null)
                 {
-                    _control.MountAdjustmentChanged += OnMountAdjustmentChanged;
+                    var control = _control;
+                    _mountAdjustmentHandler = (sender, adjustment) =>
+                        OnMountAdjustmentChanged(
+                            generation,
+                            session,
+                            control,
+                            sender,
+                            adjustment);
+                    control.MountAdjustmentChanged += _mountAdjustmentHandler;
                 }
 
-                snapshot = BuildSnapshot(
-                    _control?.CurrentMountAdjustment ??
-                        InternalDriverMountAdjustmentSnapshot.Unavailable,
-                    session.CurrentSnapshot,
-                    MountAdjustmentRestoreWarningUpdate.Unchanged);
+                var adjustment = _control?.CurrentMountAdjustment ??
+                    InternalDriverMountAdjustmentSnapshot.Unavailable;
+                _bindingLocalRevision = adjustment.Revision;
+                snapshot = AdoptSnapshot(
+                    BuildSnapshot(
+                        adjustment,
+                        session.CurrentSnapshot,
+                        MountAdjustmentRestoreWarningUpdate.Unchanged),
+                    preserveRequestRevision: false);
                 _snapshot = snapshot;
             }
 
@@ -258,31 +283,29 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
         }
     }
 
-    public async ValueTask<MountAdjustmentPortResult> ApplyLiveAsync(
+    public ValueTask<MountAdjustmentPortResult> ApplyLiveAsync(
         MountAdjustmentLiveApplyRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        var control = RequireControl();
-        var result = await control.ApplyMountAdjustmentAsync(
+        CancellationToken cancellationToken = default) =>
+        ExecuteOperationAsync(
             request.Revision,
-            ToProtocolHand(request.Hand),
-            ToCore(request.Adjustments),
-            cancellationToken).ConfigureAwait(false);
-        return Present(result);
-    }
+            "live apply",
+            control => control.ApplyMountAdjustmentAsync(
+                request.Revision,
+                ToProtocolHand(request.Hand),
+                ToCore(request.Adjustments),
+                cancellationToken));
 
-    public async ValueTask<MountAdjustmentPortResult> SaveAsync(
+    public ValueTask<MountAdjustmentPortResult> SaveAsync(
         MountAdjustmentSaveRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        var control = RequireControl();
-        var result = await control.SaveMountAdjustmentsAsync(
+        CancellationToken cancellationToken = default) =>
+        ExecuteOperationAsync(
             request.Revision,
-            ToCore(request.Left),
-            ToCore(request.Right),
-            cancellationToken).ConfigureAwait(false);
-        return Present(result);
-    }
+            "save",
+            control => control.SaveMountAdjustmentsAsync(
+                request.Revision,
+                ToCore(request.Left),
+                ToCore(request.Right),
+                cancellationToken));
 
     public ValueTask RequestCalibrationAsync(
         MountAdjustmentCalibrationTarget target,
@@ -290,7 +313,55 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
         ValueTask.FromException(new InvalidOperationException(
             "Calibration requests are sequenced by the stopped GUI session factory."));
 
+    private async ValueTask<MountAdjustmentPortResult> ExecuteOperationAsync(
+        long requestRevision,
+        string operation,
+        Func<
+            IInternalDriverMountAdjustmentControl,
+            ValueTask<InternalDriverMountAdjustmentResult>> start)
+    {
+        OperationBinding binding;
+        lock (_sync)
+        {
+            binding = CaptureOperationBinding(requestRevision, operation);
+            AddActiveRequestRevision(requestRevision);
+        }
+
+        ValueTask<InternalDriverMountAdjustmentResult> pending;
+        try
+        {
+            pending = start(binding.Control);
+        }
+        catch
+        {
+            lock (_sync)
+            {
+                CompleteOperation(binding);
+            }
+
+            throw;
+        }
+
+        InternalDriverMountAdjustmentResult result;
+        try
+        {
+            result = await pending.ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (_sync)
+            {
+                CompleteOperation(binding);
+            }
+
+            throw;
+        }
+
+        return Present(binding, result);
+    }
+
     private MountAdjustmentPortResult Present(
+        OperationBinding binding,
         InternalDriverMountAdjustmentResult result)
     {
         MountAdjustmentSnapshot snapshot;
@@ -298,19 +369,42 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
         {
             lock (_sync)
             {
-                var candidate = BuildSnapshot(
-                    result.Snapshot,
-                    _session?.CurrentSnapshot
-                        ?? throw new InvalidOperationException(
-                            "No App session is bound to the mount-adjustment adapter."),
-                    _snapshot.RestoreWarning);
-                snapshot = candidate.Revision < _snapshot.Revision ||
-                    (candidate.Revision == _snapshot.Revision &&
-                     !_snapshot.IsAvailable &&
-                     candidate.IsAvailable)
-                    ? _snapshot
-                    : candidate;
-                _snapshot = snapshot;
+                if (!IsCurrentBinding(binding))
+                {
+                    return new MountAdjustmentPortResult(
+                        binding.RequestRevision,
+                        Succeeded: false,
+                        $"The mount-adjustment {binding.Operation} completed after " +
+                        "the App session binding changed; the stale result was ignored.",
+                        _snapshot);
+                }
+
+                try
+                {
+                    if (result.Snapshot.Revision < _bindingLocalRevision ||
+                        (result.Snapshot.Revision == _bindingLocalRevision &&
+                         !_snapshot.IsAvailable &&
+                         result.Snapshot.IsAvailable))
+                    {
+                        snapshot = _snapshot;
+                    }
+                    else
+                    {
+                        _bindingLocalRevision = result.Snapshot.Revision;
+                        snapshot = AdoptSnapshot(
+                            BuildSnapshot(
+                                result.Snapshot,
+                                binding.Session.CurrentSnapshot,
+                                _snapshot.RestoreWarning),
+                            preserveRequestRevision:
+                                result.Snapshot.Revision == binding.RequestRevision);
+                        _snapshot = snapshot;
+                    }
+                }
+                finally
+                {
+                    CompleteOperation(binding);
+                }
             }
         }
 
@@ -321,17 +415,34 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
             snapshot);
     }
 
-    private IInternalDriverMountAdjustmentControl RequireControl()
+    private OperationBinding CaptureOperationBinding(
+        long requestRevision,
+        string operation)
     {
-        lock (_sync)
+        if (_session is null || _control is null)
         {
-            return _control
-                ?? throw new InvalidOperationException(
-                    "The active App session does not expose mount-adjustment control.");
+            throw new InvalidOperationException(
+                "The active App session does not expose mount-adjustment control.");
         }
+
+        if (!_snapshot.IsAvailable)
+        {
+            throw new InvalidOperationException(
+                "The active App session's mount-adjustment control is unavailable.");
+        }
+
+        return new OperationBinding(
+            _bindingGeneration,
+            _session,
+            _control,
+            requestRevision,
+            operation);
     }
 
     private void OnMountAdjustmentChanged(
+        long generation,
+        IInternalDriverSession expectedSession,
+        IInternalDriverMountAdjustmentControl expectedControl,
         object? sender,
         InternalDriverMountAdjustmentSnapshot adjustment)
     {
@@ -340,12 +451,23 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
         {
             lock (_sync)
             {
-                snapshot = BuildSnapshot(
-                    adjustment,
-                    _session?.CurrentSnapshot
-                        ?? throw new InvalidOperationException(
-                            "No App session is bound to the mount-adjustment adapter."),
-                    _snapshot.RestoreWarning);
+                if (generation != _bindingGeneration ||
+                    !ReferenceEquals(expectedSession, _session) ||
+                    !ReferenceEquals(expectedControl, _control) ||
+                    !ReferenceEquals(sender, expectedControl) ||
+                    adjustment.Revision < _bindingLocalRevision)
+                {
+                    return;
+                }
+
+                _bindingLocalRevision = adjustment.Revision;
+                snapshot = AdoptSnapshot(
+                    BuildSnapshot(
+                        adjustment,
+                        expectedSession.CurrentSnapshot,
+                        _snapshot.RestoreWarning),
+                    preserveRequestRevision:
+                        IsActiveRequestRevision(adjustment.Revision));
                 _snapshot = snapshot;
             }
 
@@ -354,6 +476,8 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
     }
 
     private void OnSessionSnapshotChanged(
+        long generation,
+        IInternalDriverSession expectedSession,
         object? sender,
         InternalDriverSessionSnapshot session)
     {
@@ -362,6 +486,13 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
         {
             lock (_sync)
             {
+                if (generation != _bindingGeneration ||
+                    !ReferenceEquals(expectedSession, _session) ||
+                    !ReferenceEquals(sender, expectedSession))
+                {
+                    return;
+                }
+
                 var warning = session.TrackerNeutralization?.State switch
                 {
                     InternalDriverTrackerNeutralizationState.RestoreFailed =>
@@ -372,16 +503,138 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
                         MountAdjustmentRestoreWarningUpdate.Clear,
                     _ => MountAdjustmentRestoreWarningUpdate.Unchanged,
                 };
-                snapshot = BuildSnapshot(
-                    _control?.CurrentMountAdjustment ??
-                        InternalDriverMountAdjustmentSnapshot.Unavailable,
-                    session,
-                    warning);
+                var adjustment = _control?.CurrentMountAdjustment ??
+                    InternalDriverMountAdjustmentSnapshot.Unavailable;
+                if (adjustment.Revision < _bindingLocalRevision)
+                {
+                    snapshot = _snapshot with
+                    {
+                        Neutralization = ToGuiNeutralization(session),
+                        RestoreWarning = warning,
+                    };
+                }
+                else
+                {
+                    _bindingLocalRevision = adjustment.Revision;
+                    snapshot = AdoptSnapshot(
+                        BuildSnapshot(
+                            adjustment,
+                            session,
+                            warning),
+                        preserveRequestRevision:
+                            IsActiveRequestRevision(adjustment.Revision));
+                }
+
                 _snapshot = snapshot;
             }
 
             PublishSnapshotChanged(snapshot);
         }
+    }
+
+    private MountAdjustmentSnapshot AdoptSnapshot(
+        MountAdjustmentSnapshot candidate,
+        bool preserveRequestRevision)
+    {
+        var materiallyChanged = !MateriallyEquivalent(_snapshot, candidate);
+        var revision = preserveRequestRevision &&
+                       candidate.Revision >= _snapshot.Revision
+            ? candidate.Revision
+            : !materiallyChanged
+                ? _snapshot.Revision
+                : candidate.Revision > _snapshot.Revision
+                    ? candidate.Revision
+                    : checked(_snapshot.Revision + 1);
+        return candidate with { Revision = revision };
+    }
+
+    private static bool MateriallyEquivalent(
+        MountAdjustmentSnapshot left,
+        MountAdjustmentSnapshot right) =>
+        left.IsAvailable == right.IsAvailable &&
+        left.Left == right.Left &&
+        left.Right == right.Right;
+
+    private bool IsCurrentBinding(OperationBinding binding) =>
+        binding.Generation == _bindingGeneration &&
+        ReferenceEquals(binding.Session, _session) &&
+        ReferenceEquals(binding.Control, _control);
+
+    private void AddActiveRequestRevision(long revision)
+    {
+        _activeRequestRevisions.TryGetValue(revision, out var count);
+        _activeRequestRevisions[revision] = checked(count + 1);
+    }
+
+    private bool IsActiveRequestRevision(long revision) =>
+        _activeRequestRevisions.ContainsKey(revision);
+
+    private void CompleteOperation(OperationBinding binding)
+    {
+        if (!IsCurrentBinding(binding) ||
+            !_activeRequestRevisions.TryGetValue(
+                binding.RequestRevision,
+                out var count))
+        {
+            return;
+        }
+
+        if (count == 1)
+        {
+            _activeRequestRevisions.Remove(binding.RequestRevision);
+        }
+        else
+        {
+            _activeRequestRevisions[binding.RequestRevision] = count - 1;
+        }
+    }
+
+    private void Unsubscribe()
+    {
+        if (_session is not null && _sessionSnapshotHandler is not null)
+        {
+            _session.SnapshotChanged -= _sessionSnapshotHandler;
+        }
+
+        if (_control is not null && _mountAdjustmentHandler is not null)
+        {
+            _control.MountAdjustmentChanged -= _mountAdjustmentHandler;
+        }
+
+        _sessionSnapshotHandler = null;
+        _mountAdjustmentHandler = null;
+    }
+
+    private sealed record OperationBinding(
+        long Generation,
+        IInternalDriverSession Session,
+        IInternalDriverMountAdjustmentControl Control,
+        long RequestRevision,
+        string Operation);
+
+    private static MountAdjustmentSnapshot BuildSnapshot(
+        InternalDriverMountAdjustmentSnapshot adjustment,
+        InternalDriverSessionSnapshot session,
+        MountAdjustmentRestoreWarningUpdate warning)
+    {
+        return new MountAdjustmentSnapshot(
+            adjustment.Revision,
+            adjustment.IsAvailable,
+            ToGui(adjustment.Left),
+            ToGui(adjustment.Right),
+            ToGuiNeutralization(session),
+            warning);
+    }
+
+    private static MountAdjustmentNeutralizationSnapshot ToGuiNeutralization(
+        InternalDriverSessionSnapshot session)
+    {
+        var neutralization = session.TrackerNeutralization;
+        return neutralization is null
+            ? MountAdjustmentNeutralizationSnapshot.Inactive
+            : new MountAdjustmentNeutralizationSnapshot(
+                neutralization.State,
+                neutralization.Diagnostic);
     }
 
     private void PublishSnapshotChanged(MountAdjustmentSnapshot snapshot)
@@ -405,38 +658,6 @@ public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
                 // ordering or turn an App operation into a reported failure.
             }
         }
-    }
-
-    private void Unsubscribe()
-    {
-        if (_session is not null)
-        {
-            _session.SnapshotChanged -= OnSessionSnapshotChanged;
-        }
-
-        if (_control is not null)
-        {
-            _control.MountAdjustmentChanged -= OnMountAdjustmentChanged;
-        }
-    }
-
-    private static MountAdjustmentSnapshot BuildSnapshot(
-        InternalDriverMountAdjustmentSnapshot adjustment,
-        InternalDriverSessionSnapshot session,
-        MountAdjustmentRestoreWarningUpdate warning)
-    {
-        var neutralization = session.TrackerNeutralization;
-        return new MountAdjustmentSnapshot(
-            adjustment.Revision,
-            adjustment.IsAvailable,
-            ToGui(adjustment.Left),
-            ToGui(adjustment.Right),
-            neutralization is null
-                ? MountAdjustmentNeutralizationSnapshot.Inactive
-                : new MountAdjustmentNeutralizationSnapshot(
-                    neutralization.State,
-                    neutralization.Diagnostic),
-            warning);
     }
 
     private static MountAdjustmentHandSnapshot ToGui(
