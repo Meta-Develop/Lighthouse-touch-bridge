@@ -482,11 +482,12 @@ internal sealed class InternalDriverPrerequisiteProbe : IInternalDriverPrerequis
     private static bool MetaBothReady(MetaLinkRuntimeSnapshot meta) =>
         MetaHandReady(meta.Left) && MetaHandReady(meta.Right);
 
+    // Battery is intentionally unavailable from the targeted public LibOVR ABI
+    // and is not a controller input-readiness invariant.
     private static bool MetaHandReady(MetaLinkHandSnapshot hand) =>
         hand.Readiness == MetaLinkReadiness.Ready &&
         hand.Controller is { } controller &&
-        controller.Analog.IsValid &&
-        !controller.Battery.IsAvailable;
+        controller.Analog.IsValid;
 
     private static bool IsTrackerPublishable(PoseSourceSample sample) =>
         sample.IsConnected &&
