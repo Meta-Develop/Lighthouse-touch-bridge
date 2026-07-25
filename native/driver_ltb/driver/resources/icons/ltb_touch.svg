@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 192" role="img" aria-labelledby="title">
+  <title id="title">Lighthouse Touch Bridge controller</title>
+  <path d="M79 22c-28 8-45 39-39 70l13 67c3 15 19 21 30 10l29-29h32l29 29c11 11 27 5 30-10l13-67c6-31-11-62-39-70-20-6-37 3-49 17-12-14-29-23-49-17z" fill="#28364a" stroke="#8bd5ff" stroke-width="6"/>
+  <circle cx="94" cy="88" r="19" fill="#101820" stroke="#d6f2ff" stroke-width="5"/>
+  <circle cx="164" cy="67" r="9" fill="#8bd5ff"/>
+  <circle cx="187" cy="88" r="9" fill="#8bd5ff"/>
+  <path d="M128 112v25M115 125h26" stroke="#d6f2ff" stroke-width="6" stroke-linecap="round"/>
+</svg>
