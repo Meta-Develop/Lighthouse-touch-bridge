@@ -12,6 +12,12 @@ public sealed class InternalDriverViewModelTests
 {
     private const string BuildIdentity = "ltb-driver-test-build";
 
+    // Generous upper bound for waits on operations that are expected to
+    // complete near-instantly. It returns immediately on success (so the suite
+    // stays fast) and only absorbs CI thread-pool scheduling jitter, which was
+    // making these completion waits flaky on loaded Release CI runners.
+    private static readonly TimeSpan CompletionTimeout = TimeSpan.FromSeconds(30);
+
     [Fact]
     public async Task AutomaticProbeKeepsActionsDisabledUntilACompletedSnapshot()
     {
@@ -73,7 +79,7 @@ public sealed class InternalDriverViewModelTests
                 "timed out",
                 StringComparison.Ordinal) &&
                 viewModel.SetupSteps[4].Status == "Action required",
-            TimeSpan.FromSeconds(2)));
+            CompletionTimeout));
 
         Assert.False(viewModel.IsPreflightProbing);
         Assert.False(viewModel.CanToggle);
@@ -88,7 +94,7 @@ public sealed class InternalDriverViewModelTests
             viewModel.StartGateReason,
             StringComparison.Ordinal);
         Assert.Equal("Action required", viewModel.SetupSteps[4].Status);
-        await viewModel.CloseAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        await viewModel.CloseAsync().WaitAsync(CompletionTimeout);
     }
 
     [Fact]
@@ -113,7 +119,7 @@ public sealed class InternalDriverViewModelTests
             prerequisiteProbeTimeout: TimeSpan.FromMilliseconds(50));
         await probeStarted.Task;
 
-        await viewModel.CloseAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        await viewModel.CloseAsync().WaitAsync(CompletionTimeout);
 
         Assert.False(viewModel.IsPreflightProbing);
         Assert.False(viewModel.CanToggle);
@@ -146,7 +152,7 @@ public sealed class InternalDriverViewModelTests
             () => viewModel.StartGateReason.Contains(
                 "timed out",
                 StringComparison.Ordinal),
-            TimeSpan.FromSeconds(2)));
+            CompletionTimeout));
 
         await viewModel.RefreshPrerequisitesAsync();
         Assert.True(viewModel.CanToggle);
@@ -175,7 +181,7 @@ public sealed class InternalDriverViewModelTests
 
         Assert.True(SpinWait.SpinUntil(
             () => !viewModel.IsPreflightProbing,
-            TimeSpan.FromSeconds(2)));
+            CompletionTimeout));
 
         Assert.True(viewModel.CanToggle);
         Assert.True(viewModel.CanCalibrate);
@@ -218,7 +224,7 @@ public sealed class InternalDriverViewModelTests
 
         probeCompletion.TrySetResult(ReadyPrerequisites());
         await factory.LastProbe;
-        await presentationFailed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await presentationFailed.Task.WaitAsync(CompletionTimeout);
 
         Assert.False(viewModel.IsPreflightProbing);
         Assert.False(viewModel.CanToggle);
@@ -244,7 +250,7 @@ public sealed class InternalDriverViewModelTests
         await probe.Completed;
         Assert.True(SpinWait.SpinUntil(
             () => !viewModel.IsPreflightProbing,
-            TimeSpan.FromSeconds(2)));
+            CompletionTimeout));
 
         Assert.False(viewModel.IsPreflightProbing);
         Assert.True(viewModel.CanToggle);
@@ -474,7 +480,7 @@ public sealed class InternalDriverViewModelTests
         await firstFinished.Task;
         Assert.True(SpinWait.SpinUntil(
             () => !viewModel.IsPreflightProbing,
-            TimeSpan.FromSeconds(2)));
+            CompletionTimeout));
         Assert.True(viewModel.CanRemoveDriver);
 
         var removal = viewModel.RemoveDriverAsync();
@@ -1334,11 +1340,11 @@ public sealed class InternalDriverViewModelTests
 
         time.Advance(SnapshotPresentationCoalescer.ActivePresentationInterval);
         var flush = Task.Run(scheduler.Invoke);
-        Assert.True(scheduler.HandleDisposeEntered.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(scheduler.HandleDisposeEntered.Wait(CompletionTimeout));
 
         coalescer.Dispose();
         scheduler.AllowHandleDispose.Set();
-        await flush.WaitAsync(TimeSpan.FromSeconds(5));
+        await flush.WaitAsync(CompletionTimeout);
 
         Assert.Empty(trailing);
     }
@@ -1372,7 +1378,7 @@ public sealed class InternalDriverViewModelTests
             }));
 
         time.Advance(SnapshotPresentationCoalescer.ActivePresentationInterval);
-        await Task.Run(scheduler.RunDue).WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Run(scheduler.RunDue).WaitAsync(CompletionTimeout);
 
         Assert.Equal(1, trailingCount);
         Assert.False(coalescer.ShouldPresent(1, 2, active));
@@ -2141,7 +2147,7 @@ public sealed class InternalDriverViewModelTests
                 }
 
                 owner.HandleDisposeEntered.Set();
-                Assert.True(owner.AllowHandleDispose.Wait(TimeSpan.FromSeconds(5)));
+                Assert.True(owner.AllowHandleDispose.Wait(CompletionTimeout));
             }
         }
     }
