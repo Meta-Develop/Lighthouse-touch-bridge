@@ -138,6 +138,73 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<TextBlock>("FeedHeartbeatText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedReconnectText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedErrorText"));
+
+            Assert.NotNull(window.FindControl<Border>("MountAdjustmentPanel"));
+            Assert.NotNull(window.FindControl<Border>("LeftMountAdjustment"));
+            Assert.NotNull(window.FindControl<Border>("RightMountAdjustment"));
+            Assert.NotNull(window.FindControl<Border>("LeftTrackerSideAdjustment"));
+            Assert.NotNull(window.FindControl<Border>("LeftControllerSideAdjustment"));
+            Assert.NotNull(window.FindControl<Border>("RightTrackerSideAdjustment"));
+            Assert.NotNull(window.FindControl<Border>("RightControllerSideAdjustment"));
+            Assert.Equal(
+                viewModel.MountAdjustments.StatusText,
+                window.FindControl<TextBlock>("MountAdjustmentStatusText")!.Text);
+            var axisOrderHelp =
+                window.FindControl<TextBlock>("MountAdjustmentAxisOrderHelpText");
+            Assert.NotNull(axisOrderHelp);
+            Assert.Equal(viewModel.MountAdjustments.AxisOrderHelpText, axisOrderHelp!.Text);
+            Assert.Contains("+X right", axisOrderHelp.Text, StringComparison.Ordinal);
+            Assert.Contains("+Y up", axisOrderHelp.Text, StringComparison.Ordinal);
+            Assert.Contains("-Z forward", axisOrderHelp.Text, StringComparison.Ordinal);
+            Assert.Contains(
+                "Intrinsic local rotation order is X then Y then Z",
+                axisOrderHelp.Text,
+                StringComparison.Ordinal);
+            Assert.Contains("Qz * Qy * Qx", axisOrderHelp.Text, StringComparison.Ordinal);
+
+            var prefixes = new[]
+            {
+                "LeftTracker",
+                "LeftController",
+                "RightTracker",
+                "RightController",
+            };
+            var components = new[]
+            {
+                "PositionX",
+                "PositionY",
+                "PositionZ",
+                "RotationX",
+                "RotationY",
+                "RotationZ",
+            };
+            foreach (var prefix in prefixes)
+            {
+                Assert.NotNull(window.FindControl<Button>($"{prefix}ResetButton"));
+                foreach (var component in components)
+                {
+                    Assert.NotNull(window.FindControl<TextBox>($"{prefix}{component}TextBox"));
+                    Assert.NotNull(
+                        window.FindControl<Button>($"{prefix}{component}DecrementButton"));
+                    Assert.NotNull(
+                        window.FindControl<Button>($"{prefix}{component}IncrementButton"));
+                }
+            }
+
+            Assert.Equal(24, window.GetVisualDescendants().OfType<TextBox>().Count());
+            Assert.NotNull(window.FindControl<TextBlock>("LeftEffectiveMountTransformText"));
+            Assert.NotNull(window.FindControl<TextBlock>("RightEffectiveMountTransformText"));
+            Assert.NotNull(window.FindControl<Button>("CalibrateLeftMountButton"));
+            Assert.NotNull(window.FindControl<Button>("CalibrateRightMountButton"));
+            Assert.NotNull(window.FindControl<Button>("CalibrateBothMountButton"));
+            Assert.NotNull(window.FindControl<Button>("SaveMountAdjustmentsButton"));
+            Assert.NotNull(window.FindControl<Border>("MountAdjustmentDirtyIndicator"));
+            Assert.NotNull(window.FindControl<TextBlock>("MountAdjustmentDirtyText"));
+            Assert.NotNull(window.FindControl<TextBlock>("TrackerNeutralizationStatusText"));
+            Assert.False(
+                window.FindControl<Border>("MountAdjustmentRestoreFailureWarning")!.IsVisible);
+            Assert.NotNull(
+                window.FindControl<TextBlock>("MountAdjustmentRestoreFailureWarningText"));
         }
         finally
         {
@@ -230,7 +297,7 @@ public sealed class MainWindowSmokeTests
         {
             window.Show();
 
-            Assert.Empty(window.GetVisualDescendants().OfType<TextBox>());
+            Assert.Equal(24, window.GetVisualDescendants().OfType<TextBox>().Count());
             Assert.Null(window.FindControl<TextBox>("LeftSlotTextBox"));
             Assert.Null(window.FindControl<TextBox>("RightSlotTextBox"));
             Assert.Null(window.FindControl<TextBox>("SteamVrSettingsTextBox"));

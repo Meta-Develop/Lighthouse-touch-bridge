@@ -61,7 +61,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         Func<IInternalDriverRemover>? removerFactory = null,
         IGuiTimeSource? timeSource = null,
         IGuiDelayScheduler? delayScheduler = null,
-        GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime)
+        GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime,
+        IMountAdjustmentPort? mountAdjustmentPort = null)
     {
         _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
@@ -78,12 +79,20 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         (EvidenceOriginLabel, EvidenceOriginDetail) = EvidenceOrigin(evidenceOrigin);
         LeftHand = new InternalDriverHandViewModel("Left hand");
         RightHand = new InternalDriverHandViewModel("Right hand");
+        MountAdjustments = new MountAdjustmentViewModel(
+            mountAdjustmentPort ?? UnavailableMountAdjustmentPort.Instance,
+            _dispatch,
+            _ => CanCalibrate,
+            target => target == MountAdjustmentCalibrationTarget.Both
+                ? StartSessionAsync(InternalDriverSessionIntent.Calibrate)
+                : Task.CompletedTask);
         ActionCommand = new RelayCommand(
             () => _ = ToggleAsync(),
             () => CanToggle);
-        CalibrationCommand = new RelayCommand(
-            () => _ = CalibrateAsync(),
-            () => CanCalibrate);
+        CalibrateLeftCommand = MountAdjustments.CalibrateLeftCommand;
+        CalibrateRightCommand = MountAdjustments.CalibrateRightCommand;
+        CalibrateBothCommand = MountAdjustments.CalibrateBothCommand;
+        CalibrationCommand = CalibrateBothCommand;
         RemoveDriverCommand = new RelayCommand(
             () => _ = RemoveDriverAsync(),
             () => CanRemoveDriver);
@@ -139,6 +148,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     public InternalDriverHandViewModel LeftHand { get; }
 
     public InternalDriverHandViewModel RightHand { get; }
+
+    public MountAdjustmentViewModel MountAdjustments { get; }
 
     public InternalDriverSessionState CurrentPhase
     {
@@ -309,6 +320,12 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public RelayCommand CalibrationCommand { get; }
 
+    public RelayCommand CalibrateLeftCommand { get; }
+
+    public RelayCommand CalibrateRightCommand { get; }
+
+    public RelayCommand CalibrateBothCommand { get; }
+
     public RelayCommand RemoveDriverCommand { get; }
 
     /// <summary>
@@ -366,7 +383,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(CanToggle));
         ActionCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(nameof(CanCalibrate));
-        CalibrationCommand.RaiseCanExecuteChanged();
+        MountAdjustments.NotifyLifecycleAvailabilityChanged();
         OnPropertyChanged(nameof(CanRemoveDriver));
         RemoveDriverCommand.RaiseCanExecuteChanged();
     }
@@ -381,7 +398,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public Task StartAsync() => StartSessionAsync(InternalDriverSessionIntent.NormalStart);
 
-    public Task CalibrateAsync() => StartSessionAsync(InternalDriverSessionIntent.Calibrate);
+    public Task CalibrateAsync() =>
+        MountAdjustments.RequestCalibrationAsync(MountAdjustmentCalibrationTarget.Both);
 
     private async Task StartSessionAsync(InternalDriverSessionIntent intent)
     {
@@ -575,6 +593,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             PresentLifecycleAvailability();
         });
         await StopAsync().ConfigureAwait(false);
+        MountAdjustments.Dispose();
     }
 
     public ValueTask DisposeAsync() => new(CloseAsync());

@@ -236,6 +236,760 @@
           </StackPanel>
         </Border>
 
+        <Border x:Name="MountAdjustmentPanel"
+                Classes="panel">
+          <StackPanel Spacing="10">
+            <Grid ColumnDefinitions="*,Auto"
+                  ColumnSpacing="12">
+              <StackPanel>
+                <TextBlock Classes="section-title"
+                           Text="Per-hand mount adjustment" />
+                <TextBlock x:Name="MountAdjustmentStatusText"
+                           Text="{Binding MountAdjustments.StatusText}"
+                           TextWrapping="Wrap" />
+              </StackPanel>
+              <Border x:Name="MountAdjustmentDirtyIndicator"
+                      Grid.Column="1"
+                      Classes="raised"
+                      Padding="9,5"
+                      IsVisible="{Binding MountAdjustments.IsDirty}">
+                <TextBlock x:Name="MountAdjustmentDirtyText"
+                           FontWeight="Bold"
+                           Text="{Binding MountAdjustments.DirtyStatusText}"
+                           TextWrapping="Wrap" />
+              </Border>
+            </Grid>
+
+            <TextBlock x:Name="MountAdjustmentAxisOrderHelpText"
+                       Classes="muted"
+                       Text="{Binding MountAdjustments.AxisOrderHelpText}"
+                       TextWrapping="Wrap" />
+
+            <Border x:Name="MountAdjustmentRestoreFailureWarning"
+                    Background="{DynamicResource LtbWarningBrush}"
+                    CornerRadius="6"
+                    IsVisible="{Binding MountAdjustments.HasRestoreFailureWarning}"
+                    Padding="10">
+              <TextBlock x:Name="MountAdjustmentRestoreFailureWarningText"
+                         Foreground="Black"
+                         FontWeight="Bold"
+                         Text="{Binding MountAdjustments.RestoreFailureWarningText}"
+                         TextWrapping="Wrap" />
+            </Border>
+
+            <StackPanel Spacing="12">
+              <Border x:Name="LeftMountAdjustment"
+                      Classes="raised"
+                      IsEnabled="{Binding MountAdjustments.IsAvailable}">
+                <StackPanel Spacing="9">
+                  <Grid ColumnDefinitions="*,Auto"
+                        ColumnSpacing="8">
+                    <TextBlock FontSize="17"
+                               FontWeight="SemiBold"
+                               Text="{Binding MountAdjustments.LeftHand.Title}" />
+                    <Button x:Name="CalibrateLeftMountButton"
+                            Grid.Column="1"
+                            AutomationProperties.Name="Calibrate left mount"
+                            Content="Calibrate Left"
+                            Command="{Binding MountAdjustments.CalibrateLeftCommand}" />
+                  </Grid>
+
+                  <Border x:Name="LeftTrackerSideAdjustment"
+                          Classes="panel">
+                    <StackPanel Spacing="6">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel>
+                          <TextBlock FontWeight="SemiBold"
+                                     Text="Tracker side (A_tracker)" />
+                          <TextBlock Classes="muted"
+                                     Text="{Binding MountAdjustments.LeftHand.TrackerSide.Title}" />
+                        </StackPanel>
+                        <Button x:Name="LeftTrackerResetButton"
+                                Grid.Column="1"
+                                AutomationProperties.Name="Reset left tracker-side adjustment"
+                                Content="Reset"
+                                Command="{Binding MountAdjustments.LeftHand.TrackerSide.ResetCommand}" />
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Position (mm)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftTrackerPositionXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left tracker-side X position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionXDecrementCommand}" />
+                            <TextBox x:Name="LeftTrackerPositionXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.TrackerSide.PositionXMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="LeftTrackerPositionXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left tracker-side X position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftTrackerPositionYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left tracker-side Y position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionYDecrementCommand}" />
+                            <TextBox x:Name="LeftTrackerPositionYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.TrackerSide.PositionYMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="LeftTrackerPositionYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left tracker-side Y position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftTrackerPositionZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left tracker-side Z position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionZDecrementCommand}" />
+                            <TextBox x:Name="LeftTrackerPositionZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.TrackerSide.PositionZMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="LeftTrackerPositionZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left tracker-side Z position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Intrinsic rotation (degrees)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftTrackerRotationXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left tracker-side X rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationXDecrementCommand}" />
+                            <TextBox x:Name="LeftTrackerRotationXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.TrackerSide.RotationXDegrees, Mode=TwoWay}" />
+                            <Button x:Name="LeftTrackerRotationXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left tracker-side X rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftTrackerRotationYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left tracker-side Y rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationYDecrementCommand}" />
+                            <TextBox x:Name="LeftTrackerRotationYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.TrackerSide.RotationYDegrees, Mode=TwoWay}" />
+                            <Button x:Name="LeftTrackerRotationYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left tracker-side Y rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftTrackerRotationZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left tracker-side Z rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationZDecrementCommand}" />
+                            <TextBox x:Name="LeftTrackerRotationZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.TrackerSide.RotationZDegrees, Mode=TwoWay}" />
+                            <Button x:Name="LeftTrackerRotationZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left tracker-side Z rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <Border x:Name="LeftControllerSideAdjustment"
+                          Classes="panel">
+                    <StackPanel Spacing="6">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel>
+                          <TextBlock FontWeight="SemiBold"
+                                     Text="Controller side (A_controller)" />
+                          <TextBlock Classes="muted"
+                                     Text="{Binding MountAdjustments.LeftHand.ControllerSide.Title}" />
+                        </StackPanel>
+                        <Button x:Name="LeftControllerResetButton"
+                                Grid.Column="1"
+                                AutomationProperties.Name="Reset left controller-side adjustment"
+                                Content="Reset"
+                                Command="{Binding MountAdjustments.LeftHand.ControllerSide.ResetCommand}" />
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Position (mm)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftControllerPositionXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left controller-side X position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionXDecrementCommand}" />
+                            <TextBox x:Name="LeftControllerPositionXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.ControllerSide.PositionXMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="LeftControllerPositionXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left controller-side X position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftControllerPositionYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left controller-side Y position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionYDecrementCommand}" />
+                            <TextBox x:Name="LeftControllerPositionYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.ControllerSide.PositionYMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="LeftControllerPositionYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left controller-side Y position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftControllerPositionZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left controller-side Z position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionZDecrementCommand}" />
+                            <TextBox x:Name="LeftControllerPositionZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.ControllerSide.PositionZMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="LeftControllerPositionZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left controller-side Z position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Intrinsic rotation (degrees)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftControllerRotationXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left controller-side X rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationXDecrementCommand}" />
+                            <TextBox x:Name="LeftControllerRotationXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.ControllerSide.RotationXDegrees, Mode=TwoWay}" />
+                            <Button x:Name="LeftControllerRotationXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left controller-side X rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftControllerRotationYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left controller-side Y rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationYDecrementCommand}" />
+                            <TextBox x:Name="LeftControllerRotationYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.ControllerSide.RotationYDegrees, Mode=TwoWay}" />
+                            <Button x:Name="LeftControllerRotationYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left controller-side Y rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="LeftControllerRotationZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease left controller-side Z rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationZDecrementCommand}" />
+                            <TextBox x:Name="LeftControllerRotationZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.LeftHand.ControllerSide.RotationZDegrees, Mode=TwoWay}" />
+                            <Button x:Name="LeftControllerRotationZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase left controller-side Z rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <TextBlock Classes="muted"
+                             Text="{Binding MountAdjustments.LeftHand.BaseMountTransform, StringFormat='Base mount: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="LeftEffectiveMountTransformText"
+                             FontWeight="SemiBold"
+                             Text="{Binding MountAdjustments.LeftHand.EffectiveTransform, StringFormat='Effective transform: {0}'}"
+                             TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+
+              <Border x:Name="RightMountAdjustment"
+                      Classes="raised"
+                      IsEnabled="{Binding MountAdjustments.IsAvailable}">
+                <StackPanel Spacing="9">
+                  <Grid ColumnDefinitions="*,Auto"
+                        ColumnSpacing="8">
+                    <TextBlock FontSize="17"
+                               FontWeight="SemiBold"
+                               Text="{Binding MountAdjustments.RightHand.Title}" />
+                    <Button x:Name="CalibrateRightMountButton"
+                            Grid.Column="1"
+                            AutomationProperties.Name="Calibrate right mount"
+                            Content="Calibrate Right"
+                            Command="{Binding MountAdjustments.CalibrateRightCommand}" />
+                  </Grid>
+
+                  <Border x:Name="RightTrackerSideAdjustment"
+                          Classes="panel">
+                    <StackPanel Spacing="6">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel>
+                          <TextBlock FontWeight="SemiBold"
+                                     Text="Tracker side (A_tracker)" />
+                          <TextBlock Classes="muted"
+                                     Text="{Binding MountAdjustments.RightHand.TrackerSide.Title}" />
+                        </StackPanel>
+                        <Button x:Name="RightTrackerResetButton"
+                                Grid.Column="1"
+                                AutomationProperties.Name="Reset right tracker-side adjustment"
+                                Content="Reset"
+                                Command="{Binding MountAdjustments.RightHand.TrackerSide.ResetCommand}" />
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Position (mm)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightTrackerPositionXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right tracker-side X position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionXDecrementCommand}" />
+                            <TextBox x:Name="RightTrackerPositionXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.TrackerSide.PositionXMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="RightTrackerPositionXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right tracker-side X position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightTrackerPositionYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right tracker-side Y position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionYDecrementCommand}" />
+                            <TextBox x:Name="RightTrackerPositionYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.TrackerSide.PositionYMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="RightTrackerPositionYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right tracker-side Y position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightTrackerPositionZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right tracker-side Z position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionZDecrementCommand}" />
+                            <TextBox x:Name="RightTrackerPositionZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.TrackerSide.PositionZMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="RightTrackerPositionZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right tracker-side Z position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Intrinsic rotation (degrees)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightTrackerRotationXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right tracker-side X rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationXDecrementCommand}" />
+                            <TextBox x:Name="RightTrackerRotationXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.TrackerSide.RotationXDegrees, Mode=TwoWay}" />
+                            <Button x:Name="RightTrackerRotationXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right tracker-side X rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightTrackerRotationYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right tracker-side Y rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationYDecrementCommand}" />
+                            <TextBox x:Name="RightTrackerRotationYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.TrackerSide.RotationYDegrees, Mode=TwoWay}" />
+                            <Button x:Name="RightTrackerRotationYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right tracker-side Y rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightTrackerRotationZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right tracker-side Z rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationZDecrementCommand}" />
+                            <TextBox x:Name="RightTrackerRotationZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.TrackerSide.RotationZDegrees, Mode=TwoWay}" />
+                            <Button x:Name="RightTrackerRotationZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right tracker-side Z rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <Border x:Name="RightControllerSideAdjustment"
+                          Classes="panel">
+                    <StackPanel Spacing="6">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel>
+                          <TextBlock FontWeight="SemiBold"
+                                     Text="Controller side (A_controller)" />
+                          <TextBlock Classes="muted"
+                                     Text="{Binding MountAdjustments.RightHand.ControllerSide.Title}" />
+                        </StackPanel>
+                        <Button x:Name="RightControllerResetButton"
+                                Grid.Column="1"
+                                AutomationProperties.Name="Reset right controller-side adjustment"
+                                Content="Reset"
+                                Command="{Binding MountAdjustments.RightHand.ControllerSide.ResetCommand}" />
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Position (mm)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightControllerPositionXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right controller-side X position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionXDecrementCommand}" />
+                            <TextBox x:Name="RightControllerPositionXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.ControllerSide.PositionXMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="RightControllerPositionXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right controller-side X position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightControllerPositionYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right controller-side Y position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionYDecrementCommand}" />
+                            <TextBox x:Name="RightControllerPositionYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.ControllerSide.PositionYMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="RightControllerPositionYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right controller-side Y position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightControllerPositionZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right controller-side Z position"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionZDecrementCommand}" />
+                            <TextBox x:Name="RightControllerPositionZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.ControllerSide.PositionZMillimeters, Mode=TwoWay}" />
+                            <Button x:Name="RightControllerPositionZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right controller-side Z position"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                      <TextBlock Classes="muted"
+                                 Text="Intrinsic rotation (degrees)" />
+                      <Grid ColumnDefinitions="*,8,*,8,*">
+                        <StackPanel Grid.Column="0"
+                                    Spacing="3">
+                          <TextBlock Text="X" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightControllerRotationXDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right controller-side X rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationXDecrementCommand}" />
+                            <TextBox x:Name="RightControllerRotationXTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.ControllerSide.RotationXDegrees, Mode=TwoWay}" />
+                            <Button x:Name="RightControllerRotationXIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right controller-side X rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationXIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2"
+                                    Spacing="3">
+                          <TextBlock Text="Y" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightControllerRotationYDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right controller-side Y rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationYDecrementCommand}" />
+                            <TextBox x:Name="RightControllerRotationYTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.ControllerSide.RotationYDegrees, Mode=TwoWay}" />
+                            <Button x:Name="RightControllerRotationYIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right controller-side Y rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationYIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                        <StackPanel Grid.Column="4"
+                                    Spacing="3">
+                          <TextBlock Text="Z" />
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="RightControllerRotationZDecrementButton"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Decrease right controller-side Z rotation"
+                                    Content="−"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationZDecrementCommand}" />
+                            <TextBox x:Name="RightControllerRotationZTextBox"
+                                     Grid.Column="1"
+                                     MinWidth="50"
+                                     HorizontalContentAlignment="Center"
+                                     Text="{Binding MountAdjustments.RightHand.ControllerSide.RotationZDegrees, Mode=TwoWay}" />
+                            <Button x:Name="RightControllerRotationZIncrementButton"
+                                    Grid.Column="2"
+                                    MinWidth="28"
+                                    AutomationProperties.Name="Increase right controller-side Z rotation"
+                                    Content="+"
+                                    Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationZIncrementCommand}" />
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <TextBlock Classes="muted"
+                             Text="{Binding MountAdjustments.RightHand.BaseMountTransform, StringFormat='Base mount: {0}'}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="RightEffectiveMountTransformText"
+                             FontWeight="SemiBold"
+                             Text="{Binding MountAdjustments.RightHand.EffectiveTransform, StringFormat='Effective transform: {0}'}"
+                             TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+
+            <WrapPanel Orientation="Horizontal">
+              <Button x:Name="CalibrateBothMountButton"
+                      Margin="0,0,8,4"
+                      AutomationProperties.Name="Calibrate both mounts"
+                      Content="Calibrate Both"
+                      Command="{Binding MountAdjustments.CalibrateBothCommand}" />
+              <Button x:Name="SaveMountAdjustmentsButton"
+                      Classes="primary"
+                      MinWidth="132"
+                      Margin="0,0,12,4"
+                      AutomationProperties.Name="Save mount adjustments"
+                      Content="Save adjustments"
+                      Command="{Binding MountAdjustments.SaveCommand}" />
+              <TextBlock x:Name="TrackerNeutralizationStatusText"
+                         MaxWidth="650"
+                         Margin="0,4,0,0"
+                         VerticalAlignment="Center"
+                         Text="{Binding MountAdjustments.TrackerNeutralizationStatusText}"
+                         TextWrapping="Wrap" />
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+
         <Grid ColumnDefinitions="*,12,*">
           <Border Grid.Column="0"
                   Classes="panel">
