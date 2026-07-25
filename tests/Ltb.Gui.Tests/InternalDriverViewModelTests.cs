@@ -71,7 +71,8 @@ public sealed class InternalDriverViewModelTests
         Assert.True(SpinWait.SpinUntil(
             () => viewModel.StartGateReason.Contains(
                 "timed out",
-                StringComparison.Ordinal),
+                StringComparison.Ordinal) &&
+                viewModel.SetupSteps[4].Status == "Action required",
             TimeSpan.FromSeconds(2)));
 
         Assert.False(viewModel.IsPreflightProbing);
