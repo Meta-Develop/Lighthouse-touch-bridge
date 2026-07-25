@@ -90,7 +90,7 @@ public sealed class InternalDriverInputProfileTests
                 RegexOptions.IgnorePatternWhitespace |
                 RegexOptions.Singleline),
             nativeSource);
-        Assert.Equal(2, Regex.Matches(nativeSource, "Input::SystemClick").Count);
+        Assert.Equal(2, Regex.Count(nativeSource, "Input::SystemClick"));
         Assert.DoesNotContain("/input/menu", nativeSource, StringComparison.Ordinal);
         foreach (var componentPath in nativeComponents)
         {
