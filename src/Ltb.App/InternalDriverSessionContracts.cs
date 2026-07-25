@@ -646,6 +646,12 @@ public sealed record InternalDriverSessionSnapshot(
     /// <summary>Additive application-observed timing evidence for the current run.</summary>
     public InternalDriverTimingSnapshot? Timing { get; init; }
 
+    /// <summary>
+    /// Additive exact-two tracker-path snapshot/restore evidence when the
+    /// provisional W3 runtime capability is present.
+    /// </summary>
+    public InternalDriverTrackerNeutralizationSnapshot? TrackerNeutralization { get; init; }
+
     internal static InternalDriverSessionSnapshot Initial { get; } = new(
         InternalDriverSessionState.Stopped,
         InternalDriverSessionReadiness.Empty,
@@ -682,6 +688,25 @@ public interface IInternalDriverSession : IAsyncDisposable
     ValueTask StopAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Optional control-plane capability for atomically replacing one hand's
+/// effective mount while a session is running.
+/// </summary>
+public interface IInternalDriverEffectiveMountControl
+{
+    void UpdateEffectiveMount(ProtocolHand hand, RigidTransform trackerFromController);
+}
+
+/// <summary>Semantic hand set selected for an explicit calibration request.</summary>
+[Flags]
+public enum InternalDriverCalibrationHandSet
+{
+    None = 0,
+    Left = 1,
+    Right = 2,
+    Both = Left | Right,
+}
+
 /// <summary>How a newly created first-party session resolves calibration profiles.</summary>
 public enum InternalDriverSessionIntent
 {
@@ -690,6 +715,12 @@ public enum InternalDriverSessionIntent
 
     /// <summary>Bypass reusable profiles and perform a fresh two-hand capture.</summary>
     Calibrate,
+
+    /// <summary>Explicitly recalibrate only the left hand.</summary>
+    CalibrateLeft,
+
+    /// <summary>Explicitly recalibrate only the right hand.</summary>
+    CalibrateRight,
 }
 
 /// <summary>Optional production factory tuning; every path has a zero-input default.</summary>
@@ -697,6 +728,14 @@ public sealed record InternalDriverSessionOptions
 {
     public InternalDriverSessionIntent Intent { get; init; } =
         InternalDriverSessionIntent.NormalStart;
+
+    /// <summary>
+    /// Hand set used by <see cref="InternalDriverSessionIntent.Calibrate"/>.
+    /// The legacy explicit calibration intent therefore remains a both-hand
+    /// request unless a caller deliberately selects one hand.
+    /// </summary>
+    public InternalDriverCalibrationHandSet CalibrationHands { get; init; } =
+        InternalDriverCalibrationHandSet.Both;
 
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(10);
 
@@ -714,11 +753,36 @@ public sealed record InternalDriverSessionOptions
 
     public string? StructuredLogPath { get; init; }
 
+    /// <summary>
+    /// Optional prior active selected-hand keys used when a remount removes the
+    /// old tracker from the current roster. These are application-owned stable
+    /// serial observations, not editable OpenVR device indexes.
+    /// </summary>
+    public string? PreviousLeftTrackerSerial { get; init; }
+
+    public string? PreviousRightTrackerSerial { get; init; }
+
+    internal InternalDriverCalibrationHandSet RequestedCalibrationHands => Intent switch
+    {
+        InternalDriverSessionIntent.NormalStart => InternalDriverCalibrationHandSet.None,
+        InternalDriverSessionIntent.Calibrate => CalibrationHands,
+        InternalDriverSessionIntent.CalibrateLeft => InternalDriverCalibrationHandSet.Left,
+        InternalDriverSessionIntent.CalibrateRight => InternalDriverCalibrationHandSet.Right,
+        _ => throw new ArgumentOutOfRangeException(nameof(Intent)),
+    };
+
     internal void Validate()
     {
         if (!Enum.IsDefined(Intent))
         {
             throw new ArgumentOutOfRangeException(nameof(Intent));
+        }
+
+        if ((CalibrationHands & ~InternalDriverCalibrationHandSet.Both) != 0 ||
+            Intent == InternalDriverSessionIntent.Calibrate &&
+            CalibrationHands == InternalDriverCalibrationHandSet.None)
+        {
+            throw new ArgumentOutOfRangeException(nameof(CalibrationHands));
         }
 
         if (PollInterval <= TimeSpan.Zero)
@@ -741,6 +805,12 @@ public sealed record InternalDriverSessionOptions
         ValidateOptionalPath(CalibrationProfileStorePath, nameof(CalibrationProfileStorePath));
         ValidateOptionalPath(StagedDriverRoot, nameof(StagedDriverRoot));
         ValidateOptionalPath(StructuredLogPath, nameof(StructuredLogPath));
+        ValidateOptionalIdentity(
+            PreviousLeftTrackerSerial,
+            nameof(PreviousLeftTrackerSerial));
+        ValidateOptionalIdentity(
+            PreviousRightTrackerSerial,
+            nameof(PreviousRightTrackerSerial));
     }
 
     private static void ValidateOptionalPath(string? path, string parameterName)
@@ -748,6 +818,14 @@ public sealed record InternalDriverSessionOptions
         if (path is not null && string.IsNullOrWhiteSpace(path))
         {
             throw new ArgumentException("Optional paths cannot be empty or whitespace.", parameterName);
+        }
+    }
+
+    private static void ValidateOptionalIdentity(string? value, string parameterName)
+    {
+        if (value is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
         }
     }
 }

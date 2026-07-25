@@ -154,10 +154,39 @@ internal sealed class InternalDriverCalibration
             $"reusing schema-2 {context.Hand} profile for tracker '{context.TrackerSerial}'");
     }
 
+    internal IReadOnlyList<string> FindCandidateTrackerSerials(MetaLinkHand hand)
+    {
+        if (!Enum.IsDefined(hand))
+        {
+            throw new ArgumentOutOfRangeException(nameof(hand));
+        }
+
+        if (!File.Exists(_profileStorePath))
+        {
+            return Array.Empty<string>();
+        }
+
+        var controllerHand = ToControllerHand(hand);
+        return CalibrationProfileFile.LoadStore(_profileStorePath)
+            .Profiles
+            .Where(profile =>
+                profile.Hand == controllerHand &&
+                profile.SchemaVersion == CalibrationProfileSchema.CurrentVersion &&
+                string.Equals(
+                    profile.DriverProfile,
+                    CalibrationDriverProfiles.LtbTouch,
+                    StringComparison.Ordinal))
+            .Select(profile => profile.TrackerSerial)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(serial => serial, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     public InternalDriverCalibrationRunResult CalibrateAndSave(
         InternalDriverCalibrationContext context,
         MetaLinkCalibrationCapture capture,
-        HandCalibrationPipelineOptions? options = null)
+        HandCalibrationPipelineOptions? options = null,
+        string? replacedTrackerSerial = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(capture);
@@ -194,7 +223,7 @@ internal sealed class InternalDriverCalibration
 
         var profile = ToProfile(context, pipeline, options.CalibrationPolicy, createdUtc);
         var store = LoadStoreForSuccessfulRecalibration();
-        store = store.Upsert(profile);
+        store = ReplaceSelectedProfile(store, profile, replacedTrackerSerial);
         CalibrationProfileFile.SaveStore(_profileStorePath, store);
 
         var reloaded = CalibrationProfileFile.LoadStore(_profileStorePath)
@@ -227,6 +256,29 @@ internal sealed class InternalDriverCalibration
         // Unknown or malformed schemas are not disposable input. Loading is
         // intentionally allowed to throw before SaveStore can replace bytes.
         return CalibrationProfileFile.LoadStore(_profileStorePath);
+    }
+
+    internal static CalibrationProfileStore ReplaceSelectedProfile(
+        CalibrationProfileStore store,
+        CalibrationProfile replacement,
+        string? replacedTrackerSerial)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(replacement);
+        if (replacedTrackerSerial is null)
+        {
+            return store.Upsert(replacement);
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(replacedTrackerSerial);
+        var withoutReplacedActiveKey = new CalibrationProfileStore(
+            store.Profiles.Where(existing =>
+                existing.Hand != replacement.Hand ||
+                !string.Equals(
+                    existing.TrackerSerial,
+                    replacedTrackerSerial,
+                    StringComparison.Ordinal)));
+        return withoutReplacedActiveKey.Upsert(replacement);
     }
 
     private static CalibrationProfile ToProfile(
