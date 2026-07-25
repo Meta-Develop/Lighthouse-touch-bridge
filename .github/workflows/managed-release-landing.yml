@@ -1,0 +1,29 @@
+name: Managed Release landing
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  managed-release-landing:
+    name: Managed Release landing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build managed solution
+        run: dotnet build -c Release
+
+      - name: Test managed solution
+        run: dotnet test -c Release --no-build
