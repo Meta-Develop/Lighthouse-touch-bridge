@@ -578,6 +578,15 @@ unavailable from the targeted public LibOVR ABI, so battery-present is false
 and the value is ignored. A later battery source requires a versioned protocol
 and capability change.
 
+For each hand, `Ltb.App` owns one effective tracker-from-controller mount
+source. The control plane validates a complete `RigidTransform` and atomically
+swaps one immutable reference. The publication hot loop performs one lock-free,
+allocation-free reference read per hand and uses that exact snapshot for both
+`T_tracker · X_mount` pose composition and the angular-velocity lever-arm
+correction. No component-wise mutable transform is exposed, so a live update
+cannot publish a torn rotation/translation pair or mix pose and velocity from
+different mount generations.
+
 ---
 
 ## 16. IPC v1 and Driver Registration
@@ -784,6 +793,18 @@ explicitly labeled a software lower bound: it excludes device acquisition,
 SteamVR/compositor, display, and motion-to-photon latency and shall not be
 represented as real-time hardware acceptance.
 
+When the runtime supplies the provisional tracker-path control capability,
+`Ltb.App` shall capture and neutralize exactly the two selected physical
+tracker device paths before entering `Active`. The backend operation must be
+atomic or self-rollback and retain a durable recovery snapshot. App lifecycle
+evidence shall include the exact stable serial/path pair, opaque snapshot
+identity, neutralizing/active/restoring/restored state, and restore failures.
+Stop, window close, cancellation, failure, Meta/driver recovery, and detected
+stable-serial/device-path churn restore the exact captured state before a new
+neutralization attempt. A restore failure is a fail-closed diagnostic and
+blocks a clean success claim. The final OpenVR/settings implementation of this
+capability and its Windows behavior remain section 23 gates.
+
 ---
 
 ## 19. Profile Format
@@ -826,11 +847,21 @@ and reversible; target code shall not silently relabel an `ALVR` profile as a
 Meta Link profile because its source timing and controller identity contracts
 differ.
 
-Two-hand profile replacement shall stage both validated hand results before one
-canonical commit decision. Cancellation and commit start shall be linearized:
-if cancellation wins, canonical bytes remain unchanged and staging residue is
-removed; if commit start wins, the atomic canonical replacement completes and
-is reported as successful even if a session Stop is requested concurrently.
+Explicit calibration selects left only, right only, or both; the ordinary
+Start action remains a separate profile-reuse path. Two-hand replacement stages
+both validated results before one canonical commit decision. Single-hand
+replacement requires exactly one reusable opposite-hand profile before capture,
+scores every viable current tracker candidate for the requested hand, retains
+health-rejected candidates with usable correlation as ambiguity contenders,
+and never reassigns the opposite hand's tracker. Its canonical commit removes
+only the prior selected active serial/hand key, adds the validated replacement,
+and preserves the opposite hand plus unrelated profile records.
+
+For either selected hand set, cancellation and commit start shall be
+linearized: if cancellation wins, canonical bytes remain exactly unchanged and
+staging residue is removed; if commit start wins, the atomic canonical
+replacement completes and is reported as successful even if a session Stop is
+requested concurrently.
 
 ---
 
@@ -853,8 +884,10 @@ is reported as successful even if a session Stop is requested concurrently.
    unique distinct left/right pair.
 8. Ask the user to keep the Touch controllers observable by Quest cameras when
    full 6DoF is desired.
-9. Guide separate left and right pitch, yaw, roll, and moderate translation
-   motions while displaying tracking validity and excitation coverage.
+9. For a both-hand request, guide separate left and right pitch, yaw, roll, and
+   moderate translation motions while displaying tracking validity and
+   excitation coverage. For a selected-hand request, capture only that hand and
+   retain the reusable opposite-hand profile unchanged.
 10. Associate, align, solve, and validate each hand.
 11. Display `Full 6DoF` or `Rotation-only`, the reason, and quality evidence.
 12. Save profiles, start a new IPC session, and verify exactly two live LTB
@@ -885,6 +918,13 @@ quaternions, or device indexes.
 - controller model or controller-source contract changed;
 - quality check exceeds its threshold; or
 - transform convention or profile schema changed incompatibly.
+
+The desktop/application contract exposes ordinary Start plus explicit
+left-only, right-only, and both-hand calibration selections. A selected-hand
+request fails before capture when the opposite hand has no single compatible
+reusable profile, and fails after capture when association is weak, ambiguous,
+or resolves to the retained opposite-hand tracker. It never silently widens to
+a both-hand replacement.
 
 ---
 

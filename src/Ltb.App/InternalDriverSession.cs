@@ -11,7 +11,9 @@ namespace Ltb.App;
 /// controller poses: Meta supplies inputs/readiness and the exact associated
 /// raw tracker serial supplies pose and protocol sample time.
 /// </summary>
-internal sealed class InternalDriverSession : IInternalDriverSession
+internal sealed class InternalDriverSession :
+    IInternalDriverSession,
+    IInternalDriverEffectiveMountControl
 {
     private readonly IInternalDriverSessionRuntime _runtime;
     private readonly IInternalDriverSessionOutput _output;
@@ -26,6 +28,9 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private InternalDriverRegistration? _registration;
     private InternalDriverPlatformProbe? _platformProbe;
     private InternalDriverProfilePair? _profiles;
+    private InternalDriverEffectiveMountSource? _leftEffectiveMount;
+    private InternalDriverEffectiveMountSource? _rightEffectiveMount;
+    private readonly InternalDriverTrackerNeutralizationLifecycle? _trackerNeutralization;
     private InternalDriverRuntimeObservation? _lastObservation;
     private InternalDriverCaptureEvidence? _leftCapture;
     private InternalDriverCaptureEvidence? _rightCapture;
@@ -46,6 +51,11 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         _options = options ?? new InternalDriverSessionOptions();
         _options.Validate();
         _output = output ?? NullInternalDriverSessionOutput.Instance;
+        _trackerNeutralization = runtime is IInternalDriverTrackerNeutralizationRuntime capable
+            ? new InternalDriverTrackerNeutralizationLifecycle(
+                capable.TrackerNeutralizationBackend,
+                ReportTrackerNeutralization)
+            : null;
     }
 
     public event EventHandler<InternalDriverSessionSnapshot>? SnapshotChanged;
@@ -99,6 +109,25 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
         }
+    }
+
+    public void UpdateEffectiveMount(
+        ProtocolHand hand,
+        RigidTransform trackerFromController)
+    {
+        var source = hand switch
+        {
+            ProtocolHand.Left => Volatile.Read(ref _leftEffectiveMount),
+            ProtocolHand.Right => Volatile.Read(ref _rightEffectiveMount),
+            _ => throw new ArgumentOutOfRangeException(nameof(hand)),
+        };
+        if (source is null)
+        {
+            throw new InvalidOperationException(
+                "Effective mounts are unavailable until an exact profile pair is resolved.");
+        }
+
+        _ = source.Update(trackerFromController);
     }
 
     public async ValueTask DisposeAsync()
@@ -163,6 +192,15 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                 return;
             }
 
+            if (_trackerNeutralization is not null)
+            {
+                await _trackerNeutralization.RecoverAsync(cancellationToken).ConfigureAwait(false);
+                PublishState(
+                    InternalDriverSessionState.DependencyCheck,
+                    _trackerNeutralization.Snapshot.Diagnostic,
+                    "No remediation is required.");
+            }
+
             _registration = await _runtime.EnsureDriverAsync(cancellationToken).ConfigureAwait(false);
             if (!_registration.IsRegistered)
             {
@@ -204,7 +242,24 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                     "Calibration returned an invalid or non-distinct tracker/profile pair.");
             }
 
+            Volatile.Write(
+                ref _leftEffectiveMount,
+                new InternalDriverEffectiveMountSource(
+                    ProtocolHand.Left,
+                    _profiles.Left.TrackerFromController));
+            Volatile.Write(
+                ref _rightEffectiveMount,
+                new InternalDriverEffectiveMountSource(
+                    ProtocolHand.Right,
+                    _profiles.Right.TrackerFromController));
             EnsureProfileTrackersWereObserved(readyObservation, _profiles);
+            if (_trackerNeutralization is not null)
+            {
+                await _trackerNeutralization.ActivateAsync(
+                    ResolveTrackerPaths(readyObservation, _profiles),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             await StartFreshFeedAsync(readyObservation, cancellationToken).ConfigureAwait(false);
             await MonitorActiveAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -232,19 +287,21 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         }
         finally
         {
-            var faultSnapshot = CurrentSnapshot.State == InternalDriverSessionState.Faulted
+            var faultBeforeCleanup = CurrentSnapshot.State == InternalDriverSessionState.Faulted
                 ? CurrentSnapshot
                 : null;
-            var stoppedSnapshot = CurrentSnapshot.State == InternalDriverSessionState.Stopped
+            var stoppedBeforeCleanup = CurrentSnapshot.State == InternalDriverSessionState.Stopped
                 ? CurrentSnapshot
                 : null;
             await CleanupRunAsync().ConfigureAwait(false);
-            faultSnapshot ??= CurrentSnapshot.State == InternalDriverSessionState.Faulted
+            var faultAfterCleanup = CurrentSnapshot.State == InternalDriverSessionState.Faulted
                 ? CurrentSnapshot
                 : null;
-            stoppedSnapshot ??= CurrentSnapshot.State == InternalDriverSessionState.Stopped
+            var stoppedAfterCleanup = CurrentSnapshot.State == InternalDriverSessionState.Stopped
                 ? CurrentSnapshot
                 : null;
+            var faultSnapshot = faultAfterCleanup ?? faultBeforeCleanup;
+            var stoppedSnapshot = stoppedAfterCleanup ?? stoppedBeforeCleanup;
             ClearRunEvidence();
             var finalSnapshot = faultSnapshot is { } fault
                 ? CreateFinalFaultSnapshot(fault)
@@ -421,6 +478,9 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                 await NeutralizeBothAsync(
                     InternalDriverNeutralReason.DriverNotReady).ConfigureAwait(false);
                 await RetireFeedAsync(bestEffortNeutralize: false).ConfigureAwait(false);
+                await RestoreTrackerNeutralizationAsync(
+                    "driver-readiness recovery",
+                    cancellationToken).ConfigureAwait(false);
                 PublishState(
                     InternalDriverSessionState.WaitingForDriver,
                     loaded.Diagnostic,
@@ -442,6 +502,9 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                     await NeutralizeBothAsync(
                         InternalDriverNeutralReason.MetaNotReady).ConfigureAwait(false);
                     await RetireFeedAsync(bestEffortNeutralize: false).ConfigureAwait(false);
+                    await RestoreTrackerNeutralizationAsync(
+                        "Meta Link recovery",
+                        cancellationToken).ConfigureAwait(false);
                     _inputMapper.Reset();
                     _runtime.ResetMeta();
                     metaWasLost = true;
@@ -462,6 +525,10 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             }
 
             metaWasLost = false;
+            await EnsureTrackerPathsStableAsync(observation, cancellationToken)
+                .ConfigureAwait(false);
+            await EnsureTrackerNeutralizationActiveAsync(observation, cancellationToken)
+                .ConfigureAwait(false);
             if (_feed is null)
             {
                 await StartFreshFeedAsync(observation, cancellationToken).ConfigureAwait(false);
@@ -532,6 +599,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                 Driver = DriverEvidence(observation),
                 LighthouseHmd = LighthouseHmdEvidence(observation),
                 Timing = _timing,
+                TrackerNeutralization = _trackerNeutralization?.Snapshot,
             });
 
             await scheduler.WaitForNextAsync(
@@ -623,10 +691,19 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         }
 
         var input = _inputMapper.Map(controller);
+        var effectiveMount = profile.Hand == ProtocolHand.Left
+            ? Volatile.Read(ref _leftEffectiveMount)
+            : Volatile.Read(ref _rightEffectiveMount);
+        if (effectiveMount is null)
+        {
+            throw new InvalidOperationException(
+                $"The {profile.Hand} effective mount source is unavailable.");
+        }
+
         var state = InternalDriverHandStateComposer.Compose(
             profile.Hand,
             tracker,
-            profile.TrackerFromController,
+            effectiveMount,
             input,
             inputsValid: true);
         await PublishWithReconnectMonitoringAsync(state, cancellationToken).ConfigureAwait(false);
@@ -783,6 +860,26 @@ internal sealed class InternalDriverSession : IInternalDriverSession
     private async ValueTask CleanupRunAsync()
     {
         await RetireFeedAsync(bestEffortNeutralize: true).ConfigureAwait(false);
+        if (_trackerNeutralization is not null)
+        {
+            try
+            {
+                await RestoreTrackerNeutralizationAsync(
+                    "session stop, close, cancellation, or failure",
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                PublishState(
+                    InternalDriverSessionState.Faulted,
+                    _trackerNeutralization.Snapshot.Diagnostic,
+                    "Restore the recorded tracker paths from the retained snapshot before starting another session.",
+                    _lastObservation,
+                    leftReason: InternalDriverNeutralReason.Faulted,
+                    rightReason: InternalDriverNeutralReason.Faulted);
+            }
+        }
+
         try
         {
             var stopped = await TryBoundedFeedOperationAsync(
@@ -1023,6 +1120,29 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             rightReason: InternalDriverNeutralReason.ProfileUnavailable);
     }
 
+    private void ReportTrackerNeutralization(
+        InternalDriverTrackerNeutralizationSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var state = CurrentSnapshot.State;
+        if (state == InternalDriverSessionState.Stopped &&
+            snapshot.State == InternalDriverTrackerNeutralizationState.Recovering)
+        {
+            state = InternalDriverSessionState.DependencyCheck;
+        }
+
+        PublishState(
+            state,
+            snapshot.Diagnostic,
+            snapshot.State == InternalDriverTrackerNeutralizationState.RestoreFailed
+                ? "Restore the recorded exact tracker paths before starting another session."
+                : "No remediation is required.",
+            _lastObservation,
+            restartRequired: CurrentSnapshot.RestartRequired,
+            leftReason: CurrentSnapshot.Left.NeutralReason,
+            rightReason: CurrentSnapshot.Right.NeutralReason);
+    }
+
     private void PublishState(
         InternalDriverSessionState state,
         string diagnostic,
@@ -1084,6 +1204,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
             Driver = retainRunEvidence ? DriverEvidence(observation) : null,
             LighthouseHmd = retainRunEvidence ? LighthouseHmdEvidence(observation) : null,
             Timing = retainRunEvidence ? _timing : null,
+            TrackerNeutralization = _trackerNeutralization?.Snapshot,
         };
     }
 
@@ -1477,6 +1598,123 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         }
     }
 
+    private static IReadOnlyList<InternalDriverTrackerPath> ResolveTrackerPaths(
+        InternalDriverRuntimeObservation observation,
+        InternalDriverProfilePair profiles)
+    {
+        var requested = new[]
+        {
+            (Hand: ProtocolHand.Left, TrackerSerial: profiles.Left.TrackerSerial),
+            (Hand: ProtocolHand.Right, TrackerSerial: profiles.Right.TrackerSerial),
+        };
+        var paths = requested.Select(item =>
+        {
+            var matches = observation.Devices.Where(device =>
+                device.Category == SteamVrDeviceCategory.GenericTracker &&
+                device.IsConnected &&
+                device.Capabilities.HasPosition &&
+                device.Capabilities.IsPhysicalPoseSourceEligible &&
+                !device.Capabilities.IsVirtualPoseSource &&
+                string.Equals(
+                    device.Identity.SerialNumber,
+                    item.TrackerSerial,
+                    StringComparison.Ordinal)).ToArray();
+            if (matches.Length != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Expected one connected physical tracker path for '{item.TrackerSerial}', " +
+                    $"but observed {matches.Length}.");
+            }
+
+            return new InternalDriverTrackerPath(
+                item.Hand,
+                item.TrackerSerial,
+                matches[0].Identity.DevicePath);
+        }).ToArray();
+        InternalDriverTrackerNeutralizationLifecycle.ValidateExactPair(paths);
+        return paths;
+    }
+
+    private async ValueTask EnsureTrackerNeutralizationActiveAsync(
+        InternalDriverRuntimeObservation observation,
+        CancellationToken cancellationToken)
+    {
+        if (_trackerNeutralization is null ||
+            _profiles is not { IsValid: true } profiles ||
+            _trackerNeutralization.Snapshot.State ==
+                InternalDriverTrackerNeutralizationState.Active)
+        {
+            return;
+        }
+
+        await _trackerNeutralization.ActivateAsync(
+            ResolveTrackerPaths(observation, profiles),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask EnsureTrackerPathsStableAsync(
+        InternalDriverRuntimeObservation observation,
+        CancellationToken cancellationToken)
+    {
+        if (_trackerNeutralization?.Snapshot is not
+            { State: InternalDriverTrackerNeutralizationState.Active } active)
+        {
+            return;
+        }
+
+        foreach (var expected in active.TrackerPaths)
+        {
+            var matches = observation.Devices.Where(device =>
+                device.Category == SteamVrDeviceCategory.GenericTracker &&
+                string.Equals(
+                    device.Identity.SerialNumber,
+                    expected.TrackerSerial,
+                    StringComparison.Ordinal)).ToArray();
+            if (matches.Length == 0)
+            {
+                // Temporary absence is handled by per-hand neutralization and
+                // exact-serial reacquisition. It is not evidence of path churn.
+                continue;
+            }
+
+            if (matches.Length != 1 ||
+                !matches[0].Capabilities.HasPosition ||
+                !matches[0].Capabilities.IsPhysicalPoseSourceEligible ||
+                matches[0].Capabilities.IsVirtualPoseSource ||
+                !string.Equals(
+                    matches[0].Identity.DevicePath,
+                    expected.DevicePath,
+                    StringComparison.Ordinal))
+            {
+                await RestoreTrackerNeutralizationAsync(
+                    "tracker identity/path churn",
+                    cancellationToken).ConfigureAwait(false);
+                throw new InvalidOperationException(
+                    $"Tracker identity/path churn was detected for '{expected.TrackerSerial}'; " +
+                    "the old exact-two receipt was restored and will not remain active.");
+            }
+        }
+    }
+
+    private async ValueTask RestoreTrackerNeutralizationAsync(
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        if (_trackerNeutralization is null)
+        {
+            return;
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_options.ShutdownOperationTimeout);
+        if (!await _trackerNeutralization
+                .RestoreAsync(reason, timeout.Token)
+                .ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(_trackerNeutralization.Snapshot.Diagnostic);
+        }
+    }
+
     private ulong NextNeutralTimestamp(ProtocolHand hand)
     {
         var now = Math.Max(1UL, _runtime.GetMonotonicNanoseconds());
@@ -1511,6 +1749,8 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         _registration = null;
         _platformProbe = null;
         _profiles = null;
+        Volatile.Write(ref _leftEffectiveMount, null);
+        Volatile.Write(ref _rightEffectiveMount, null);
         _lastObservation = null;
         _leftCapture = null;
         _rightCapture = null;
@@ -1525,6 +1765,8 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         _registration = null;
         _platformProbe = null;
         _profiles = null;
+        Volatile.Write(ref _leftEffectiveMount, null);
+        Volatile.Write(ref _rightEffectiveMount, null);
         _lastObservation = null;
         _leftCapture = null;
         _rightCapture = null;

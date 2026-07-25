@@ -217,13 +217,29 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         _rightCaptureEvidence = null;
 
         var calibration = new InternalDriverCalibration(_paths.CalibrationProfileStorePath);
-        var explicitRequest = _options.Intent == InternalDriverSessionIntent.Calibrate;
-        var reusable = FindReusablePair(calibration, serials, explicitRequest);
-        if (reusable is not null)
+        var requestedHands = _options.RequestedCalibrationHands;
+        var reusable = FindReusablePair(calibration, serials, explicitRequest: false);
+        if (requestedHands == InternalDriverCalibrationHandSet.None && reusable is not null)
         {
             return reusable;
         }
 
+        if (requestedHands is InternalDriverCalibrationHandSet.Left or
+            InternalDriverCalibrationHandSet.Right)
+        {
+            return await CalibrateSelectedHandAsync(
+                ResolveSelectedHandBase(
+                    calibration,
+                    reusable,
+                    requestedHands,
+                    serials),
+                requestedHands,
+                serials,
+                progress,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var explicitRequest = requestedHands == InternalDriverCalibrationHandSet.Both;
         var leftCapture = await CaptureHandAsync(
             MetaLinkHand.Left,
             serials,
@@ -282,6 +298,155 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             "Both first-party results passed validation; exact schema-2 profiles were saved and reloaded.",
             "Keep the physical tracker mounts fixed for profile reuse.");
         return profiles;
+    }
+
+    private async ValueTask<InternalDriverProfilePair> CalibrateSelectedHandAsync(
+        SelectedHandCalibrationBase calibrationBase,
+        InternalDriverCalibrationHandSet requestedHand,
+        IReadOnlyList<string> trackerSerials,
+        InternalDriverProgress progress,
+        CancellationToken cancellationToken)
+    {
+        var metaHand = requestedHand == InternalDriverCalibrationHandSet.Left
+            ? MetaLinkHand.Left
+            : MetaLinkHand.Right;
+        var preserved = calibrationBase.PreservedOpposite;
+        var capture = await CaptureHandAsync(
+            metaHand,
+            trackerSerials,
+            progress,
+            cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        progress(
+            InternalDriverSessionState.Association,
+            $"Scoring every viable tracker candidate for the requested " +
+            $"{metaHand.ToString().ToLowerInvariant()} hand while retaining " +
+            $"'{preserved.TrackerSerial}' for the unselected hand.",
+            "Move only the requested mounted controller; the retained other-hand tracker remains an ambiguity contender.");
+        var association = InternalDriverSingleHandAssociator.Associate(
+            ToAssociationCapture(capture),
+            preserved.TrackerSerial);
+        if (!association.Success)
+        {
+            throw new InvalidOperationException(
+                $"Selected-hand tracker association failed ({association.Status}): " +
+                association.Reason);
+        }
+
+        progress(
+            InternalDriverSessionState.TimeAlignment,
+            $"Estimating residual lag for only the requested {metaHand} hand.",
+            "The retained opposite-hand profile and lag evidence are unchanged.");
+        progress(
+            InternalDriverSessionState.RotationSolve,
+            $"Solving the requested {metaHand} tracker-to-controller rotation.",
+            "No user action is required.");
+        progress(
+            InternalDriverSessionState.TranslationAttempt,
+            $"Attempting requested-{metaHand} translation only when observable.",
+            "The retained opposite-hand mount is unchanged.");
+        progress(
+            InternalDriverSessionState.Validation,
+            $"Validating the requested {metaHand} result before one selected-hand commit.",
+            "A failure or cancellation leaves canonical profile bytes unchanged.");
+
+        var result = RunSelectedHandProfileStoreTransaction(
+            _paths.CalibrationProfileStorePath,
+            metaHand,
+            stagedProfileStorePath =>
+            {
+                var selected = Calibrate(
+                    new InternalDriverCalibration(stagedProfileStorePath),
+                    capture,
+                    metaHand,
+                    association.Assignment!.TrackerSerial,
+                    explicitRequest: true,
+                    replacedTrackerSerial: calibrationBase.ReplacedTrackerSerial);
+                return metaHand == MetaLinkHand.Left
+                    ? new InternalDriverProfilePair(selected, preserved)
+                    : new InternalDriverProfilePair(preserved, selected);
+            },
+            cancellationToken);
+        progress(
+            InternalDriverSessionState.SaveProfile,
+            $"The requested {metaHand} profile was atomically replaced; the opposite hand " +
+            "and unrelated profile records were preserved.",
+            "Keep both physical tracker mounts fixed for profile reuse.");
+        return result;
+    }
+
+    internal SelectedHandCalibrationBase ResolveSelectedHandBase(
+        InternalDriverCalibration calibration,
+        InternalDriverProfilePair? reusablePair,
+        InternalDriverCalibrationHandSet requestedHand,
+        IReadOnlyList<string> observedTrackerSerials)
+    {
+        var selectedMetaHand = requestedHand == InternalDriverCalibrationHandSet.Left
+            ? MetaLinkHand.Left
+            : MetaLinkHand.Right;
+        if (reusablePair is not null)
+        {
+            return selectedMetaHand == MetaLinkHand.Left
+                ? new SelectedHandCalibrationBase(
+                    reusablePair.Right,
+                    reusablePair.Left.TrackerSerial)
+                : new SelectedHandCalibrationBase(
+                    reusablePair.Left,
+                    reusablePair.Right.TrackerSerial);
+        }
+
+        var oppositeMetaHand = selectedMetaHand == MetaLinkHand.Left
+            ? MetaLinkHand.Right
+            : MetaLinkHand.Left;
+        var preserved = FindSingleReusableHand(
+            calibration,
+            observedTrackerSerials,
+            oppositeMetaHand);
+        var configuredPrevious = selectedMetaHand == MetaLinkHand.Left
+            ? _options.PreviousLeftTrackerSerial
+            : _options.PreviousRightTrackerSerial;
+        var candidates = calibration.FindCandidateTrackerSerials(selectedMetaHand);
+        var replacedTrackerSerial = configuredPrevious ?? (candidates.Count == 1
+            ? candidates[0]
+            : null);
+        if (replacedTrackerSerial is null ||
+            !candidates.Contains(replacedTrackerSerial, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Selected-{selectedMetaHand.ToString().ToLowerInvariant()} calibration " +
+                "requires one unambiguous prior active serial/hand key to replace. " +
+                "The opposite reusable profile was preserved and no capture or canonical write began.");
+        }
+
+        return new SelectedHandCalibrationBase(preserved, replacedTrackerSerial);
+    }
+
+    private static InternalDriverHandProfile FindSingleReusableHand(
+        InternalDriverCalibration calibration,
+        IReadOnlyList<string> serials,
+        MetaLinkHand hand)
+    {
+        var matches = serials
+            .Distinct(StringComparer.Ordinal)
+            .Select(serial => calibration.FindReusableProfile(
+                new InternalDriverCalibrationContext(hand, serial, ControllerModel)))
+            .Where(lookup => lookup.CanReuse)
+            .Take(2)
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"Selected-hand calibration requires exactly one reusable " +
+                $"{hand.ToString().ToLowerInvariant()} opposite-hand profile among the " +
+                $"current tracker roster; observed {matches.Length}. No capture or canonical write began.");
+        }
+
+        var match = matches[0];
+        return ToHandProfile(
+            hand == MetaLinkHand.Left ? ProtocolHand.Left : ProtocolHand.Right,
+            match.Profile!,
+            InternalDriverProfileReadiness.Reused,
+            match.Diagnostic);
     }
 
     internal static string[] SnapshotConnectedTrackerSerials(
@@ -629,7 +794,8 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         GuidedHandCapture capture,
         MetaLinkHand hand,
         string trackerSerial,
-        bool explicitRequest)
+        bool explicitRequest,
+        string? replacedTrackerSerial = null)
     {
         var context = new InternalDriverCalibrationContext(hand, trackerSerial, ControllerModel)
         {
@@ -640,7 +806,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             trackerSerial,
             capture.MetaSamples,
             capture.TrackerSamples[trackerSerial]);
-        var result = calibration.CalibrateAndSave(context, retained);
+        var result = calibration.CalibrateAndSave(
+            context,
+            retained,
+            replacedTrackerSerial: replacedTrackerSerial);
         if (!result.Success)
         {
             throw new InvalidOperationException(result.Diagnostic);
@@ -687,8 +856,38 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         string profileStorePath,
         Func<string, TResult> stageCalibration,
         CancellationToken cancellationToken = default)
+        => RunProfileStoreTransaction(
+            profileStorePath,
+            "two-hand-calibration",
+            stageCalibration,
+            cancellationToken);
+
+    internal static TResult RunSelectedHandProfileStoreTransaction<TResult>(
+        string profileStorePath,
+        MetaLinkHand hand,
+        Func<string, TResult> stageCalibration,
+        CancellationToken cancellationToken = default)
+    {
+        if (hand is not MetaLinkHand.Left and not MetaLinkHand.Right)
+        {
+            throw new ArgumentOutOfRangeException(nameof(hand));
+        }
+
+        return RunProfileStoreTransaction(
+            profileStorePath,
+            $"{hand.ToString().ToLowerInvariant()}-hand-calibration",
+            stageCalibration,
+            cancellationToken);
+    }
+
+    private static TResult RunProfileStoreTransaction<TResult>(
+        string profileStorePath,
+        string stageLabel,
+        Func<string, TResult> stageCalibration,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileStorePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stageLabel);
         ArgumentNullException.ThrowIfNull(stageCalibration);
 
         var canonicalPath = Path.GetFullPath(profileStorePath);
@@ -699,7 +898,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         var fileName = Path.GetFileName(canonicalPath);
         var stagedPath = Path.Combine(
             directory,
-            $".{fileName}.two-hand-calibration.{Guid.NewGuid():N}.stage");
+            $".{fileName}.{stageLabel}.{Guid.NewGuid():N}.stage");
 
         using var commitGate = new InternalDriverProfileStoreCommitGate(cancellationToken);
         try
@@ -832,6 +1031,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         IReadOnlyList<MetaLinkControllerSnapshot> MetaSamples,
         IReadOnlyDictionary<string, List<PoseSourceSample>> TrackerSamples,
         IReadOnlyDictionary<string, bool> ContinuouslyConnected);
+
+    internal sealed record SelectedHandCalibrationBase(
+        InternalDriverHandProfile PreservedOpposite,
+        string ReplacedTrackerSerial);
 }
 
 internal enum InternalDriverSettingsPreparationStatus
@@ -1095,6 +1298,7 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
         FeedTransition Feed,
         InternalDriverDriverEvidence? Driver,
         InternalDriverLighthouseHmdEvidence? LighthouseHmd,
+        InternalDriverTrackerNeutralizationSnapshot? TrackerNeutralization,
         bool RestartRequired,
         string Diagnostic,
         string Remediation)
@@ -1107,6 +1311,7 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
             FeedTransition.From(snapshot.Feed),
             snapshot.Driver,
             snapshot.LighthouseHmd,
+            snapshot.TrackerNeutralization,
             snapshot.RestartRequired,
             snapshot.Diagnostic,
             snapshot.Remediation);

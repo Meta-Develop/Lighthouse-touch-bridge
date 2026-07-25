@@ -69,6 +69,77 @@ public sealed class InternalDriverHandStateComposerTests
     }
 
     [Fact]
+    public void EffectiveMountControlSwapsOneValidatedImmutableSnapshot()
+    {
+        var source = new InternalDriverEffectiveMountSource(
+            ProtocolHand.Left,
+            RigidTransform.Identity);
+        var before = source.Read();
+        var replacement = new RigidTransform(
+            Quaternion.CreateFromAxisAngle(Vector3.UnitY, 0.3f),
+            new Vector3(0.1f, 0.2f, 0.3f));
+
+        var updated = source.Update(replacement);
+
+        Assert.Same(updated, source.Read());
+        Assert.NotSame(before, updated);
+        Assert.Equal(1, updated.Generation);
+        Assert.Equal(replacement, updated.TrackerFromController);
+        Assert.Throws<ArgumentException>(() => source.Update(default));
+        Assert.Same(updated, source.Read());
+    }
+
+    [Fact]
+    public async Task EffectiveMountSnapshotKeepsPoseAndLeverArmVelocityConsistentDuringUpdates()
+    {
+        var oneMeter = new RigidTransform(
+            Quaternion.Identity,
+            new Vector3(1f, 0f, 0f));
+        var twoMeters = new RigidTransform(
+            Quaternion.Identity,
+            new Vector3(2f, 0f, 0f));
+        var source = new InternalDriverEffectiveMountSource(
+            ProtocolHand.Right,
+            oneMeter);
+        var sample = TrackerSample(
+            3d,
+            RigidTransform.Identity,
+            linearVelocity: Vector3.Zero,
+            angularVelocity: Vector3.UnitZ);
+        using var stop = new CancellationTokenSource();
+        var updater = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                source.Update(oneMeter);
+                source.Update(twoMeters);
+            }
+        });
+
+        try
+        {
+            for (var index = 0; index < 20_000; index++)
+            {
+                var state = InternalDriverHandStateComposer.Compose(
+                    ProtocolHand.Right,
+                    sample,
+                    source,
+                    ProtocolInputState.Neutral,
+                    inputsValid: true);
+                var positionX = state.DriverSpacePose.PositionMeters.X;
+                var velocityY = state.Motion.LinearVelocityMetersPerSecond.Y;
+                Assert.True(positionX is 1f or 2f);
+                Assert.Equal(positionX, velocityY);
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            await updater;
+        }
+    }
+
+    [Fact]
     public void UsesTrackerSampleMonotonicTimeAsProtocolSourceTimestamp()
     {
         const double trackerSampleTime = 12.345678901d;

@@ -18,6 +18,32 @@ internal static class InternalDriverHandStateComposer
     public static DriverHandState Compose(
         ProtocolHand hand,
         PoseSourceSample trackerSample,
+        InternalDriverEffectiveMountSource effectiveMount,
+        ProtocolInputState input,
+        bool inputsValid)
+    {
+        ArgumentNullException.ThrowIfNull(effectiveMount);
+        if (effectiveMount.Hand != hand)
+        {
+            throw new ArgumentException(
+                "The effective mount source must belong to the composed hand.",
+                nameof(effectiveMount));
+        }
+
+        // One immutable-reference load supplies both pose composition and the
+        // lever-arm velocity correction below.
+        var mountSnapshot = effectiveMount.Read();
+        return Compose(
+            hand,
+            trackerSample,
+            mountSnapshot.TrackerFromController,
+            input,
+            inputsValid);
+    }
+
+    public static DriverHandState Compose(
+        ProtocolHand hand,
+        PoseSourceSample trackerSample,
         RigidTransform trackerFromControllerMount,
         ProtocolInputState input,
         bool inputsValid)

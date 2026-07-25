@@ -9,6 +9,51 @@ namespace Ltb.Integration.Tests;
 public sealed class JsonLinesInternalDriverSessionOutputTests
 {
     [Fact]
+    public void TrackerNeutralizationLifecycleTransitionsAreNotDeduplicated()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "session.jsonl");
+        var paths = new InternalDriverTrackerPath[]
+        {
+            new(ProtocolHand.Left, "TRACKER-LEFT", "/devices/TRACKER-LEFT"),
+            new(ProtocolHand.Right, "TRACKER-RIGHT", "/devices/TRACKER-RIGHT"),
+        };
+        var neutralizing = new InternalDriverTrackerNeutralizationSnapshot(
+            InternalDriverTrackerNeutralizationState.Neutralizing,
+            paths,
+            BackendSnapshotId: null,
+            "capturing exact tracker state",
+            Array.Empty<string>());
+
+        using (var output = new JsonLinesInternalDriverSessionOutput(path))
+        {
+            output.Write(ActiveSnapshot() with
+            {
+                TrackerNeutralization = neutralizing,
+            });
+            output.Write(ActiveSnapshot() with
+            {
+                TrackerNeutralization = neutralizing with
+                {
+                    State = InternalDriverTrackerNeutralizationState.Active,
+                    BackendSnapshotId = "snapshot-1",
+                    Diagnostic = "exactly two tracker paths neutralized",
+                },
+            });
+        }
+
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(2, lines.Length);
+        using var active = JsonDocument.Parse(lines[1]);
+        var evidence = active.RootElement.GetProperty("tracker_neutralization");
+        Assert.Equal("Active", evidence.GetProperty("state").GetString());
+        Assert.Equal(2, evidence.GetProperty("tracker_paths").GetArrayLength());
+        Assert.Equal(
+            "snapshot-1",
+            evidence.GetProperty("backend_snapshot_id").GetString());
+    }
+
+    [Fact]
     public void VolatilePollTelemetryIsSuppressedWhileSafetyTransitionsArePreserved()
     {
         using var directory = new TemporaryDirectory();

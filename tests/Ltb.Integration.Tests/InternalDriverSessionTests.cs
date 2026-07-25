@@ -237,6 +237,170 @@ public sealed class InternalDriverSessionTests
     }
 
     [Fact]
+    public async Task ExactTwoTrackerPathsNeutralizeAtActiveAndRestoreOnShutdown()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var inner = new FakeRuntime(
+            ReadyObservation(),
+            ReadyObservation(sampleTimeSeconds: 11d),
+            StoppedObservation());
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        var receipt = Assert.Single(backend.Neutralized);
+        Assert.Equal(2, receipt.TrackerPaths.Count);
+        Assert.Collection(
+            receipt.TrackerPaths.OrderBy(path => path.Hand),
+            left =>
+            {
+                Assert.Equal(ProtocolHand.Left, left.Hand);
+                Assert.Equal("TRACKER-LEFT", left.TrackerSerial);
+                Assert.Equal("/devices/TRACKER-LEFT", left.DevicePath);
+            },
+            right =>
+            {
+                Assert.Equal(ProtocolHand.Right, right.Hand);
+                Assert.Equal("TRACKER-RIGHT", right.TrackerSerial);
+                Assert.Equal("/devices/TRACKER-RIGHT", right.DevicePath);
+            });
+        Assert.Equal(1, backend.RestoreCount);
+        Assert.Contains(output.Snapshots, snapshot =>
+            snapshot.TrackerNeutralization?.State ==
+                InternalDriverTrackerNeutralizationState.Neutralizing);
+        Assert.Contains(output.Snapshots, snapshot =>
+            snapshot.TrackerNeutralization?.State ==
+                InternalDriverTrackerNeutralizationState.Active);
+        Assert.Equal(
+            InternalDriverTrackerNeutralizationState.Restored,
+            output.Snapshots[^1].TrackerNeutralization!.State);
+    }
+
+    [Fact]
+    public async Task CleanupRestoreFailureOverridesEarlierRuntimeFaultDiagnostic()
+    {
+        var backend = new FakeTrackerNeutralizationBackend
+        {
+            RestoreFailure = new InvalidOperationException("scripted restore failure"),
+        };
+        var inner = new FakeRuntime(ReadyObservation())
+        {
+            ObserveFailureAtCall = 2,
+        };
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        var terminal = output.Snapshots[^1];
+        Assert.Equal(InternalDriverSessionState.Faulted, terminal.State);
+        Assert.Equal(
+            InternalDriverTrackerNeutralizationState.RestoreFailed,
+            terminal.TrackerNeutralization!.State);
+        Assert.Contains("restore failure", terminal.Diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "scripted restore failure",
+            terminal.TrackerNeutralization.RestoreFailures);
+    }
+
+    [Fact]
+    public async Task ActivationFailureInvokesDurableRecoveryAndRecordsRollback()
+    {
+        var backend = new FakeTrackerNeutralizationBackend
+        {
+            ActivationFailure = new InvalidOperationException("partial activation"),
+        };
+        var transitions = new List<InternalDriverTrackerNeutralizationSnapshot>();
+        var lifecycle = new InternalDriverTrackerNeutralizationLifecycle(
+            backend,
+            transitions.Add);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await lifecycle.ActivateAsync(TrackerPaths(), CancellationToken.None));
+
+        Assert.Equal("partial activation", exception.Message);
+        Assert.Equal(1, backend.RecoverCount);
+        Assert.Equal(
+            InternalDriverTrackerNeutralizationState.Restored,
+            lifecycle.Snapshot.State);
+        Assert.Contains(transitions, transition =>
+            transition.State == InternalDriverTrackerNeutralizationState.Neutralizing);
+        Assert.Contains(transitions, transition =>
+            transition.State == InternalDriverTrackerNeutralizationState.Restored);
+    }
+
+    [Fact]
+    public async Task MetaRecoveryRestoresThenReneutralizesBeforeFreshFeed()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var inner = new FakeRuntime(
+            ReadyObservation(sampleTimeSeconds: 10d),
+            MetaLostObservation(),
+            ReadyObservation(sampleTimeSeconds: 12d),
+            StoppedObservation());
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        Assert.Equal(2, backend.Neutralized.Count);
+        Assert.Equal(2, backend.RestoreCount);
+        Assert.Contains(output.Snapshots, snapshot =>
+            snapshot.State == InternalDriverSessionState.WaitingForMetaLink &&
+            snapshot.TrackerNeutralization?.State ==
+                InternalDriverTrackerNeutralizationState.Restored);
+        Assert.Contains(output.Snapshots, snapshot =>
+            snapshot.State == InternalDriverSessionState.Active &&
+            snapshot.TrackerNeutralization?.BackendSnapshotId == "snapshot-2");
+    }
+
+    [Fact]
+    public async Task TrackerPathChurnRestoresOldReceiptAndFailsClosed()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var initial = ReadyObservation(sampleTimeSeconds: 10d);
+        var current = ReadyObservation(sampleTimeSeconds: 11d);
+        var changedDevices = current.Devices.Select(device =>
+            device.Identity.SerialNumber == "TRACKER-LEFT"
+                ? new SteamVrDeviceDescriptor(
+                    new SteamVrDeviceIdentity(
+                        "TRACKER-LEFT",
+                        "/devices/TRACKER-LEFT-CHANGED"),
+                    device.TransientDeviceIndex,
+                    device.Category,
+                    device.ControllerRole,
+                    device.IsConnected,
+                    device.Metadata,
+                    device.Capabilities)
+                : device).ToArray();
+        var churn = new InternalDriverRuntimeObservation(
+            current.SteamVrRunning,
+            current.SteamVrDiagnostic,
+            current.Meta,
+            changedDevices,
+            current.TrackerSamples);
+        var runtime = new NeutralizingRuntime(
+            new FakeRuntime(initial, churn),
+            backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        Assert.Equal(1, backend.RestoreCount);
+        Assert.DoesNotContain(output.Snapshots, snapshot =>
+            snapshot.State == InternalDriverSessionState.Active);
+        Assert.Contains("path churn", output.Snapshots[^1].Diagnostic);
+        Assert.Equal(
+            InternalDriverTrackerNeutralizationState.Restored,
+            output.Snapshots[^1].TrackerNeutralization!.State);
+    }
+
+    [Fact]
     public void MappedCaptureDeduplicatesRepeatedOrRegressingRealMetaTimestamps()
     {
         var filter = new InternalDriverMappedMetaSampleFilter(MetaLinkHand.Left);
@@ -811,7 +975,7 @@ public sealed class InternalDriverSessionTests
     }
 
     private static InternalDriverSession Session(
-        FakeRuntime runtime,
+        IInternalDriverSessionRuntime runtime,
         RecordingOutput output,
         InternalDriverSessionOptions? options = null) =>
         new(runtime, options ?? new InternalDriverSessionOptions
@@ -819,6 +983,12 @@ public sealed class InternalDriverSessionTests
             PollInterval = TimeSpan.FromMilliseconds(1),
             ShutdownOperationTimeout = TimeSpan.FromMilliseconds(50),
         }, output);
+
+    private static IReadOnlyList<InternalDriverTrackerPath> TrackerPaths() =>
+        [
+            new(ProtocolHand.Left, "TRACKER-LEFT", "/devices/TRACKER-LEFT"),
+            new(ProtocolHand.Right, "TRACKER-RIGHT", "/devices/TRACKER-RIGHT"),
+        ];
 
     private static void AssertFinalRuntimeEvidenceCleared(InternalDriverSessionSnapshot snapshot)
     {
@@ -1325,6 +1495,109 @@ public sealed class InternalDriverSessionTests
         {
             DisposeCount++;
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class NeutralizingRuntime :
+        IInternalDriverSessionRuntime,
+        IInternalDriverTrackerNeutralizationRuntime
+    {
+        private readonly FakeRuntime _inner;
+
+        public NeutralizingRuntime(
+            FakeRuntime inner,
+            IInternalDriverTrackerNeutralizationBackend backend)
+        {
+            _inner = inner;
+            TrackerNeutralizationBackend = backend;
+        }
+
+        public IInternalDriverTrackerNeutralizationBackend TrackerNeutralizationBackend
+        {
+            get;
+        }
+
+        public InternalDriverPlatformProbe Probe() => _inner.Probe();
+
+        public ValueTask<InternalDriverRegistration> EnsureDriverAsync(
+            CancellationToken cancellationToken) =>
+            _inner.EnsureDriverAsync(cancellationToken);
+
+        public InternalDriverRuntimeObservation Observe() => _inner.Observe();
+
+        public ValueTask<InternalDriverProfilePair> ResolveProfilesAsync(
+            InternalDriverRuntimeObservation observation,
+            InternalDriverProgress progress,
+            CancellationToken cancellationToken) =>
+            _inner.ResolveProfilesAsync(observation, progress, cancellationToken);
+
+        public IDriverFeed CreateFeed() => _inner.CreateFeed();
+
+        public void ResetMeta() => _inner.ResetMeta();
+
+        public ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken) =>
+            _inner.DelayAsync(delay, cancellationToken);
+
+        public ulong GetMonotonicNanoseconds() => _inner.GetMonotonicNanoseconds();
+
+        public ValueTask StopRunAsync(CancellationToken cancellationToken) =>
+            _inner.StopRunAsync(cancellationToken);
+
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+    }
+
+    private sealed class FakeTrackerNeutralizationBackend :
+        IInternalDriverTrackerNeutralizationBackend
+    {
+        public List<InternalDriverTrackerNeutralizationReceipt> Neutralized { get; } = [];
+
+        public Exception? ActivationFailure { get; init; }
+
+        public Exception? RestoreFailure { get; init; }
+
+        public int RestoreCount { get; private set; }
+
+        public int RecoverCount { get; private set; }
+
+        public ValueTask<InternalDriverTrackerNeutralizationReceipt>
+            CaptureAndNeutralizeAsync(
+                IReadOnlyList<InternalDriverTrackerPath> trackerPaths,
+                CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ActivationFailure is not null)
+            {
+                throw ActivationFailure;
+            }
+
+            var receipt = new InternalDriverTrackerNeutralizationReceipt(
+                $"snapshot-{Neutralized.Count + 1}",
+                Array.AsReadOnly(trackerPaths.ToArray()));
+            Neutralized.Add(receipt);
+            return ValueTask.FromResult(receipt);
+        }
+
+        public ValueTask RestoreAsync(
+            InternalDriverTrackerNeutralizationReceipt receipt,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RestoreCount++;
+            if (RestoreFailure is not null)
+            {
+                throw RestoreFailure;
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<InternalDriverTrackerRecoveryResult> RecoverAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RecoverCount++;
+            return ValueTask.FromResult(
+                InternalDriverTrackerRecoveryResult.NothingToRecover);
         }
     }
 
