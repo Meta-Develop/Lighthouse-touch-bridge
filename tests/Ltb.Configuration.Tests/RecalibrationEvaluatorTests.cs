@@ -11,6 +11,19 @@ public sealed class RecalibrationEvaluatorTests
         Assert.Empty(evaluation.Triggers);
     }
 
+    [Fact]
+    public void SchemaVersionTwoProfileIsReuseCompatibleWithExpectedSchemaThree()
+    {
+        var evaluation = RecalibrationEvaluator.Evaluate(
+            Profile(schemaVersion: CalibrationProfileSchema.DriverProfileVersion),
+            MatchingContext());
+
+        Assert.False(evaluation.IsRequired);
+        Assert.DoesNotContain(
+            evaluation.Triggers,
+            trigger => trigger.Kind == RecalibrationTriggerKind.SchemaVersionChanged);
+    }
+
     [Theory]
     [InlineData("Quest 2 Touch")]
     [InlineData("Quest 3 Touch Plus")]
@@ -240,8 +253,9 @@ public sealed class RecalibrationEvaluatorTests
 
     private static CalibrationProfile Profile(
         string controllerModel = "Quest 2 Touch",
-        string? controllerIdentity = "CTRL-TEST0001") => new(
-        CalibrationProfileSchema.CurrentVersion,
+        string? controllerIdentity = "CTRL-TEST0001",
+        int schemaVersion = CalibrationProfileSchema.CurrentVersion) => new(
+        schemaVersion,
         "Synthetic left profile",
         ControllerHand.Left,
         ControllerRuntimeIdentities.MetaLinkLibOvr,

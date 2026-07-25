@@ -146,11 +146,13 @@ public static class RecalibrationEvaluator
                 "The expected transform convention differs from the stored profile convention."));
         }
 
-        if (context.ExpectedSchemaVersion != profile.SchemaVersion)
+        if (!CalibrationProfileSchema.IsReuseCompatible(
+                profile.SchemaVersion,
+                context.ExpectedSchemaVersion))
         {
             triggers.Add(new RecalibrationTrigger(
                 RecalibrationTriggerKind.SchemaVersionChanged,
-                "The expected profile schema version differs from the stored profile."));
+                "The expected profile schema version is incompatible with the stored profile."));
         }
 
         return new RecalibrationEvaluation(triggers);

@@ -55,6 +55,92 @@ public sealed class CoordinateConventionTests
     }
 
     [Fact]
+    public void MountAdjustmentDefaultsToIdentityOnBothSides()
+    {
+        var mount = new RigidTransform(
+            Quaternion.CreateFromYawPitchRoll(0.2f, -0.3f, 0.4f),
+            new Vector3(0.08f, -0.04f, 0.12f));
+        var lighthouseFromTracker = new RigidTransform(
+            Quaternion.CreateFromYawPitchRoll(-0.1f, 0.5f, -0.2f),
+            new Vector3(1f, 2f, 3f));
+        var adjustment = new MountAdjustment();
+
+        AssertTransformNear(RigidTransform.Identity, adjustment.TrackerSideAdjustment);
+        AssertTransformNear(RigidTransform.Identity, adjustment.ControllerSideAdjustment);
+        AssertTransformNear(mount, adjustment.ApplyTo(mount));
+        AssertTransformNear(mount, MountAdjustment.Identity.ApplyTo(mount));
+        AssertTransformNear(
+            CoordinateConventions.ComposeRuntimeOutput(lighthouseFromTracker, mount),
+            CoordinateConventions.ComposeRuntimeOutput(
+                lighthouseFromTracker,
+                mount,
+                adjustment));
+    }
+
+    [Fact]
+    public void EffectiveMountAppliesTrackerSideOnLeftAndControllerSideOnRight()
+    {
+        var trackerSide = new RigidTransform(
+            Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f),
+            Vector3.Zero);
+        var mount = new RigidTransform(
+            Quaternion.Identity,
+            new Vector3(1f, 0f, 0f));
+        var controllerSide = new RigidTransform(
+            Quaternion.Identity,
+            new Vector3(0.5f, 0f, 0f));
+        var adjustment = new MountAdjustment(trackerSide, controllerSide);
+
+        var effectiveMount = CoordinateConventions.ComposeEffectiveMount(mount, adjustment);
+        var wrongOrder = controllerSide * mount * trackerSide;
+
+        AssertVectorNear(new Vector3(0f, 1.5f, 0f), effectiveMount.TranslationMeters);
+        AssertQuaternionEquivalent(trackerSide.Rotation, effectiveMount.Rotation);
+        Assert.True(
+            Vector3.Distance(effectiveMount.TranslationMeters, wrongOrder.TranslationMeters) > 1f,
+            "The two-sided mount adjustment must preserve its noncommutative multiplication order.");
+    }
+
+    [Fact]
+    public void RuntimeCompositionUsesTheEffectiveMount()
+    {
+        var lighthouseFromTracker = new RigidTransform(
+            Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI / 2f),
+            new Vector3(2f, 3f, 4f));
+        var mount = new RigidTransform(
+            Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 4f),
+            new Vector3(0.1f, 0.2f, 0.3f));
+        var adjustment = new MountAdjustment(
+            new RigidTransform(
+                Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 6f),
+                new Vector3(0.02f, 0f, 0f)),
+            new RigidTransform(
+                Quaternion.CreateFromAxisAngle(Vector3.UnitY, -MathF.PI / 8f),
+                new Vector3(0f, 0.03f, 0f)));
+
+        var effectiveMount = CoordinateConventions.ComposeEffectiveMount(mount, adjustment);
+        var runtimeOutput = CoordinateConventions.ComposeRuntimeOutput(
+            lighthouseFromTracker,
+            mount,
+            adjustment);
+
+        AssertTransformNear(lighthouseFromTracker * effectiveMount, runtimeOutput);
+    }
+
+    [Fact]
+    public void MountAdjustmentRejectsInvalidTransformsAndNullComposition()
+    {
+        Assert.Throws<ArgumentException>(
+            () => new MountAdjustment(default, RigidTransform.Identity));
+        Assert.Throws<ArgumentException>(
+            () => new MountAdjustment(RigidTransform.Identity, default));
+        Assert.Throws<ArgumentNullException>(
+            () => CoordinateConventions.ComposeEffectiveMount(
+                RigidTransform.Identity,
+                null!));
+    }
+
+    [Fact]
     public void PublicConventionNamesFramesOrderHandednessAndUnits()
     {
         Assert.Equal("Q", CoordinateConventions.QuestWorldFrame);
@@ -78,6 +164,16 @@ public sealed class CoordinateConventionTests
         Assert.Equal(
             "T_L_output(t) = T_L_tracker(t) * X_mount",
             CoordinateConventions.RuntimeCompositionEquation);
+        Assert.Equal("A_tracker", CoordinateConventions.TrackerSideAdjustmentNotation);
+        Assert.Equal("T", CoordinateConventions.TrackerSideAdjustmentFrame);
+        Assert.Equal("A_controller", CoordinateConventions.ControllerSideAdjustmentNotation);
+        Assert.Equal("C", CoordinateConventions.ControllerSideAdjustmentFrame);
+        Assert.Equal(
+            "X_eff = A_tracker * X_mount * A_controller",
+            CoordinateConventions.EffectiveMountCompositionEquation);
+        Assert.Equal(
+            "tracker-side=left/pre-multiply; controller-side=right/post-multiply; side is not controller hand",
+            CoordinateConventions.AdjustmentSideSemantics);
     }
 
     [Fact]
