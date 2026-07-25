@@ -12,13 +12,83 @@ C -- X_mount = T_T_C --> T -- T_L_T(i) --> L -- Y = T_Q_L --> Q
 controller               tracker              Lighthouse       Quest world
 
 T_Q_C(i) = Y * T_L_T(i) * X_mount
-runtime: T_L_output(t) = T_L_tracker(t) * X_mount
+effective mount: X_eff = A_tracker * X_mount * A_controller
+runtime: T_L_output(t) = T_L_tracker(t) * X_eff
 ```
 
 The notation `T_parent_child` means a transform from child coordinates to
 parent coordinates. `Q`, `L`, `T`, and `C` are right-handed frames. Rotations
 are normalized `System.Numerics` quaternions reported in `XYZW` component
 order, positions are in meters, and timestamps are monotonic host seconds.
+
+## Mount adjustment and effective runtime transform
+
+The calibrated transform remains `X_mount = T_T_C`. Optional per-hand mount
+adjustments produce a separate effective transform:
+
+```text
+X_eff = A_tracker * X_mount * A_controller
+T_output(t) = T_tracker(t) * X_eff
+```
+
+Every factor is an active parent-from-child transform. A transform `T_A_B`
+maps a point from child frame `B` into parent frame `A`:
+
+```text
+p_A = R_A_B * p_B + t_A_B
+```
+
+Composition keeps the parent transform on the left:
+`T_A_B * T_B_C = T_A_C`. Thus the written product composes from the
+left-hand parent toward the right-hand child, while a point is acted on by the
+rightmost factor first. This is the left-to-right parent-composition contract.
+`A_tracker` is the tracker-side correction immediately after the sampled
+tracker pose and is therefore expressed in tracker-local axes. `A_controller`
+is the controller-side correction after the calibrated mount and is expressed
+in controller-local/output axes. The side names identify multiplication
+position, not the left or right controller hand. Swapping these factors changes
+both the rotation and the frame in which a translation acts.
+
+Both adjustment slots default to the identity transform. With either identity,
+that side leaves the other factors unchanged; with both identities,
+`X_eff = X_mount` and the existing runtime result is preserved exactly.
+Adjustment changes only the effective transform used for output placement. It
+does not modify synchronized samples, lag estimation, the hand-eye equations,
+solver thresholds, model selection, quality evidence, or the calibrated
+`X_mount`.
+
+### Human-entry Euler convention
+
+Angles are a human-entry integration format only. A UI or other adapter must
+accept degrees at its boundary, convert them to radians, and construct a
+quaternion before calling portable core or configuration code. Euler angles
+are neither a core transform representation nor a profile field.
+
+For degree entries `(x_deg, y_deg, z_deg)`, use intrinsic local rotations in
+the order `X`, then `Y`, then `Z`:
+
+```text
+x = x_deg * pi / 180
+y = y_deg * pi / 180
+z = z_deg * pi / 180
+
+q_adjustment = Qx(x) * Qy(y) * Qz(z)
+```
+
+`Qx`, `Qy`, and `Qz` are right-handed active axis-angle quaternions about the
+positive local axes. Under the active Hamilton convention used by
+`RigidTransform`, this intrinsic local `XYZ` sequence is equivalent to an
+extrinsic fixed-axis `ZYX` sequence. The quaternion product above is
+authoritative when a math or UI library labels Euler conventions differently;
+`Qz * Qy * Qx` would instead describe extrinsic fixed-axis `XYZ` (equivalently
+intrinsic local `ZYX`) and is not interchangeable. The tracker-side slot
+applies this convention at the tracker-local insertion point, while the
+controller-side slot applies it at the controller-local insertion point. The
+adapter passes the quaternion through `RigidTransform` for the core's finite
+value checks and normalized representation. That finite unit quaternion, not
+the original degree triplet, crosses the portable core/configuration boundary.
+This contract does not imply that an application, desktop UI, or Windows
+runtime already exposes adjustment controls.
 
 ## Staged solve
 
@@ -202,10 +272,61 @@ rotation and translation inlier ratios, translation magnitude, split
 disagreement, rotation/translation observability and degeneracy, and the exact
 selection reason. These complete fields are emitted directly from the genuine
 first-run `CalibrationResult`; the application does not recalculate quality or
-select a model. Schema 1 retains a smaller quality subset. Later-run profile
-reuse therefore reports only persisted schema fields and never copies RMS or
-the one persisted inlier ratio into missing percentile or separate-inlier
-fields.
+select a model. Legacy schema 1 retains a smaller quality subset. Later-run
+profile reuse therefore reports only persisted schema fields and never copies
+RMS or the one persisted inlier ratio into missing percentile or
+separate-inlier fields.
+
+### Profile schema 3 and compatibility
+
+Profile schema 3 retains the calibrated `tracker_to_controller` transform and
+adds a required `mount_adjustment` object with two transform slots. The
+relevant members are shown below; the other required profile fields are
+unchanged and omitted:
+
+```json
+{
+  "schema_version": 3,
+  "mount_adjustment": {
+    "tracker_side": {
+      "translation_m": [0.0, 0.0, 0.0],
+      "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+    },
+    "controller_side": {
+      "translation_m": [0.0, 0.0, 0.0],
+      "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+    }
+  }
+}
+```
+
+The two stored transforms correspond to the portable
+`TrackerSideAdjustment` and `ControllerSideAdjustment` values. Serialization
+is deterministic: property order and component order are stable, quaternion
+arrays are `XYZW`, translations are meters, and the existing atomic profile
+store replacement remains the persistence boundary.
+
+Each slot is validated independently. Every translation and quaternion
+component must be finite, each rotation must be a unit quaternion, and the
+Euclidean magnitude of each slot's translation must be at most `0.5 m`
+inclusive. A valid tracker-side value does not compensate for an invalid
+controller-side value, and limits are not checked only on the combined
+`X_eff`. Missing schema-3 members, malformed arrays, non-finite values,
+non-unit quaternions, and out-of-range translations fail closed.
+
+Schema 2 remains a compatible input format. Loading a structurally valid
+schema-2 profile supplies identity tracker-side and controller-side
+adjustments, yielding `X_eff = X_mount`; the version difference alone must not
+trigger recalibration. This compatibility does not weaken parsing:
+structurally malformed schema-2 data still fails closed rather than being
+repaired or converted to identity.
+
+Schema 1 remains a distinct legacy format. Reading it preserves its exact
+legacy identity shape and smaller quality subset. Migration is explicit,
+non-mutating, and reversible: it may add the supported driver/current-schema
+shape only while preserving controller runtime, model, identity, calibrated
+transform, quality, and provenance. It must not silently relabel an ALVR
+profile as a Meta Link profile; cross-runtime reuse requires recalibration.
 
 Profiles are keyed by tracker serial and semantic hand. A rotation-only profile
 stores zero translation plus its fallback reason. A later run loads a complete
@@ -214,8 +335,10 @@ a missing or mismatched side keeps the wizard on the first-run path. The
 runtime also passes explicit-request, observed hand association, remount,
 validation-threshold, controller runtime/model, expected-schema, and transform-
 convention observations to `RecalibrationEvaluator`; the application does not
-reimplement those trigger rules. A recognized older/newer stored schema routes
-to capture and replacement, while structurally malformed profile JSON stops
+reimplement those trigger rules. Schema 2 compatibility is evaluated before a
+schema-version trigger so a valid schema-2 profile does not route to capture
+solely because schema 3 is current. An incompatible schema may route to
+capture and replacement, while structurally malformed profile JSON stops
 safely. Profile schema validation, deterministic JSON, and atomic save are
 owned by `Ltb.Configuration`.
 

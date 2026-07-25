@@ -30,16 +30,31 @@ public static class CalibrationProfileSchema
 {
     public const int LegacyVersion = 1;
 
-    public const int CurrentVersion = 2;
+    /// <summary>
+    /// The first-party driver profile schema retained for transparent reads.
+    /// Schema 2 has the same identity contract as schema 3, but no persisted
+    /// mount adjustment and therefore loads with an identity adjustment.
+    /// </summary>
+    public const int DriverProfileVersion = 2;
+
+    public const int CurrentVersion = 3;
 
     /// <summary>
     /// The schema transform convention: <c>T_T_C</c>, translation in meters,
     /// and quaternion components serialized in XYZW order.
     /// </summary>
     public const string TransformConvention = "T_T_C:translation_m:rotation_xyzw";
+
+    internal static bool IsSupported(int schemaVersion) =>
+        schemaVersion is LegacyVersion or DriverProfileVersion or CurrentVersion;
+
+    internal static bool IsReuseCompatible(int storedSchemaVersion, int expectedSchemaVersion) =>
+        storedSchemaVersion == expectedSchemaVersion ||
+        (storedSchemaVersion == DriverProfileVersion &&
+         expectedSchemaVersion == CurrentVersion);
 }
 
-/// <summary>Driver profile identities supported by schema version 2.</summary>
+/// <summary>Driver profile identities supported by schema versions 2 and 3.</summary>
 public static class CalibrationDriverProfiles
 {
     public const string LtbTouch = "ltb_touch";
@@ -77,18 +92,12 @@ public static class ControllerRuntimeIdentities
 /// </summary>
 public sealed record TrackerToControllerTransform
 {
-    private const float MaximumQuaternionNormError = 0.00025f;
-
     public TrackerToControllerTransform(Vector3 translationMeters, Quaternion rotationXyzw)
     {
-        var rotationNorm = rotationXyzw.Length();
-        if (!float.IsFinite(rotationNorm) ||
-            MathF.Abs(rotationNorm - 1f) > MaximumQuaternionNormError)
-        {
-            throw new ArgumentException(
-                "Tracker-to-controller rotation must have unit length within 0.00025.",
-                nameof(rotationXyzw));
-        }
+        ProfileValidation.RequireNormalizedQuaternion(
+            rotationXyzw,
+            nameof(rotationXyzw),
+            "Tracker-to-controller rotation");
 
         var transform = new RigidTransform(rotationXyzw, translationMeters);
         TranslationMeters = transform.TranslationMeters;
@@ -153,15 +162,16 @@ public sealed record CalibrationProfileQuality
 /// One complete calibration profile. Candidate profiles are
 /// located by the exact <see cref="TrackerSerial"/> plus <see cref="Hand"/>
 /// pair, then checked against the currently observed controller runtime and
-/// model, schema-2 driver profile, and runtime controller identity when the
+/// model, schema-2/3 driver profile, and runtime controller identity when the
 /// source exposes one.
 /// Collection order is not a matching key.
 /// </summary>
 public sealed record CalibrationProfile
 {
     /// <summary>
-    /// Constructs a schema-1 legacy profile. Passing schema version 2 through
-    /// this overload is rejected because it cannot supply a driver profile.
+    /// Constructs a schema-1 legacy profile. Passing schema version 2 or 3
+    /// through this overload is rejected because it cannot supply a driver
+    /// profile.
     /// </summary>
     public CalibrationProfile(
         int schemaVersion,
@@ -191,6 +201,7 @@ public sealed record CalibrationProfile
             selectedMode,
             selectionReason,
             trackerToController,
+            Ltb.Core.MountAdjustment.Identity,
             estimatedLagMilliseconds,
             quality,
             createdUtc,
@@ -199,10 +210,10 @@ public sealed record CalibrationProfile
     }
 
     /// <summary>
-    /// Constructs a schema-2 profile with an explicit driver identity and an
-    /// optional controller-runtime identity. Public LibOVR does not expose a
-    /// stable per-controller hardware identifier, so Meta Link profiles may
-    /// leave <paramref name="controllerIdentity"/> null.
+    /// Constructs a schema-2 or schema-3 profile with an explicit driver
+    /// identity and an optional controller-runtime identity. Public LibOVR
+    /// does not expose a stable per-controller hardware identifier, so Meta
+    /// Link profiles may leave <paramref name="controllerIdentity"/> null.
     /// </summary>
     public CalibrationProfile(
         int schemaVersion,
@@ -233,6 +244,49 @@ public sealed record CalibrationProfile
             selectedMode,
             selectionReason,
             trackerToController,
+            Ltb.Core.MountAdjustment.Identity,
+            estimatedLagMilliseconds,
+            quality,
+            createdUtc,
+            driverProfileIsExplicit: true)
+    {
+    }
+
+    /// <summary>
+    /// Constructs a schema-3 profile with an explicit mount adjustment.
+    /// Schema 1 and 2 cannot persist a non-identity adjustment.
+    /// </summary>
+    public CalibrationProfile(
+        int schemaVersion,
+        string profileName,
+        ControllerHand hand,
+        string controllerRuntime,
+        string controllerModel,
+        string? controllerIdentity,
+        string trackerSerial,
+        string driverProfile,
+        ProfileCalibrationPolicy calibrationPolicy,
+        ProfileCalibrationMode selectedMode,
+        string selectionReason,
+        TrackerToControllerTransform trackerToController,
+        MountAdjustment mountAdjustment,
+        double estimatedLagMilliseconds,
+        CalibrationProfileQuality quality,
+        DateTimeOffset createdUtc)
+        : this(
+            schemaVersion,
+            profileName,
+            hand,
+            controllerRuntime,
+            controllerModel,
+            controllerIdentity,
+            trackerSerial,
+            driverProfile ?? throw new ArgumentNullException(nameof(driverProfile)),
+            calibrationPolicy,
+            selectedMode,
+            selectionReason,
+            trackerToController,
+            mountAdjustment,
             estimatedLagMilliseconds,
             quality,
             createdUtc,
@@ -253,18 +307,19 @@ public sealed record CalibrationProfile
         ProfileCalibrationMode selectedMode,
         string selectionReason,
         TrackerToControllerTransform trackerToController,
+        MountAdjustment mountAdjustment,
         double estimatedLagMilliseconds,
         CalibrationProfileQuality quality,
         DateTimeOffset createdUtc,
         bool driverProfileIsExplicit)
     {
-        if (schemaVersion is not CalibrationProfileSchema.LegacyVersion and
-            not CalibrationProfileSchema.CurrentVersion)
+        if (!CalibrationProfileSchema.IsSupported(schemaVersion))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(schemaVersion),
                 schemaVersion,
-                $"Only calibration profile schema versions {CalibrationProfileSchema.LegacyVersion} and " +
+                $"Only calibration profile schema versions {CalibrationProfileSchema.LegacyVersion}, " +
+                $"{CalibrationProfileSchema.DriverProfileVersion}, and " +
                 $"{CalibrationProfileSchema.CurrentVersion} are supported.");
         }
 
@@ -275,10 +330,10 @@ public sealed record CalibrationProfile
                 nameof(driverProfile));
         }
 
-        if (schemaVersion == CalibrationProfileSchema.CurrentVersion && !driverProfileIsExplicit)
+        if (schemaVersion != CalibrationProfileSchema.LegacyVersion && !driverProfileIsExplicit)
         {
             throw new ArgumentException(
-                "Schema-version-2 profiles require an explicit driver profile.",
+                $"Schema-version-{schemaVersion} profiles require an explicit driver profile.",
                 nameof(driverProfile));
         }
 
@@ -328,6 +383,17 @@ public sealed record CalibrationProfile
         SelectedMode = selectedMode;
         SelectionReason = ProfileValidation.RequireText(selectionReason, nameof(selectionReason));
         TrackerToController = trackerToController ?? throw new ArgumentNullException(nameof(trackerToController));
+        MountAdjustment = ProfileValidation.RequireMountAdjustment(
+            mountAdjustment,
+            nameof(mountAdjustment));
+
+        if (schemaVersion != CalibrationProfileSchema.CurrentVersion &&
+            MountAdjustment != Ltb.Core.MountAdjustment.Identity)
+        {
+            throw new ArgumentException(
+                $"Schema-version-{schemaVersion} profiles cannot persist a non-identity mount adjustment.",
+                nameof(mountAdjustment));
+        }
 
         if (selectedMode == ProfileCalibrationMode.RotationOnly &&
             trackerToController.TranslationMeters != Vector3.Zero)
@@ -369,10 +435,10 @@ public sealed record CalibrationProfile
 
     /// <summary>
     /// Identity reported by the controller runtime. Schema 1 serialized an
-    /// optional value as <c>controller_serial</c>; schema 2 uses
-    /// <c>controller_identity</c>. Schema 2 keeps that value optional because
-    /// the public Meta LibOVR ABI does not expose a stable per-controller
-    /// hardware identity. When present, it is part of the exact reuse contract.
+    /// optional value as <c>controller_serial</c>; schemas 2 and 3 use
+    /// <c>controller_identity</c>. They keep that value optional because the
+    /// public Meta LibOVR ABI does not expose a stable per-controller hardware
+    /// identity. When present, it is part of the exact reuse contract.
     /// </summary>
     public string? ControllerIdentity { get; }
 
@@ -382,7 +448,7 @@ public sealed record CalibrationProfile
     public string TrackerSerial { get; }
 
     /// <summary>
-    /// Schema-2 driver profile identity, or <see langword="null"/> for an
+    /// Schema-2/3 driver profile identity, or <see langword="null"/> for an
     /// unchanged schema-1 legacy profile.
     /// </summary>
     public string? DriverProfile { get; }
@@ -395,6 +461,12 @@ public sealed record CalibrationProfile
 
     public TrackerToControllerTransform TrackerToController { get; }
 
+    /// <summary>
+    /// Optional post-calibration physical mount adjustment. Schema 1 and 2
+    /// profiles expose identity; schema 3 persists both adjustment slots.
+    /// </summary>
+    public MountAdjustment MountAdjustment { get; }
+
     public double EstimatedLagMilliseconds { get; }
 
     public CalibrationProfileQuality Quality { get; }
@@ -403,8 +475,8 @@ public sealed record CalibrationProfile
 
     /// <summary>
     /// Returns whether legacy controller observations match a schema-1 profile.
-    /// This overload can never authorize a schema-2 profile because it has no
-    /// current driver-profile observation.
+    /// This overload can never authorize a schema-2/3 profile because it has
+    /// no current driver-profile observation.
     /// </summary>
     public bool MatchesController(string controllerRuntime, string controllerModel)
     {
@@ -421,10 +493,10 @@ public sealed record CalibrationProfile
 
     /// <summary>
     /// Returns whether all current runtime identity observations are compatible
-    /// with a schema-2 profile. Legacy profiles always return false. Identity
-    /// is exact when present; an identity-free stored profile only matches an
-    /// identity-free current observation. The enclosing store lookup supplies
-    /// the exact tracker serial and hand binding.
+    /// with a schema-2/3 profile. Legacy profiles always return false.
+    /// Identity is exact when present; an identity-free stored profile only
+    /// matches an identity-free current observation. The enclosing store
+    /// lookup supplies the exact tracker serial and hand binding.
     /// </summary>
     public bool MatchesController(
         string driverProfile,
@@ -449,6 +521,10 @@ public sealed record CalibrationProfile
 
 internal static class ProfileValidation
 {
+    internal const float MaximumQuaternionNormError = 0.00025f;
+
+    internal const double MaximumMountAdjustmentTranslationMeters = 0.5d;
+
     internal static string RequireText(string value, string parameterName)
     {
         ArgumentNullException.ThrowIfNull(value, parameterName);
@@ -511,6 +587,61 @@ internal static class ProfileValidation
         if (!Enum.IsDefined(value))
         {
             throw new ArgumentOutOfRangeException(parameterName, value, "Value is not defined.");
+        }
+    }
+
+    internal static void RequireNormalizedQuaternion(
+        Quaternion value,
+        string parameterName,
+        string description)
+    {
+        var rotationNorm = value.Length();
+        if (!float.IsFinite(rotationNorm) ||
+            MathF.Abs(rotationNorm - 1f) > MaximumQuaternionNormError)
+        {
+            throw new ArgumentException(
+                $"{description} must have unit length within {MaximumQuaternionNormError}.",
+                parameterName);
+        }
+    }
+
+    internal static MountAdjustment RequireMountAdjustment(
+        MountAdjustment value,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(value, parameterName);
+        RequireAdjustmentSlot(
+            value.TrackerSideAdjustment,
+            parameterName,
+            "Tracker-side mount adjustment");
+        RequireAdjustmentSlot(
+            value.ControllerSideAdjustment,
+            parameterName,
+            "Controller-side mount adjustment");
+        return value;
+    }
+
+    private static void RequireAdjustmentSlot(
+        RigidTransform value,
+        string parameterName,
+        string description)
+    {
+        if (!value.IsValid)
+        {
+            throw new ArgumentException(
+                $"{description} must be a finite valid rigid transform.",
+                parameterName);
+        }
+
+        var translation = value.TranslationMeters;
+        var magnitude = translation.Length();
+        if (!float.IsFinite(magnitude) ||
+            magnitude > (float)MaximumMountAdjustmentTranslationMeters)
+        {
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                $"{description} translation magnitude must be at most " +
+                $"{MaximumMountAdjustmentTranslationMeters} meters.");
         }
     }
 }

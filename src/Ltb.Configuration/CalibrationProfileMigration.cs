@@ -2,7 +2,7 @@ namespace Ltb.Configuration;
 
 /// <summary>
 /// Caller-supplied target controller and driver identity for an explicit
-/// schema-1 to schema-2 migration.
+/// schema-1 to current-schema migration.
 /// </summary>
 public sealed record CalibrationProfileTargetIdentity
 {

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Ltb.Core;
 
 namespace Ltb.Configuration;
 
@@ -122,19 +123,21 @@ public static class CalibrationProfileJson
     {
         try
         {
-            if (dto.SchemaVersion is not CalibrationProfileSchema.LegacyVersion and
-                not CalibrationProfileSchema.CurrentVersion)
+            if (!CalibrationProfileSchema.IsSupported(dto.SchemaVersion))
             {
                 throw Format(
                     CalibrationProfileFormatReason.UnsupportedSchemaVersion,
                     $"Unsupported 'schema_version' {dto.SchemaVersion}; expected " +
-                    $"{CalibrationProfileSchema.LegacyVersion} or {CalibrationProfileSchema.CurrentVersion}.");
+                    $"{CalibrationProfileSchema.LegacyVersion}, " +
+                    $"{CalibrationProfileSchema.DriverProfileVersion}, or " +
+                    $"{CalibrationProfileSchema.CurrentVersion}.");
             }
 
             ValidateIdentityShape(dto);
 
             var translation = RequireArray(dto.TrackerToController?.TranslationMeters, 3, "tracker_to_controller.translation_m");
             var rotation = RequireArray(dto.TrackerToController?.RotationXyzw, 4, "tracker_to_controller.rotation_xyzw");
+            var mountAdjustment = ConvertMountAdjustment(dto);
             var quality = dto.Quality ?? throw Invalid("Profile must contain a 'quality' object.");
 
             if (!DateTimeOffset.TryParseExact(
@@ -186,6 +189,7 @@ public static class CalibrationProfileJson
                     ParseMode(dto.SelectedMode),
                     dto.SelectionReason,
                     transform,
+                    mountAdjustment,
                     dto.EstimatedLagMilliseconds,
                     profileQuality,
                     createdUtc);
@@ -198,6 +202,64 @@ public static class CalibrationProfileJson
         {
             throw Invalid($"Calibration profile contains invalid schema-version-{dto.SchemaVersion} data.", exception);
         }
+    }
+
+    private static MountAdjustment ConvertMountAdjustment(ProfileDto dto)
+    {
+        if (dto.SchemaVersion != CalibrationProfileSchema.CurrentVersion)
+        {
+            if (dto.HasMountAdjustment)
+            {
+                throw Invalid(
+                    $"Schema-version-{dto.SchemaVersion} profiles must not contain 'mount_adjustment'.");
+            }
+
+            return MountAdjustment.Identity;
+        }
+
+        if (!dto.HasMountAdjustment || dto.MountAdjustment is null)
+        {
+            throw Invalid(
+                $"Schema-version-{CalibrationProfileSchema.CurrentVersion} profiles require a non-null " +
+                "'mount_adjustment' object.");
+        }
+
+        return new MountAdjustment(
+            ConvertAdjustmentSlot(
+                dto.MountAdjustment.TrackerSide,
+                "mount_adjustment.tracker_side"),
+            ConvertAdjustmentSlot(
+                dto.MountAdjustment.ControllerSide,
+                "mount_adjustment.controller_side"));
+    }
+
+    private static RigidTransform ConvertAdjustmentSlot(TransformDto? dto, string field)
+    {
+        if (dto is null)
+        {
+            throw Invalid($"'{field}' must be a transform object.");
+        }
+
+        var translation = RequireArray(dto.TranslationMeters, 3, $"{field}.translation_m");
+        var rotation = RequireArray(dto.RotationXyzw, 4, $"{field}.rotation_xyzw");
+        RequireAdjustmentTranslationMagnitude(translation, $"{field}.translation_m");
+
+        var quaternion = new Quaternion(
+            (float)rotation[0],
+            (float)rotation[1],
+            (float)rotation[2],
+            (float)rotation[3]);
+        ProfileValidation.RequireNormalizedQuaternion(
+            quaternion,
+            field,
+            $"'{field}.rotation_xyzw'");
+
+        return new RigidTransform(
+            quaternion,
+            new Vector3(
+                (float)translation[0],
+                (float)translation[1],
+                (float)translation[2]));
     }
 
     private static void ValidateIdentityShape(ProfileDto dto)
@@ -215,17 +277,20 @@ public static class CalibrationProfileJson
 
         if (dto.HasControllerSerial)
         {
-            throw Invalid("Schema-version-2 profiles must not contain legacy 'controller_serial'.");
+            throw Invalid(
+                $"Schema-version-{dto.SchemaVersion} profiles must not contain legacy 'controller_serial'.");
         }
 
         if (!dto.HasDriverProfile || dto.DriverProfile is null)
         {
-            throw Invalid("Schema-version-2 profiles require a non-null 'driver_profile'.");
+            throw Invalid(
+                $"Schema-version-{dto.SchemaVersion} profiles require a non-null 'driver_profile'.");
         }
 
-        // controller_identity is optional for schema 2 because the public
-        // LibOVR ABI does not expose a stable per-controller identity. When it
-        // is present, CalibrationProfile validates and matches it exactly.
+        // controller_identity is optional for schemas 2 and 3 because the
+        // public LibOVR ABI does not expose a stable per-controller identity.
+        // When it is present, CalibrationProfile validates and matches it
+        // exactly.
     }
 
     private static double[] RequireArray(double[]? values, int length, string field)
@@ -244,6 +309,23 @@ public static class CalibrationProfileJson
         }
 
         return values;
+    }
+
+    private static void RequireAdjustmentTranslationMagnitude(double[] values, string field)
+    {
+        var magnitudeSquared =
+            values[0] * values[0] +
+            values[1] * values[1] +
+            values[2] * values[2];
+        var maximumSquared =
+            ProfileValidation.MaximumMountAdjustmentTranslationMeters *
+            ProfileValidation.MaximumMountAdjustmentTranslationMeters;
+        if (magnitudeSquared > maximumSquared)
+        {
+            throw Invalid(
+                $"'{field}' magnitude must be at most " +
+                $"{ProfileValidation.MaximumMountAdjustmentTranslationMeters} meters.");
+        }
     }
 
     private static ControllerHand ParseHand(string value) => value switch
@@ -313,9 +395,11 @@ public static class CalibrationProfileJson
         private string? controllerSerial;
         private string? controllerIdentity;
         private string? driverProfile;
+        private MountAdjustmentDto? mountAdjustment;
         private bool hasControllerSerial;
         private bool hasControllerIdentity;
         private bool hasDriverProfile;
+        private bool hasMountAdjustment;
 
         [JsonPropertyName("schema_version")]
         [JsonPropertyOrder(0)]
@@ -405,16 +489,32 @@ public static class CalibrationProfileJson
         [JsonPropertyOrder(11)]
         public required TransformDto TrackerToController { get; init; }
 
-        [JsonPropertyName("estimated_lag_ms")]
+        [JsonPropertyName("mount_adjustment")]
         [JsonPropertyOrder(12)]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public MountAdjustmentDto? MountAdjustment
+        {
+            get => mountAdjustment;
+            init
+            {
+                mountAdjustment = value;
+                hasMountAdjustment = true;
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasMountAdjustment => hasMountAdjustment;
+
+        [JsonPropertyName("estimated_lag_ms")]
+        [JsonPropertyOrder(13)]
         public required double EstimatedLagMilliseconds { get; init; }
 
         [JsonPropertyName("quality")]
-        [JsonPropertyOrder(13)]
+        [JsonPropertyOrder(14)]
         public required QualityDto Quality { get; init; }
 
         [JsonPropertyName("created_utc")]
-        [JsonPropertyOrder(14)]
+        [JsonPropertyOrder(15)]
         public required string CreatedUtc { get; init; }
 
         public static ProfileDto FromProfile(CalibrationProfile profile)
@@ -441,6 +541,9 @@ public static class CalibrationProfileJson
                     TranslationMeters = [translation.X, translation.Y, translation.Z],
                     RotationXyzw = [rotation.X, rotation.Y, rotation.Z, rotation.W],
                 },
+                MountAdjustment = profile.SchemaVersion == CalibrationProfileSchema.CurrentVersion
+                    ? MountAdjustmentDto.FromMountAdjustment(profile.MountAdjustment)
+                    : null,
                 EstimatedLagMilliseconds = profile.EstimatedLagMilliseconds,
                 Quality = new QualityDto
                 {
@@ -454,6 +557,24 @@ public static class CalibrationProfileJson
         }
     }
 
+    private sealed class MountAdjustmentDto
+    {
+        [JsonPropertyName("tracker_side")]
+        [JsonPropertyOrder(0)]
+        public required TransformDto TrackerSide { get; init; }
+
+        [JsonPropertyName("controller_side")]
+        [JsonPropertyOrder(1)]
+        public required TransformDto ControllerSide { get; init; }
+
+        internal static MountAdjustmentDto FromMountAdjustment(MountAdjustment adjustment) =>
+            new()
+            {
+                TrackerSide = TransformDto.FromRigidTransform(adjustment.TrackerSideAdjustment),
+                ControllerSide = TransformDto.FromRigidTransform(adjustment.ControllerSideAdjustment),
+            };
+    }
+
     private sealed class TransformDto
     {
         [JsonPropertyName("translation_m")]
@@ -463,6 +584,24 @@ public static class CalibrationProfileJson
         [JsonPropertyName("rotation_xyzw")]
         [JsonPropertyOrder(1)]
         public required double[] RotationXyzw { get; init; }
+
+        internal static TransformDto FromRigidTransform(RigidTransform transform) =>
+            new()
+            {
+                TranslationMeters =
+                [
+                    transform.TranslationMeters.X,
+                    transform.TranslationMeters.Y,
+                    transform.TranslationMeters.Z,
+                ],
+                RotationXyzw =
+                [
+                    transform.Rotation.X,
+                    transform.Rotation.Y,
+                    transform.Rotation.Z,
+                    transform.Rotation.W,
+                ],
+            };
     }
 
     private sealed class QualityDto

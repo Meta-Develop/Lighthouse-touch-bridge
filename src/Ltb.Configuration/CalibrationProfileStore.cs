@@ -59,7 +59,7 @@ public sealed class CalibrationProfileStore
         FindCandidateProfile(trackerSerial, hand);
 
     /// <summary>
-    /// Finds a reusable schema-2 profile only when tracker, hand, driver
+    /// Finds a reusable schema-2/3 profile only when tracker, hand, driver
     /// profile, controller runtime/model, and exact runtime identity match.
     /// An unchanged schema-1 legacy profile can never match this overload.
     /// </summary>
