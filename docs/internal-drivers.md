@@ -7,6 +7,9 @@ implementation and automated tests are present, but the Windows hardware and
 runtime gates have not been recorded as passed. Use the fully unchecked
 [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
 before making any Windows compatibility or release claim.
+Linux automated build, test, and headless GUI checks do not replace Windows
+Avalonia visual inspection or live SteamVR, Quest Link, and connected-hardware
+verification.
 
 The supported deployment is Windows x64. Its only accepted external runtime
 dependencies are SteamVR and the official Meta Horizon Link PC runtime. LTB
@@ -30,31 +33,47 @@ The intended Lighthouse HMD remains SteamVR's sole HMD.
 
 ## Default desktop workflow
 
-The packaged `Ltb.Gui.exe` starts directly in the **First-party internal
-driver** view. Its **Start** button creates a fresh application session and
-runs typed checks for Windows, SteamVR, driver registration and loaded build,
-Meta Link, the sole Lighthouse HMD, both Touch hands, the two selected
-controller-source trackers, calibration profiles, and the driver feed. Normal
-**Start** reuses an exact matching left/right profile pair. The separate
-**Calibrate / Recalibrate** button creates the same first-party session while
-explicitly bypassing reusable profiles and capturing both hands again. Fresh
-association scores every connected physical tracker during separate left- and
-right-hand prompts and accepts only one unambiguous distinct pair. Unrelated
-raw Lighthouse trackers may remain connected and are ignored after association
-or saved-profile selection. Neither action starts the legacy
-ALVR/VMT/`TrackingOverrides` wizard.
-
-Before pressing **Start**:
+Use the complete packaged `Ltb.Gui.exe` directory. The supported daily sequence
+is:
 
 1. Start the official Meta Horizon Link PC application and establish Quest
    Link or Air Link.
-2. Keep the headset and both Touch controllers awake.
+2. Keep both Touch controllers awake and responding in the Meta runtime.
 3. Start SteamVR with the intended Lighthouse HMD as the sole HMD.
-4. Power on the two controller-mounted Lighthouse trackers and wait until
-   their raw poses are valid. Unrelated full-body trackers may remain connected;
-   during new association move only the mounted controller requested by each
-   prompt so the left/right correlation pair is unambiguous.
-5. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
+4. Power the two Lighthouse trackers mounted to the controllers and wait for
+   valid raw poses. Other physical trackers may remain connected when saved
+   profiles identify the mounted pair or a fresh association can select it
+   unambiguously.
+5. Run `Ltb.Gui.exe`, use the **Setup** tab, and press **Start**.
+
+**Start** is the primary daily-use action. It creates a fresh application
+session and reuses an exact matching left/right profile pair. **Calibrate /
+Recalibrate** is secondary, available only while stopped, and bypasses saved
+profiles for a fresh two-hand capture. Fresh association scores the connected
+physical tracker candidates during separate left- and right-hand prompts and
+accepts only one unambiguous distinct pair. During association, move only the
+mounted controller requested by each prompt. Neither action starts the legacy
+ALVR/VMT/`TrackingOverrides` wizard.
+
+Before either action, **Setup** performs a live pre-press probe of prerequisites
+that are safely knowable without starting a session: Windows and runtime
+support, the Meta Link headset session and both Touch hands, SteamVR and
+sole-HMD topology, and at least two connected physical trackers with valid raw
+poses. It also presents read-only staged/loaded-driver evidence when that
+evidence is available. Prerequisite rows show pass (**Ready**), wait
+(**Waiting**), **Action required**, or **Deferred until Start** states. A
+missing knowable prerequisite disables both **Start** and **Calibrate /
+Recalibrate** and gives both actions the same specific remediation from the
+same probe snapshot. Setup refreshes the probe automatically; use **Refresh
+prerequisites** to retry after remediation.
+
+Driver registration or update is a transactional write and may not be
+provable or performable by the read-only probe. Final verification that
+SteamVR loaded exactly the left and right first-party controllers from the
+staged build may also be unavailable before a session. Setup marks these gates
+**Deferred until Start** instead of claiming that they passed. The Start
+transaction completes registration/update and final loaded-build checks when
+the runtime makes them knowable.
 
 Once both LTB controllers are ready, the physical left Touch Menu button opens
 and closes the SteamVR dashboard through OpenVR's reserved system input. VRChat
@@ -87,9 +106,22 @@ Once commit wins, the atomic canonical replace completes and is reported as a
 successful saved pair; a later Stop request applies to the session, not to the
 already committed profile transaction.
 
-The GUI presents readiness, per-hand tracker/input/publication state, neutral
-reasons, the shared calibration phase, and feed health. The structured JSONL
-log is the durable evidence surface for exact staged/loaded identities, stable
+The persistent header keeps phase, overall status, and the evidence-origin badge
+visible across the tabs:
+
+- **Setup** — ordered prerequisites, guidance, and primary actions.
+- **Status** — readiness groups, per-hand tracker/input/publication state,
+  neutral reasons, and driver-feed health.
+- **Calibration** — the guided two-hand capture workspace.
+- **Diagnostics (Debug)** — opt-in, session-local evidence sampled at 10 Hz,
+  retaining at most 600 samples (60 seconds).
+
+Diagnostics timing is a software-boundary lower bound. It excludes hardware
+acquisition, the SteamVR compositor and display, and motion-to-photon
+acceptance. Driver removal and the unsupported legacy/migration notice remain
+the only contents of a collapsed, low-prominence **Advanced / Maintenance**
+surface; it is not a supported legacy daily-use path. The structured JSONL log
+remains the durable evidence surface for exact staged/loaded identities, stable
 HMD metadata, per-hand capture measurements, selected calibration mode and
 reason, lag, and quality metrics.
 
@@ -313,8 +345,8 @@ performs registration first and waits for the runtime afterwards.
 Removal is a first-class transactional operation, available without SteamVR
 file editing or manual `vrpathreg` use:
 
-- Desktop: the **Remove driver** button in the **Driver registration
-  maintenance** panel (the session must be stopped first).
+- Desktop: the **Remove driver** button in the collapsed **Advanced /
+  Maintenance** surface (the session must be stopped first).
 - Command line: `dotnet run --project src/Ltb.App -- remove-driver` (or
   `Ltb.App.exe remove-driver` from a packaged build). Exit codes: `0` removed
   or nothing to remove, `2` refused or failed with a completed rollback, `4`
@@ -374,7 +406,9 @@ the `legacy-*` CLI commands, each of which prints an unsupported-path warning
 before executing; they stay available until the Windows exit gates pass and
 are then scheduled for removal. The legacy paths receive no new setup,
 configuration, recovery, packaging, or daily-use support and are not invoked
-by the first-party GUI **Start** button. Existing detail is preserved in the
+by the first-party GUI **Start** button. The GUI exposes only a collapsed,
+low-prominence legacy/migration notice beside driver removal; it does not
+provide a supported legacy workflow. Existing detail is preserved in the
 [legacy setup reference](setup.md),
 [legacy troubleshooting reference](troubleshooting.md), and
 [legacy Windows checklist](windows-verification.md); none of those documents
