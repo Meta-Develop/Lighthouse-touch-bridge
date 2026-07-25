@@ -1,4 +1,7 @@
 using System.Numerics;
+using Ltb.App;
+using Ltb.Core;
+using Ltb.Protocol;
 
 namespace Ltb.Gui;
 
@@ -19,19 +22,6 @@ public enum MountAdjustmentCalibrationTarget
     Left = 0,
     Right,
     Both,
-}
-
-/// <summary>
-/// Read-only tracker neutralization phase reported by the application.
-/// </summary>
-public enum MountAdjustmentNeutralizationPhase
-{
-    Inactive = 0,
-    Neutralizing,
-    Neutralized,
-    Restoring,
-    Restored,
-    RestoreFailed,
 }
 
 /// <summary>
@@ -87,11 +77,11 @@ public sealed record MountAdjustmentHandSnapshot(
 }
 
 public sealed record MountAdjustmentNeutralizationSnapshot(
-    MountAdjustmentNeutralizationPhase Phase,
+    InternalDriverTrackerNeutralizationState Phase,
     string Detail)
 {
     public static MountAdjustmentNeutralizationSnapshot Inactive { get; } =
-        new(MountAdjustmentNeutralizationPhase.Inactive, "Tracker output is not neutralized.");
+        new(InternalDriverTrackerNeutralizationState.Inactive, "Tracker output is not neutralized.");
 }
 
 public sealed record MountAdjustmentRestoreWarningUpdate(
@@ -109,8 +99,9 @@ public sealed record MountAdjustmentRestoreWarningUpdate(
 }
 
 /// <summary>
-/// Immutable app snapshot. Revision is monotonic for adjustment values.
-/// RestoreWarning uses explicit unchanged/clear/failure semantics.
+/// Immutable app snapshot. Revision is monotonic for adjustment values and
+/// availability retirement. RestoreWarning uses explicit
+/// unchanged/clear/failure semantics.
 /// </summary>
 public sealed record MountAdjustmentSnapshot(
     long Revision,
@@ -210,4 +201,271 @@ internal sealed class UnavailableMountAdjustmentPort : IMountAdjustmentPort
         Succeeded: false,
         "The application mount-adjustment adapter is unavailable.",
         MountAdjustmentSnapshot.Unavailable);
+}
+
+/// <summary>
+/// Concrete presentation adapter over the App-owned mount-adjustment control
+/// and tracker-neutralization evidence. The hot loop consumes only App/Core
+/// immutable state; GUI DTOs are constructed at this boundary.
+/// </summary>
+public sealed class AppMountAdjustmentPort : IMountAdjustmentPort
+{
+    private readonly object _sync = new();
+    private readonly object _publicationSync = new();
+    private IInternalDriverSession? _session;
+    private IInternalDriverMountAdjustmentControl? _control;
+    private MountAdjustmentSnapshot _snapshot = MountAdjustmentSnapshot.Unavailable;
+
+    public event EventHandler<MountAdjustmentSnapshot>? SnapshotChanged;
+
+    public MountAdjustmentSnapshot CurrentSnapshot
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _snapshot;
+            }
+        }
+    }
+
+    internal void Bind(IInternalDriverSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        MountAdjustmentSnapshot snapshot;
+        lock (_publicationSync)
+        {
+            lock (_sync)
+            {
+                Unsubscribe();
+                _session = session;
+                _control = session as IInternalDriverMountAdjustmentControl;
+                _session.SnapshotChanged += OnSessionSnapshotChanged;
+                if (_control is not null)
+                {
+                    _control.MountAdjustmentChanged += OnMountAdjustmentChanged;
+                }
+
+                snapshot = BuildSnapshot(
+                    _control?.CurrentMountAdjustment ??
+                        InternalDriverMountAdjustmentSnapshot.Unavailable,
+                    session.CurrentSnapshot,
+                    MountAdjustmentRestoreWarningUpdate.Unchanged);
+                _snapshot = snapshot;
+            }
+
+            PublishSnapshotChanged(snapshot);
+        }
+    }
+
+    public async ValueTask<MountAdjustmentPortResult> ApplyLiveAsync(
+        MountAdjustmentLiveApplyRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var control = RequireControl();
+        var result = await control.ApplyMountAdjustmentAsync(
+            request.Revision,
+            ToProtocolHand(request.Hand),
+            ToCore(request.Adjustments),
+            cancellationToken).ConfigureAwait(false);
+        return Present(result);
+    }
+
+    public async ValueTask<MountAdjustmentPortResult> SaveAsync(
+        MountAdjustmentSaveRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var control = RequireControl();
+        var result = await control.SaveMountAdjustmentsAsync(
+            request.Revision,
+            ToCore(request.Left),
+            ToCore(request.Right),
+            cancellationToken).ConfigureAwait(false);
+        return Present(result);
+    }
+
+    public ValueTask RequestCalibrationAsync(
+        MountAdjustmentCalibrationTarget target,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.FromException(new InvalidOperationException(
+            "Calibration requests are sequenced by the stopped GUI session factory."));
+
+    private MountAdjustmentPortResult Present(
+        InternalDriverMountAdjustmentResult result)
+    {
+        MountAdjustmentSnapshot snapshot;
+        lock (_publicationSync)
+        {
+            lock (_sync)
+            {
+                var candidate = BuildSnapshot(
+                    result.Snapshot,
+                    _session?.CurrentSnapshot
+                        ?? throw new InvalidOperationException(
+                            "No App session is bound to the mount-adjustment adapter."),
+                    _snapshot.RestoreWarning);
+                snapshot = candidate.Revision < _snapshot.Revision ||
+                    (candidate.Revision == _snapshot.Revision &&
+                     !_snapshot.IsAvailable &&
+                     candidate.IsAvailable)
+                    ? _snapshot
+                    : candidate;
+                _snapshot = snapshot;
+            }
+        }
+
+        return new MountAdjustmentPortResult(
+            result.AcknowledgedRevision,
+            result.Succeeded,
+            result.Diagnostic,
+            snapshot);
+    }
+
+    private IInternalDriverMountAdjustmentControl RequireControl()
+    {
+        lock (_sync)
+        {
+            return _control
+                ?? throw new InvalidOperationException(
+                    "The active App session does not expose mount-adjustment control.");
+        }
+    }
+
+    private void OnMountAdjustmentChanged(
+        object? sender,
+        InternalDriverMountAdjustmentSnapshot adjustment)
+    {
+        MountAdjustmentSnapshot snapshot;
+        lock (_publicationSync)
+        {
+            lock (_sync)
+            {
+                snapshot = BuildSnapshot(
+                    adjustment,
+                    _session?.CurrentSnapshot
+                        ?? throw new InvalidOperationException(
+                            "No App session is bound to the mount-adjustment adapter."),
+                    _snapshot.RestoreWarning);
+                _snapshot = snapshot;
+            }
+
+            PublishSnapshotChanged(snapshot);
+        }
+    }
+
+    private void OnSessionSnapshotChanged(
+        object? sender,
+        InternalDriverSessionSnapshot session)
+    {
+        MountAdjustmentSnapshot snapshot;
+        lock (_publicationSync)
+        {
+            lock (_sync)
+            {
+                var warning = session.TrackerNeutralization?.State switch
+                {
+                    InternalDriverTrackerNeutralizationState.RestoreFailed =>
+                        MountAdjustmentRestoreWarningUpdate.Failure(
+                            session.TrackerNeutralization.Diagnostic),
+                    InternalDriverTrackerNeutralizationState.Recovered or
+                    InternalDriverTrackerNeutralizationState.Restored =>
+                        MountAdjustmentRestoreWarningUpdate.Clear,
+                    _ => MountAdjustmentRestoreWarningUpdate.Unchanged,
+                };
+                snapshot = BuildSnapshot(
+                    _control?.CurrentMountAdjustment ??
+                        InternalDriverMountAdjustmentSnapshot.Unavailable,
+                    session,
+                    warning);
+                _snapshot = snapshot;
+            }
+
+            PublishSnapshotChanged(snapshot);
+        }
+    }
+
+    private void PublishSnapshotChanged(MountAdjustmentSnapshot snapshot)
+    {
+        var handlers = SnapshotChanged;
+        if (handlers is null)
+        {
+            return;
+        }
+
+        foreach (EventHandler<MountAdjustmentSnapshot> handler
+                 in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, snapshot);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // Presentation observers cannot break adapter publication
+                // ordering or turn an App operation into a reported failure.
+            }
+        }
+    }
+
+    private void Unsubscribe()
+    {
+        if (_session is not null)
+        {
+            _session.SnapshotChanged -= OnSessionSnapshotChanged;
+        }
+
+        if (_control is not null)
+        {
+            _control.MountAdjustmentChanged -= OnMountAdjustmentChanged;
+        }
+    }
+
+    private static MountAdjustmentSnapshot BuildSnapshot(
+        InternalDriverMountAdjustmentSnapshot adjustment,
+        InternalDriverSessionSnapshot session,
+        MountAdjustmentRestoreWarningUpdate warning)
+    {
+        var neutralization = session.TrackerNeutralization;
+        return new MountAdjustmentSnapshot(
+            adjustment.Revision,
+            adjustment.IsAvailable,
+            ToGui(adjustment.Left),
+            ToGui(adjustment.Right),
+            neutralization is null
+                ? MountAdjustmentNeutralizationSnapshot.Inactive
+                : new MountAdjustmentNeutralizationSnapshot(
+                    neutralization.State,
+                    neutralization.Diagnostic),
+            warning);
+    }
+
+    private static MountAdjustmentHandSnapshot ToGui(
+        InternalDriverMountAdjustmentHandSnapshot hand) => new(
+        ToGui(hand.BaseMount),
+        ToGui(hand.AppliedAdjustments),
+        ToGui(hand.SavedAdjustments),
+        ToGui(hand.EffectiveMount));
+
+    private static MountAdjustmentPair ToGui(MountAdjustment adjustment) => new(
+        ToGui(adjustment.TrackerSideAdjustment),
+        ToGui(adjustment.ControllerSideAdjustment));
+
+    private static MountAdjustmentTransform ToGui(RigidTransform transform) => new(
+        transform.TranslationMeters,
+        transform.Rotation);
+
+    private static MountAdjustment ToCore(MountAdjustmentPair pair) => new(
+        ToCore(pair.TrackerSide),
+        ToCore(pair.ControllerSide));
+
+    private static RigidTransform ToCore(MountAdjustmentTransform transform) =>
+        new(transform.RotationXyzw, transform.TranslationMeters);
+
+    private static ProtocolHand ToProtocolHand(MountAdjustmentHand hand) =>
+        hand switch
+        {
+            MountAdjustmentHand.Left => ProtocolHand.Left,
+            MountAdjustmentHand.Right => ProtocolHand.Right,
+            _ => throw new ArgumentOutOfRangeException(nameof(hand)),
+        };
 }

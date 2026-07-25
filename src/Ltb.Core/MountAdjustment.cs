@@ -14,6 +14,8 @@ namespace Ltb.Core;
 /// </remarks>
 public sealed record MountAdjustment
 {
+    public const float MaximumTranslationMeters = 0.5f;
+
     /// <summary>
     /// Creates an identity adjustment. Applying it leaves
     /// <c>X_mount</c> unchanged.
@@ -56,6 +58,13 @@ public sealed record MountAdjustment
                 nameof(controllerSideAdjustment));
         }
 
+        RequireBoundedTranslation(
+            trackerSideAdjustment,
+            nameof(trackerSideAdjustment));
+        RequireBoundedTranslation(
+            controllerSideAdjustment,
+            nameof(controllerSideAdjustment));
+
         TrackerSideAdjustment = trackerSideAdjustment;
         ControllerSideAdjustment = controllerSideAdjustment;
     }
@@ -90,4 +99,18 @@ public sealed record MountAdjustment
         TrackerSideAdjustment *
         trackerFromControllerMount *
         ControllerSideAdjustment;
+
+    private static void RequireBoundedTranslation(
+        RigidTransform adjustment,
+        string parameterName)
+    {
+        var magnitude = adjustment.TranslationMeters.Length();
+        if (!float.IsFinite(magnitude) || magnitude > MaximumTranslationMeters)
+        {
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                $"Mount-adjustment translation magnitude must be at most " +
+                $"{MaximumTranslationMeters} meters per slot.");
+        }
+    }
 }

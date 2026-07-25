@@ -523,8 +523,6 @@ internal static class ProfileValidation
 {
     internal const float MaximumQuaternionNormError = 0.00025f;
 
-    internal const double MaximumMountAdjustmentTranslationMeters = 0.5d;
-
     internal static string RequireText(string value, string parameterName)
     {
         ArgumentNullException.ThrowIfNull(value, parameterName);
@@ -636,12 +634,12 @@ internal static class ProfileValidation
         var translation = value.TranslationMeters;
         var magnitude = translation.Length();
         if (!float.IsFinite(magnitude) ||
-            magnitude > (float)MaximumMountAdjustmentTranslationMeters)
+            magnitude > MountAdjustment.MaximumTranslationMeters)
         {
             throw new ArgumentOutOfRangeException(
                 parameterName,
                 $"{description} translation magnitude must be at most " +
-                $"{MaximumMountAdjustmentTranslationMeters} meters.");
+                $"{MountAdjustment.MaximumTranslationMeters} meters.");
         }
     }
 }

@@ -83,9 +83,16 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             mountAdjustmentPort ?? UnavailableMountAdjustmentPort.Instance,
             _dispatch,
             _ => CanCalibrate,
-            target => target == MountAdjustmentCalibrationTarget.Both
-                ? StartSessionAsync(InternalDriverSessionIntent.Calibrate)
-                : Task.CompletedTask);
+            target => StartSessionAsync(target switch
+            {
+                MountAdjustmentCalibrationTarget.Left =>
+                    InternalDriverSessionIntent.CalibrateLeft,
+                MountAdjustmentCalibrationTarget.Right =>
+                    InternalDriverSessionIntent.CalibrateRight,
+                MountAdjustmentCalibrationTarget.Both =>
+                    InternalDriverSessionIntent.Calibrate,
+                _ => throw new ArgumentOutOfRangeException(nameof(target)),
+            }));
         ActionCommand = new RelayCommand(
             () => _ = ToggleAsync(),
             () => CanToggle);

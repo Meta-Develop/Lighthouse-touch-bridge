@@ -41,18 +41,21 @@ invisible LibOVR PC session to read Touch state. The Quest headset and its
 controllers never register as SteamVR devices, and the Quest never becomes a
 SteamVR HMD. Bigscreen Beyond remains the sole SteamVR HMD.
 
-The runtime pose for each hand is
+The effective mount and runtime pose for each hand are
 
 ```text
-T_output(t) = T_tracker(t) · X_mount
+X_eff = A_tracker · X_mount · A_controller
+T_output(t) = T_tracker(t) · X_eff
 ```
 
 where `T_tracker` is sampled in OpenVR
-`TrackingUniverseRawAndUncalibrated` space and `X_mount` is the calibrated
-tracker-from-controller mount transform. `Ltb.App` composes the transform in
-C# and sends the already-composed pose and complete Touch input state through
-a versioned, same-user Windows named pipe. The first-party native SteamVR
-driver `driver_ltb` consumes that feed and publishes the two controllers.
+`TrackingUniverseRawAndUncalibrated` space, `X_mount` is the calibrated
+tracker-from-controller base transform, and `A_tracker` and `A_controller` are
+the tracker-side and controller-side mount adjustments. `Ltb.App` composes
+`X_eff` in C# and sends the already-composed pose and complete Touch input state
+through a versioned, same-user Windows named pipe. The first-party native
+SteamVR driver `driver_ltb` consumes that feed and publishes the two
+controllers.
 
 LTB supports three calibration policies:
 
@@ -582,7 +585,7 @@ For each hand, `Ltb.App` owns one effective tracker-from-controller mount
 source. The control plane validates a complete `RigidTransform` and atomically
 swaps one immutable reference. The publication hot loop performs one lock-free,
 allocation-free reference read per hand and uses that exact snapshot for both
-`T_tracker · X_mount` pose composition and the angular-velocity lever-arm
+`T_tracker · X_eff` pose composition and the angular-velocity lever-arm
 correction. No component-wise mutable transform is exposed, so a live update
 cannot publish a torn rotation/translation pair or mix pose and velocity from
 different mount generations.
@@ -793,17 +796,27 @@ explicitly labeled a software lower bound: it excludes device acquisition,
 SteamVR/compositor, display, and motion-to-photon latency and shall not be
 represented as real-time hardware acceptance.
 
-When the runtime supplies the provisional tracker-path control capability,
-`Ltb.App` shall capture and neutralize exactly the two selected physical
+The production tracker-path control capability shall make `Ltb.App` capture
+and neutralize exactly the two selected physical
 tracker device paths before entering `Active`. The backend operation must be
-atomic or self-rollback and retain a durable recovery snapshot. App lifecycle
+atomic or self-rollback and retain a durable recovery receipt before mutation.
+The receipt shall bind the exact settings path, original file hash,
+transaction-owned neutral post-image hash, two registered device paths,
+pre-existing backup set, and exact owned backup once known. App lifecycle
 evidence shall include the exact stable serial/path pair, opaque snapshot
 identity, neutralizing/active/restoring/restored state, and restore failures.
 Stop, window close, cancellation, failure, Meta/driver recovery, and detected
 stable-serial/device-path churn restore the exact captured state before a new
-neutralization attempt. A restore failure is a fail-closed diagnostic and
-blocks a clean success claim. The final OpenVR/settings implementation of this
-capability and its Windows behavior remain section 23 gates.
+neutralization attempt. Later startup shall process the receipt first through
+the settings backend's `FindRecoveryBackups` boundary. Automatic recovery may
+replace settings only while the current bytes equal the transaction-owned
+post-image and exactly one owned backup matches the original; otherwise it
+shall preserve any external writer and retain a visible restore-failure
+warning. Settings already restored to the original may safely clear a receipt
+left by a crash between restore and receipt deletion. The exact registered
+paths shall come from current runtime descriptors and shall never be guessed
+from serials. A restore failure blocks a clean success claim. Windows behavior
+remains a section 23 gate.
 
 ---
 
@@ -814,7 +827,7 @@ and mount identity where available. Example:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "profile_name": "Quest 2 Touch + Vive Tracker mount A",
   "hand": "left",
   "controller_runtime": "meta_link_libovr",
@@ -827,6 +840,16 @@ and mount identity where available. Example:
   "tracker_to_controller": {
     "translation_m": [0.014, -0.052, 0.031],
     "rotation_xyzw": [0.012, -0.704, 0.019, 0.710]
+  },
+  "mount_adjustment": {
+    "tracker_side": {
+      "translation_m": [0.0, 0.0, 0.0],
+      "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+    },
+    "controller_side": {
+      "translation_m": [0.0, 0.0, 0.0],
+      "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+    }
   },
   "estimated_lag_ms": 11.5,
   "quality": {
@@ -842,7 +865,18 @@ and mount identity where available. Example:
 
 UTC is allowed for human-facing profile provenance only; runtime alignment and
 freshness use monotonic time. Rotation-only profiles store zero translation and
-the reason translation was not selected. Schema migration shall be explicit
+the reason translation was not selected. Each schema-3 adjustment slot shall
+contain finite values, a normalized quaternion, and translation magnitude no
+greater than `0.5 m`. The effective runtime mount is exactly
+`X_eff = A_tracker · X_mount · A_controller`.
+
+A structurally valid first-party schema-2 profile remains reusable with
+identity adjustments. Ordinary Start shall expose schema-2 evidence, use
+`X_eff = X_mount`, skip capture, and leave canonical bytes unchanged. Only an
+explicit mount-adjustment Save or selected recalibration shall write schema 3;
+Save shall compare both loaded source profiles before one atomic replacement
+and shall not alter App snapshot/hot-loop state if persistence fails. Schema
+migration shall otherwise be explicit
 and reversible; target code shall not silently relabel an `ALVR` profile as a
 Meta Link profile because its source timing and controller identity contracts
 differ.
@@ -880,8 +914,8 @@ requested concurrently.
 6. Open the invisible Meta session and show per-runtime and per-hand readiness.
 7. Discover connected physical Lighthouse trackers by stable identity. Reuse
    selects the saved controller-mounted pair from additional raw trackers; a
-   new association/calibration capture scores all candidates and accepts only a
-   unique distinct left/right pair.
+    new association/calibration capture scores all candidates and accepts only a
+    unique distinct left/right pair.
 8. Ask the user to keep the Touch controllers observable by Quest cameras when
    full 6DoF is desired.
 9. For a both-hand request, guide separate left and right pitch, yaw, roll, and
@@ -896,6 +930,16 @@ requested concurrently.
 Every missing dependency or readiness failure shall include a direct manual
 remediation. The user shall not need to edit JSON, driver paths, transforms,
 quaternions, or device indexes.
+
+The desktop mount-adjustment surface shall remain usable at the supported
+minimum window size by pinning primary actions and scrolling the detailed
+evidence surface. It shall edit each hand and composition slot in millimeters
+and degrees, use intrinsic local `X`, then `Y`, then `Z` with
+`q = Qx · Qy · Qz`, clamp or reject invalid input safely, reset individual
+slots, display the App-authoritative effective transform, apply edits live,
+persist only on **Save**, and retain visible dirty state across unrelated
+same-revision lifecycle events. Stopped-state actions shall route left-only,
+right-only, and both-hand calibration intents end to end.
 
 ### 20.2 Later runs
 
@@ -940,7 +984,8 @@ a both-hand replacement.
 - serial-based association, monotonic clock mapping, residual-lag estimation,
   rotation-only and full-6DoF calibration, Auto selection, and held-out quality
   reporting;
-- C# composition of `T_output = T_tracker · X_mount`;
+- C# composition of
+  `T_output = T_tracker · (A_tracker · X_mount · A_controller)`;
 - versioned same-user named-pipe IPC, session ordering, heartbeat, reconnect,
   500 ms watchdog, and neutral fail-safe behavior;
 - transactional driver registration and rollback;
@@ -1054,7 +1099,13 @@ run build and test coverage for:
 - atomic rejection, session rollover, heartbeat, 500 ms timeout,
   neutralization, reconnect, and fake-pipe failures; and
 - coordinate axes, quaternion order, raw-driver-space pose, zero translation,
-  full translation under rotation, and `T_tracker · X_mount` composition.
+  full translation under rotation, mount-adjustment slot validation,
+  single-snapshot pose/lever-arm velocity, schema-2 identity reuse, and
+  `T_tracker · (A_tracker · X_mount · A_controller)` composition;
+- exact-path tracker-role neutralization, durable owned-backup recovery,
+  external-writer refusal, and already-restored receipt cleanup; and
+- left-only/right-only staged replacement, unrelated-record preservation, and
+  cancellation-versus-commit linearization.
 
 ### 23.2 Native portable tests
 
@@ -1084,7 +1135,12 @@ Windows CI or a controlled Windows test host shall additionally prove:
   driver preservation, rollback, removal, and restoration of
   `activateMultipleDrivers`; and
 - SteamVR loading the intended `driver_ltb` binary and exposing exactly two
-  correctly profiled controller roles with no HMD or extra device.
+  correctly profiled controller roles with no HMD or extra device;
+- the exact two associated physical tracker registered paths becoming
+  `TrackerRole_None` only during activation, with no serial-derived path
+  guesses and no unrelated role changes; and
+- Stop, window close, activation failure, crash recovery, and restore-failure
+  warning behavior for the tracker-role transaction.
 
 ### 23.4 Windows Meta/SteamVR hardware exit gates
 
@@ -1103,8 +1159,15 @@ cannot be replaced by Linux fakes:
 - record, replay, calibrate, and validate rotation-only and full-6DoF mounts at
   varied offsets, orientations, motion rates, and partial Quest occlusion;
 - verify static alignment, rapid pitch/yaw/roll, in-place wrist rotation,
-  aiming/tool alignment, complete supported inputs, repeated startup, profile
-  reuse after reboot, and remount/recalibration behavior;
+  aiming/tool alignment, complete supported inputs, live mount-trim pose and
+  lever-arm velocity, Save/restart persistence, repeated startup, schema-2
+  identity reuse, and remount/recalibration behavior;
+- prove VRChat no longer consumes the two role-neutralized physical trackers
+  while the LTB controllers remain available, then prove exact role restore on
+  Stop/window close/failure/crash and a visible warning on forced restore
+  failure;
+- complete left-only and right-only calibration while proving the retained
+  opposite profile and unrelated serialized objects remain unchanged;
 - verify `driver_ltb` pose/input timing, left/right role and profile bindings,
   no haptic capability, absent battery, reconnect session rollover, tracker
   loss, Meta loss, pipe loss, 500 ms stale transition, and neutral recovery;
@@ -1192,8 +1255,11 @@ The target release is complete only when a Windows user can:
 7. Receive a held-out validated rotation solution for each hand.
 8. Receive full translation when Meta position and motion make it observable,
    or a reasoned rotation-only fallback when they do not.
-9. Publish `T_output = T_tracker · X_mount` from C# in raw driver space through
-   IPC v1 and use supported Touch inputs with the tracker-derived pose.
+9. Publish
+   `T_output = T_tracker · (A_tracker · X_mount · A_controller)` from C# in
+   raw driver space through IPC v1, using one immutable effective snapshot for
+   pose and lever-arm velocity, and use supported Touch inputs with the
+   tracker-derived pose.
 10. Restart and reconnect through new sessions while preserving matching
     profiles and monotonic ordering.
 11. Lose a tracker, Meta runtime, pipe, or producer without a frozen hand: by

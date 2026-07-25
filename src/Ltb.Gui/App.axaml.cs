@@ -17,9 +17,11 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            var mountAdjustmentPort = new AppMountAdjustmentPort();
             var viewModel = new InternalDriverViewModel(
-                new InternalDriverSessionFactory(),
-                action => Dispatcher.UIThread.Post(action));
+                new InternalDriverSessionFactory(mountAdjustmentPort),
+                action => Dispatcher.UIThread.Post(action),
+                mountAdjustmentPort: mountAdjustmentPort);
             var window = new MainWindow
             {
                 DataContext = viewModel,

@@ -74,7 +74,9 @@ internal sealed record InternalDriverResolvedPaths(
     string StructuredLogPath,
     string DriverReceiptStorePath);
 
-internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSessionRuntime
+internal sealed class ProductionInternalDriverSessionRuntime :
+    IInternalDriverSessionRuntime,
+    IInternalDriverTrackerNeutralizationRuntime
 {
     private const string ControllerModel = "Quest 2 Touch";
     private static readonly TimeSpan CaptureProgressInterval = TimeSpan.FromMilliseconds(250);
@@ -82,6 +84,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
     private readonly InternalDriverResolvedPaths _paths;
     private readonly ISteamVrDriverLifecycle _driverLifecycle;
     private readonly InternalDriverTrackerBatchSampler _trackerBatchSampler;
+    private readonly IInternalDriverTrackerNeutralizationBackend _trackerNeutralizationBackend;
     private MetaLinkRuntime? _meta;
     private OpenVrSession? _openVr;
     private InternalDriverCaptureEvidence? _leftCaptureEvidence;
@@ -103,12 +106,23 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _driverLifecycle = driverLifecycle ?? throw new ArgumentNullException(nameof(driverLifecycle));
+        _trackerNeutralizationBackend = new SteamVrSettingsTrackerNeutralizationBackend(
+            _driverLifecycle,
+            Path.Combine(
+                Path.GetDirectoryName(_paths.DriverReceiptStorePath)
+                    ?? throw new ArgumentException(
+                        "The driver receipt store must have a parent directory.",
+                        nameof(paths)),
+                "tracker-role-recovery.json"));
         _trackerBatchSampler = new InternalDriverTrackerBatchSampler(
             devices => _openVr!.CreateTrackedPoseBatchSource(
                 devices,
                 OpenVrTrackingUniverse.RawAndUncalibrated,
                 predictionOffsetSeconds: 0d));
     }
+
+    public IInternalDriverTrackerNeutralizationBackend TrackerNeutralizationBackend =>
+        _trackerNeutralizationBackend;
 
     private static SteamVrDriverLifecycle CreateDefaultLifecycle(
         InternalDriverResolvedPaths paths)
@@ -295,7 +309,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             cancellationToken);
         progress(
             InternalDriverSessionState.SaveProfile,
-            "Both first-party results passed validation; exact schema-2 profiles were saved and reloaded.",
+            "Both first-party results passed validation; exact schema-3 profiles were saved and reloaded.",
             "Keep the physical tracker mounts fixed for profile reuse.");
         return profiles;
     }
@@ -366,7 +380,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
                     ? new InternalDriverProfilePair(selected, preserved)
                     : new InternalDriverProfilePair(preserved, selected);
             },
-            cancellationToken);
+            cancellationToken: cancellationToken);
         progress(
             InternalDriverSessionState.SaveProfile,
             $"The requested {metaHand} profile was atomically replaced; the opposite hand " +
@@ -406,19 +420,17 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             ? _options.PreviousLeftTrackerSerial
             : _options.PreviousRightTrackerSerial;
         var candidates = calibration.FindCandidateTrackerSerials(selectedMetaHand);
-        var replacedTrackerSerial = configuredPrevious ?? (candidates.Count == 1
-            ? candidates[0]
-            : null);
-        if (replacedTrackerSerial is null ||
-            !candidates.Contains(replacedTrackerSerial, StringComparer.Ordinal))
+        if (configuredPrevious is not null &&
+            !candidates.Contains(configuredPrevious, StringComparer.Ordinal))
         {
             throw new InvalidOperationException(
                 $"Selected-{selectedMetaHand.ToString().ToLowerInvariant()} calibration " +
-                "requires one unambiguous prior active serial/hand key to replace. " +
-                "The opposite reusable profile was preserved and no capture or canonical write began.");
+                $"was asked to replace prior tracker '{configuredPrevious}', but no profile " +
+                "with that exact selected-hand key exists. The opposite reusable profile " +
+                "was preserved and no capture or canonical write began.");
         }
 
-        return new SelectedHandCalibrationBase(preserved, replacedTrackerSerial);
+        return new SelectedHandCalibrationBase(preserved, configuredPrevious);
     }
 
     private static InternalDriverHandProfile FindSingleReusableHand(
@@ -467,6 +479,88 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         return new DriverFeed(new NamedPipeDriverTransportFactory());
     }
 
+    public InternalDriverProfilePair SaveMountAdjustments(
+        InternalDriverProfilePair profiles,
+        MountAdjustment left,
+        MountAdjustment right)
+    {
+        ArgumentNullException.ThrowIfNull(profiles);
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        if (!profiles.IsValid ||
+            profiles.Left.SourceProfile is not { } expectedLeft ||
+            profiles.Right.SourceProfile is not { } expectedRight)
+        {
+            throw new InvalidOperationException(
+                "Mount adjustments require an exact source profile pair.");
+        }
+
+        var store = CalibrationProfileFile.LoadStore(_paths.CalibrationProfileStorePath);
+        var currentLeft = RequireUnchangedSource(store, expectedLeft);
+        var currentRight = RequireUnchangedSource(store, expectedRight);
+        var updatedLeft = WithMountAdjustment(currentLeft, left);
+        var updatedRight = WithMountAdjustment(currentRight, right);
+        var updatedStore = store.Upsert(updatedLeft).Upsert(updatedRight);
+        // SaveStore's atomic replace is the persistence commit boundary. All
+        // serialization/source-CAS validation is complete before this call;
+        // do not add a post-commit reload that could report failure after the
+        // canonical bytes have already changed.
+        CalibrationProfileFile.SaveStore(_paths.CalibrationProfileStorePath, updatedStore);
+        return new InternalDriverProfilePair(
+            ToHandProfile(
+                ProtocolHand.Left,
+                updatedLeft,
+                profiles.Left.Readiness,
+                "Saved explicit left-hand mount adjustments."),
+            ToHandProfile(
+                ProtocolHand.Right,
+                updatedRight,
+                profiles.Right.Readiness,
+                "Saved explicit right-hand mount adjustments."));
+    }
+
+    private static CalibrationProfile RequireUnchangedSource(
+        CalibrationProfileStore store,
+        CalibrationProfile expected)
+    {
+        var current = store.FindCandidateProfile(expected.TrackerSerial, expected.Hand)
+            ?? throw new InvalidDataException(
+                $"The {expected.Hand} source profile disappeared before adjustment Save.");
+        if (!string.Equals(
+                CalibrationProfileJson.SerializeProfile(current),
+                CalibrationProfileJson.SerializeProfile(expected),
+                StringComparison.Ordinal))
+        {
+            throw new IOException(
+                $"The {expected.Hand} source profile changed after it was loaded; " +
+                "adjustment Save was refused.");
+        }
+
+        return current;
+    }
+
+    private static CalibrationProfile WithMountAdjustment(
+        CalibrationProfile source,
+        MountAdjustment adjustment) => new(
+        CalibrationProfileSchema.CurrentVersion,
+        source.ProfileName,
+        source.Hand,
+        source.ControllerRuntime,
+        source.ControllerModel,
+        source.ControllerIdentity,
+        source.TrackerSerial,
+        source.DriverProfile
+            ?? throw new InvalidDataException(
+                "First-party adjustment persistence requires a driver profile."),
+        source.CalibrationPolicy,
+        source.SelectedMode,
+        source.SelectionReason,
+        source.TrackerToController,
+        adjustment,
+        source.EstimatedLagMilliseconds,
+        source.Quality,
+        source.CreatedUtc);
+
     public void ResetMeta()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -502,6 +596,10 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         }
 
         await StopRunAsync(CancellationToken.None).ConfigureAwait(false);
+        if (_trackerNeutralizationBackend is IDisposable disposableNeutralization)
+        {
+            disposableNeutralization.Dispose();
+        }
         _driverLifecycle.Dispose();
         _disposed = true;
     }
@@ -866,6 +964,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         string profileStorePath,
         MetaLinkHand hand,
         Func<string, TResult> stageCalibration,
+        Action? commitStarted = null,
         CancellationToken cancellationToken = default)
     {
         if (hand is not MetaLinkHand.Left and not MetaLinkHand.Right)
@@ -877,14 +976,16 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             profileStorePath,
             $"{hand.ToString().ToLowerInvariant()}-hand-calibration",
             stageCalibration,
-            cancellationToken);
+            cancellationToken,
+            commitStarted);
     }
 
     private static TResult RunProfileStoreTransaction<TResult>(
         string profileStorePath,
         string stageLabel,
         Func<string, TResult> stageCalibration,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? commitStarted = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileStorePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(stageLabel);
@@ -915,6 +1016,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             cancellationToken.ThrowIfCancellationRequested();
             return commitGate.Commit(() =>
             {
+                commitStarted?.Invoke();
                 CalibrationProfileFile.SaveStore(canonicalPath, completedStore);
                 _ = CalibrationProfileFile.LoadStore(canonicalPath);
                 return result;
@@ -941,19 +1043,23 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
         diagnostic)
     {
         Calibration = ToCalibrationEvidence(profile),
+        MountAdjustment = profile.MountAdjustment,
+        SourceProfile = profile,
     };
 
     internal static InternalDriverCalibrationEvidence ToCalibrationEvidence(
         CalibrationProfile profile)
     {
-        if (profile.SchemaVersion != CalibrationProfileSchema.CurrentVersion ||
+        if (profile.SchemaVersion is not
+                CalibrationProfileSchema.DriverProfileVersion and not
+                CalibrationProfileSchema.CurrentVersion ||
             !string.Equals(
                 profile.DriverProfile,
                 CalibrationDriverProfiles.LtbTouch,
                 StringComparison.Ordinal))
         {
             throw new InvalidDataException(
-                "First-party session evidence requires an exact schema-2 ltb_touch profile.");
+                "First-party session evidence requires a reusable schema-2 or schema-3 ltb_touch profile.");
         }
 
         var selectedMode = profile.SelectedMode switch
@@ -1034,7 +1140,7 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
 
     internal sealed record SelectedHandCalibrationBase(
         InternalDriverHandProfile PreservedOpposite,
-        string ReplacedTrackerSerial);
+        string? ReplacedTrackerSerial);
 }
 
 internal enum InternalDriverSettingsPreparationStatus

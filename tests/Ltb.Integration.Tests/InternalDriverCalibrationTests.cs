@@ -129,26 +129,38 @@ public sealed class InternalDriverCalibrationTests
         {
             CalibrationProfileFile.SaveStore(
                 profilePath,
-                new CalibrationProfileStore([Profile()]));
+                new CalibrationProfileStore(
+                    [Profile(schemaVersion: CalibrationProfileSchema.DriverProfileVersion)]));
+            var originalBytes = File.ReadAllBytes(profilePath);
             var calibration = new InternalDriverCalibration(profilePath);
 
             var lookup = calibration.FindReusableProfile(Context());
 
             Assert.True(lookup.CanReuse, lookup.Diagnostic);
             Assert.NotNull(lookup.Profile);
-            Assert.Equal(CalibrationProfileSchema.CurrentVersion, lookup.Profile.SchemaVersion);
+            Assert.Equal(
+                CalibrationProfileSchema.DriverProfileVersion,
+                lookup.Profile.SchemaVersion);
             Assert.Equal(CalibrationDriverProfiles.LtbTouch, lookup.Profile.DriverProfile);
             Assert.Equal(ControllerRuntimeIdentities.MetaLinkLibOvr, lookup.Profile.ControllerRuntime);
             Assert.Null(lookup.Profile.ControllerIdentity);
+            Assert.Equal(MountAdjustment.Identity, lookup.Profile.MountAdjustment);
+            Assert.Equal(
+                lookup.Profile.TrackerToController.ToRigidTransform(),
+                lookup.Profile.MountAdjustment.ApplyTo(
+                    lookup.Profile.TrackerToController.ToRigidTransform()));
             Assert.False(lookup.Recalibration!.IsRequired);
             var evidence = ProductionInternalDriverSessionRuntime.ToCalibrationEvidence(
                 lookup.Profile);
-            Assert.Equal(CalibrationProfileSchema.CurrentVersion, evidence.SchemaVersion);
+            Assert.Equal(
+                CalibrationProfileSchema.DriverProfileVersion,
+                evidence.SchemaVersion);
             Assert.Equal(InternalDriverCalibrationMode.RotationOnly, evidence.SelectedMode);
             Assert.Equal(1d, evidence.Quality.RotationRmsDegrees);
             Assert.Null(evidence.Quality.PositionRmsMillimeters);
             Assert.Null(evidence.Quality.TranslationConditionNumber);
             Assert.Equal(0.95d, evidence.Quality.InlierRatio);
+            Assert.Equal(originalBytes, File.ReadAllBytes(profilePath));
         });
     }
 
@@ -1156,8 +1168,9 @@ public sealed class InternalDriverCalibrationTests
         ControllerHand hand = ControllerHand.Left,
         string trackerSerial = "LHR-LEFT",
         string? profileName = null,
-        DateTimeOffset? createdUtc = null) => new(
-        CalibrationProfileSchema.CurrentVersion,
+        DateTimeOffset? createdUtc = null,
+        int schemaVersion = CalibrationProfileSchema.CurrentVersion) => new(
+        schemaVersion,
         profileName ?? $"Synthetic internal-driver {hand} profile",
         hand,
         controllerRuntime,

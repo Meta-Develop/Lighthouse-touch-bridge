@@ -138,6 +138,12 @@ public sealed class CoordinateConventionTests
             () => CoordinateConventions.ComposeEffectiveMount(
                 RigidTransform.Identity,
                 null!));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new MountAdjustment(
+                new RigidTransform(
+                    Quaternion.Identity,
+                    new Vector3(MountAdjustment.MaximumTranslationMeters + 0.001f, 0f, 0f)),
+                RigidTransform.Identity));
     }
 
     [Fact]

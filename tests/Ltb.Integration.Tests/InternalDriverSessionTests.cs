@@ -279,6 +279,190 @@ public sealed class InternalDriverSessionTests
     }
 
     [Fact]
+    public async Task PersistedSchemaThreeAdjustmentInitializesLiveEffectiveMountAndSavesExplicitly()
+    {
+        var initialLeft = new MountAdjustment(
+            new RigidTransform(Quaternion.Identity, new Vector3(0.01f, 0f, 0f)),
+            new RigidTransform(Quaternion.Identity, new Vector3(0.02f, 0f, 0f)));
+        var runtime = new FakeRuntime(ReadyObservation())
+        {
+            InitialLeftMountAdjustment = initialLeft,
+        };
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+        var run = session.RunAsync();
+        await output.WaitForStateAsync(
+            InternalDriverSessionState.Active,
+            TimeSpan.FromSeconds(2));
+        var control = Assert.IsAssignableFrom<IInternalDriverMountAdjustmentControl>(session);
+
+        var loaded = control.CurrentMountAdjustment;
+        Assert.True(loaded.IsAvailable);
+        Assert.Equal(initialLeft, loaded.Left.AppliedAdjustments);
+        Assert.Equal(initialLeft, loaded.Left.SavedAdjustments);
+        Assert.Equal(
+            new Vector3(0.13f, 0f, 0f),
+            loaded.Left.EffectiveMount.TranslationMeters);
+
+        var liveLeft = new MountAdjustment(
+            new RigidTransform(Quaternion.Identity, new Vector3(0.03f, 0f, 0f)),
+            new RigidTransform(Quaternion.Identity, new Vector3(0.02f, 0f, 0f)));
+        var applied = await control.ApplyMountAdjustmentAsync(
+            loaded.Revision + 1,
+            ProtocolHand.Left,
+            liveLeft);
+        Assert.True(applied.Succeeded, applied.Diagnostic);
+        Assert.Equal(0, runtime.SaveMountAdjustmentsCount);
+        Assert.Equal(
+            0.15f,
+            applied.Snapshot.Left.EffectiveMount.TranslationMeters.X,
+            5);
+        Assert.Equal(
+            0f,
+            applied.Snapshot.Left.EffectiveMount.TranslationMeters.Y,
+            5);
+        Assert.Equal(
+            0f,
+            applied.Snapshot.Left.EffectiveMount.TranslationMeters.Z,
+            5);
+        Assert.Equal(initialLeft, applied.Snapshot.Left.SavedAdjustments);
+
+        var saved = await control.SaveMountAdjustmentsAsync(
+            applied.Snapshot.Revision + 1,
+            liveLeft,
+            MountAdjustment.Identity);
+        Assert.True(saved.Succeeded, saved.Diagnostic);
+        Assert.Equal(1, runtime.SaveMountAdjustmentsCount);
+        Assert.Equal(liveLeft, saved.Snapshot.Left.SavedAdjustments);
+
+        await session.StopAsync();
+        await run;
+    }
+
+    [Fact]
+    public async Task MountAdjustmentPersistenceFailureDoesNotTearLiveOrSavedSnapshot()
+    {
+        var runtime = new FakeRuntime(ReadyObservation());
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+        var run = session.RunAsync();
+        await output.WaitForStateAsync(
+            InternalDriverSessionState.Active,
+            TimeSpan.FromSeconds(2));
+        var control = Assert.IsAssignableFrom<IInternalDriverMountAdjustmentControl>(session);
+        var liveLeft = new MountAdjustment(
+            new RigidTransform(Quaternion.Identity, new Vector3(0.04f, 0f, 0f)),
+            RigidTransform.Identity);
+        var applied = await control.ApplyMountAdjustmentAsync(
+            control.CurrentMountAdjustment.Revision + 1,
+            ProtocolHand.Left,
+            liveLeft);
+        var beforeFailure = applied.Snapshot;
+        runtime.SaveMountAdjustmentsFailure =
+            new IOException("scripted profile persistence failure");
+
+        var exception = await Assert.ThrowsAsync<IOException>(async () =>
+            await control.SaveMountAdjustmentsAsync(
+                beforeFailure.Revision + 1,
+                liveLeft,
+                MountAdjustment.Identity));
+
+        Assert.Equal("scripted profile persistence failure", exception.Message);
+        Assert.Equal(1, runtime.SaveMountAdjustmentsCount);
+        Assert.Equal(beforeFailure, control.CurrentMountAdjustment);
+        Assert.Equal(liveLeft, control.CurrentMountAdjustment.Left.AppliedAdjustments);
+        Assert.Equal(
+            MountAdjustment.Identity,
+            control.CurrentMountAdjustment.Left.SavedAdjustments);
+
+        await session.StopAsync();
+        await run;
+    }
+
+    [Fact]
+    public async Task ThrowingMountObserverDoesNotTurnPersistedSaveOrTeardownIntoFailure()
+    {
+        var runtime = new FakeRuntime(ReadyObservation());
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+        var run = session.RunAsync();
+        await output.WaitForStateAsync(
+            InternalDriverSessionState.Active,
+            TimeSpan.FromSeconds(2));
+        var control = Assert.IsAssignableFrom<IInternalDriverMountAdjustmentControl>(session);
+        InternalDriverMountAdjustmentSnapshot? laterObservation = null;
+        control.MountAdjustmentChanged += (_, _) =>
+            throw new InvalidOperationException("scripted early App observer failure");
+        control.MountAdjustmentChanged += (_, snapshot) => laterObservation = snapshot;
+        var revision = control.CurrentMountAdjustment.Revision + 1;
+
+        var saved = await control.SaveMountAdjustmentsAsync(
+            revision,
+            MountAdjustment.Identity,
+            MountAdjustment.Identity);
+
+        Assert.True(saved.Succeeded, saved.Diagnostic);
+        Assert.Equal(1, runtime.SaveMountAdjustmentsCount);
+        Assert.Same(saved.Snapshot, control.CurrentMountAdjustment);
+        Assert.Same(saved.Snapshot, laterObservation);
+
+        await session.StopAsync();
+        await run;
+
+        Assert.False(control.CurrentMountAdjustment.IsAvailable);
+        Assert.Same(control.CurrentMountAdjustment, laterObservation);
+    }
+
+    [Fact]
+    public async Task CleanupWaitsForInFlightAdjustmentSaveCommitBeforeRetiringSources()
+    {
+        using var saveRelease = new ManualResetEventSlim(initialState: false);
+        var saveEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new FakeRuntime(ReadyObservation())
+        {
+            SaveMountAdjustmentsEntered = saveEntered,
+            SaveMountAdjustmentsRelease = saveRelease,
+        };
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+        var run = session.RunAsync();
+        await output.WaitForStateAsync(
+            InternalDriverSessionState.Active,
+            TimeSpan.FromSeconds(2));
+        var control = Assert.IsAssignableFrom<IInternalDriverMountAdjustmentControl>(session);
+        var mountEvents = new ConcurrentQueue<InternalDriverMountAdjustmentSnapshot>();
+        control.MountAdjustmentChanged += (_, value) => mountEvents.Enqueue(value);
+        var snapshot = control.CurrentMountAdjustment;
+
+        var save = Task.Run(async () => await control.SaveMountAdjustmentsAsync(
+            snapshot.Revision + 1,
+            MountAdjustment.Identity,
+            MountAdjustment.Identity));
+        await saveEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var stop = session.StopAsync().AsTask();
+        await Task.Delay(25);
+        Assert.False(stop.IsCompleted);
+
+        saveRelease.Set();
+        var saved = await save.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(saved.Succeeded, saved.Diagnostic);
+        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        await run;
+
+        Assert.Equal(1, runtime.SaveMountAdjustmentsCount);
+        Assert.False(control.CurrentMountAdjustment.IsAvailable);
+        Assert.Equal(
+            saved.Snapshot.Revision + 1,
+            control.CurrentMountAdjustment.Revision);
+        var lastMountEvent = Assert.Single(mountEvents.Where(
+            value => !value.IsAvailable));
+        Assert.Same(control.CurrentMountAdjustment, lastMountEvent);
+        Assert.Same(lastMountEvent, mountEvents.ToArray()[^1]);
+        Assert.Equal(InternalDriverSessionState.Stopped, session.CurrentSnapshot.State);
+    }
+
+    [Fact]
     public async Task CleanupRestoreFailureOverridesEarlierRuntimeFaultDiagnostic()
     {
         var backend = new FakeTrackerNeutralizationBackend
@@ -330,6 +514,37 @@ public sealed class InternalDriverSessionTests
             transition.State == InternalDriverTrackerNeutralizationState.Neutralizing);
         Assert.Contains(transitions, transition =>
             transition.State == InternalDriverTrackerNeutralizationState.Restored);
+    }
+
+    [Fact]
+    public async Task ThrownStartupRecoveryPublishesPersistentRestoreFailureWarning()
+    {
+        var backend = new FakeTrackerNeutralizationBackend
+        {
+            RecoveryFailure = new IOException("settings file unreadable"),
+        };
+        var transitions = new List<InternalDriverTrackerNeutralizationSnapshot>();
+        var lifecycle = new InternalDriverTrackerNeutralizationLifecycle(
+            backend,
+            transitions.Add);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await lifecycle.RecoverAsync(CancellationToken.None));
+
+        Assert.IsType<IOException>(exception.InnerException);
+        Assert.Equal(
+            InternalDriverTrackerNeutralizationState.RestoreFailed,
+            lifecycle.Snapshot.State);
+        Assert.Contains(
+            "settings file unreadable",
+            lifecycle.Snapshot.Diagnostic,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "settings file unreadable",
+            lifecycle.Snapshot.RestoreFailures);
+        Assert.Equal(
+            InternalDriverTrackerNeutralizationState.RestoreFailed,
+            transitions[^1].State);
     }
 
     [Fact]
@@ -1336,6 +1551,18 @@ public sealed class InternalDriverSessionTests
 
         public bool ResolveAsCalibrated { get; set; }
 
+        public MountAdjustment InitialLeftMountAdjustment { get; set; } =
+            MountAdjustment.Identity;
+
+        public MountAdjustment InitialRightMountAdjustment { get; set; } =
+            MountAdjustment.Identity;
+
+        public Exception? SaveMountAdjustmentsFailure { get; set; }
+
+        public TaskCompletionSource? SaveMountAdjustmentsEntered { get; set; }
+
+        public ManualResetEventSlim? SaveMountAdjustmentsRelease { get; set; }
+
         public int? ObserveFailureAtCall { get; set; }
 
         public int ObserveCount { get; private set; }
@@ -1345,6 +1572,8 @@ public sealed class InternalDriverSessionTests
         public int ResetMetaCount { get; private set; }
 
         public int CreatedFeedCount { get; private set; }
+
+        public int SaveMountAdjustmentsCount { get; private set; }
 
         public int StopRunCount { get; private set; }
 
@@ -1450,6 +1679,7 @@ public sealed class InternalDriverSessionTests
                     Calibration = CalibrationEvidence(
                         ProtocolHand.Left,
                         ResolveAsCalibrated),
+                    MountAdjustment = InitialLeftMountAdjustment,
                 },
                 new InternalDriverHandProfile(
                     ProtocolHand.Right,
@@ -1461,7 +1691,34 @@ public sealed class InternalDriverSessionTests
                     Calibration = CalibrationEvidence(
                         ProtocolHand.Right,
                         ResolveAsCalibrated),
+                    MountAdjustment = InitialRightMountAdjustment,
                 }));
+        }
+
+        public InternalDriverProfilePair SaveMountAdjustments(
+            InternalDriverProfilePair profiles,
+            MountAdjustment left,
+            MountAdjustment right)
+        {
+            SaveMountAdjustmentsCount++;
+            SaveMountAdjustmentsEntered?.TrySetResult();
+            if (SaveMountAdjustmentsRelease is { } release &&
+                !release.Wait(TimeSpan.FromSeconds(2)))
+            {
+                throw new TimeoutException(
+                    "The test did not release the scripted mount-adjustment Save.");
+            }
+
+            if (SaveMountAdjustmentsFailure is not null)
+            {
+                throw SaveMountAdjustmentsFailure;
+            }
+
+            return profiles with
+            {
+                Left = profiles.Left with { MountAdjustment = left },
+                Right = profiles.Right with { MountAdjustment = right },
+            };
         }
 
         public IDriverFeed CreateFeed()
@@ -1555,6 +1812,8 @@ public sealed class InternalDriverSessionTests
 
         public Exception? RestoreFailure { get; init; }
 
+        public Exception? RecoveryFailure { get; init; }
+
         public int RestoreCount { get; private set; }
 
         public int RecoverCount { get; private set; }
@@ -1596,6 +1855,11 @@ public sealed class InternalDriverSessionTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             RecoverCount++;
+            if (RecoveryFailure is not null)
+            {
+                throw RecoveryFailure;
+            }
+
             return ValueTask.FromResult(
                 InternalDriverTrackerRecoveryResult.NothingToRecover);
         }

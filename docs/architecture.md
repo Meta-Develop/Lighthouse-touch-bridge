@@ -19,7 +19,8 @@ Meta PC runtime -- installed LibOVR, invisible session --> Ltb.MetaLink
 Lighthouse trackers ----------------------------------------> Ltb.App
                                                                |
                                                                | calibrate and compose
-                                                               | T_output = T_tracker * X_mount
+                                                               | X_eff = A_tracker * X_mount * A_controller
+                                                               | T_output = T_tracker * X_eff
                                                                v
                                               same-user local IPC
                                                                |
@@ -34,8 +35,9 @@ Lighthouse trackers ----------------------------------------> Ltb.App
 Quest Link. It opens an invisible session, samples Touch poses and full input
 state, maps timestamps into the application clock, and exposes project-owned
 runtime-neutral contracts. The application associates the Touch and tracker
-streams, runs calibration, and composes each final controller pose as
-`T_output = T_tracker * X_mount`.
+streams, runs calibration, applies the immutable per-hand mount-adjustment
+snapshot, and composes each final controller pose as
+`T_output = T_tracker * (A_tracker * X_mount * A_controller)`.
 
 The application sends the final pose and Touch input state over versioned,
 same-user local IPC. `driver_ltb` is intentionally thin: it exposes the two
@@ -57,6 +59,54 @@ Platform-specific code remains behind these narrow boundaries.
 UI, SteamVR, OpenVR, Meta Link, LibOVR, driver, and application dependencies.
 The detailed protocol, lifecycle, packaging, safety, and verification contract
 is documented in [Internal Drivers](internal-drivers.md).
+
+## Integrated mount, profile, and tracker-role lifecycle
+
+`Ltb.Core` owns the only mount-adjustment model. For each hand, the App derives
+the effective mount in this exact noncommutative order:
+
+```text
+X_eff = A_tracker * X_mount * A_controller
+T_output(t) = T_tracker(t) * X_eff
+```
+
+The hot loop reads one immutable effective-mount snapshot for both pose
+composition and the rotating lever-arm contribution to linear velocity.
+Consequently a live edit cannot mix an old pose transform with a new velocity
+transform. `Ltb.Gui` is only the presentation adapter: it edits translations
+in millimeters and intrinsic local `X`, then `Y`, then `Z` rotations in degrees
+using `q = Qx * Qy * Qz`, while App/Core state remains meters plus normalized
+`System.Numerics.Quaternion`. The main action header stays pinned and the
+evidence/adjustment surface scrolls at the supported minimum desktop size.
+
+Profile schema 3 persists the two adjustment slots. Each slot must contain
+finite values, a normalized quaternion, and no more than `0.5 m` translation
+magnitude. A valid schema-2 first-party profile remains directly reusable: it
+loads with identity adjustments, produces schema-2 runtime evidence, and is
+not rewritten or routed to calibration merely because schema 3 is current.
+Only an explicit adjustment **Save** or selected recalibration writes schema 3.
+Live adjustment edits change the effective mount immediately but retain
+visible dirty state and do not write the profile store.
+
+Before `Active`, the production App backend uses the exact registered device
+paths already observed for the associated left and right trackers. It
+atomically sets only those two `steamvr.vrsettings` tracker roles to
+`TrackerRole_None`; it never derives a path from a serial. The backend records
+a durable transaction receipt before mutation, restores on Stop, disposal,
+window close, activation failure, or runtime recovery, and processes a
+retained receipt before a later activation. Automatic crash recovery proceeds
+only when the current settings bytes match the transaction-owned post-image
+and an unambiguous owned backup matches the captured original; an external
+writer is preserved and reported as an explicit restore failure.
+
+Stopped-state calibration intent is explicit for left, right, or both hands.
+A selected-hand run needs one reusable opposite-hand profile but does not need
+a prior selected-hand profile. It scores all viable association contenders,
+stages the replacement, and atomically commits only the selected hand while
+preserving the opposite hand and unrelated serialized profile objects. The
+commit gate linearizes cancellation: cancellation before commit leaves the
+canonical bytes unchanged and removes stage residue, while a commit that has
+started completes successfully.
 
 ## Existing v0.1 architecture history
 

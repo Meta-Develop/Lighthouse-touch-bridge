@@ -87,8 +87,12 @@ controller-side slot applies it at the controller-local insertion point. The
 adapter passes the quaternion through `RigidTransform` for the core's finite
 value checks and normalized representation. That finite unit quaternion, not
 the original degree triplet, crosses the portable core/configuration boundary.
-This contract does not imply that an application, desktop UI, or Windows
-runtime already exposes adjustment controls.
+The desktop exposes these values per hand and per composition slot in
+millimeters and degrees. Edits clamp the complete translation vector to the
+portable `0.5 m` per-slot magnitude bound, reject non-finite input, apply live
+through the App control plane, remain visibly dirty, and persist only after an
+explicit **Save**. The effective transform shown by the UI is the
+App-authoritative recomposition, not a second GUI math model.
 
 ## Staged solve
 
@@ -317,7 +321,11 @@ non-unit quaternions, and out-of-range translations fail closed.
 Schema 2 remains a compatible input format. Loading a structurally valid
 schema-2 profile supplies identity tracker-side and controller-side
 adjustments, yielding `X_eff = X_mount`; the version difference alone must not
-trigger recalibration. This compatibility does not weaken parsing:
+trigger recalibration. Normal reuse neither rewrites the profile as schema 3
+nor requires a new capture. An explicit adjustment **Save** atomically upgrades
+the active schema-2 pair to schema 3, while a failed Save leaves the live
+effective snapshot and canonical profile bytes at their prior states. This
+compatibility does not weaken parsing:
 structurally malformed schema-2 data still fails closed rather than being
 repaired or converted to identity.
 
@@ -411,6 +419,16 @@ and both runtime applications must succeed before the pair is reported active.
 If one application fails, the coordinator rolls back effects created by that
 attempt. Rollback or cleanup failure is a runtime diagnostic requiring manual
 inspection; it is not a reason to accept a lower-quality calibration.
+
+Explicit first-party calibration may instead select only left or only right.
+That path requires exactly one reusable opposite-hand profile but permits a
+new selected hand with no prior selected-hand profile. It captures and scores
+all viable current association contenders for only the requested hand, then
+stages a store whose selected entry is added or replaces only the explicitly
+known prior selected key. The opposite profile and unrelated serialized
+objects remain byte-identical. Cancellation before the commit boundary leaves
+canonical bytes unchanged and removes the stage; once commit begins, commit
+wins over concurrent Stop/cancellation.
 
 ## Current limitations
 

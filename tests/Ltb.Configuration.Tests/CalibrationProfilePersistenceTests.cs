@@ -997,12 +997,13 @@ public sealed class CalibrationProfilePersistenceTests
     [Fact]
     public void ProfileRejectsOversizedAdjustmentSlotsAndSchemaTwoDataLoss()
     {
-        var oversized = new MountAdjustment(
-            new RigidTransform(Quaternion.Identity, new Vector3(0.5000001f, 0f, 0f)),
-            RigidTransform.Identity);
         var oversizedException = Assert.Throws<ArgumentOutOfRangeException>(() =>
-            Profile(mountAdjustment: oversized));
-        Assert.Equal("mountAdjustment", oversizedException.ParamName);
+            new MountAdjustment(
+                new RigidTransform(
+                    Quaternion.Identity,
+                    new Vector3(0.5000001f, 0f, 0f)),
+                RigidTransform.Identity));
+        Assert.Equal("trackerSideAdjustment", oversizedException.ParamName);
 
         var nonIdentity = Adjustment();
         var schemaTwoException = Assert.Throws<ArgumentException>(() =>

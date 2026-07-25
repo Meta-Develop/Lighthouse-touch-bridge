@@ -221,6 +221,7 @@ public sealed class InternalDriverPerHandCalibrationTests
             var runtime = ProductionRuntime(path, new InternalDriverSessionOptions
             {
                 Intent = InternalDriverSessionIntent.CalibrateLeft,
+                PreviousLeftTrackerSerial = "LHR-LEFT-OLD",
             });
 
             var resolved = runtime.ResolveSelectedHandBase(
@@ -231,6 +232,98 @@ public sealed class InternalDriverPerHandCalibrationTests
 
             Assert.Equal("LHR-RIGHT", resolved.PreservedOpposite.TrackerSerial);
             Assert.Equal("LHR-LEFT-OLD", resolved.ReplacedTrackerSerial);
+        });
+    }
+
+    [Theory]
+    [InlineData(MetaLinkHand.Left)]
+    [InlineData(MetaLinkHand.Right)]
+    public void NewSelectedHandNeedsOnlyReusableOppositeAndCommitsWithoutReplacement(
+        MetaLinkHand selectedHand)
+    {
+        WithTemporaryProfilePath(path =>
+        {
+            var selectedControllerHand = selectedHand == MetaLinkHand.Left
+                ? ControllerHand.Left
+                : ControllerHand.Right;
+            var oppositeControllerHand = selectedControllerHand == ControllerHand.Left
+                ? ControllerHand.Right
+                : ControllerHand.Left;
+            var oppositeSerial = selectedHand == MetaLinkHand.Left
+                ? "LHR-RIGHT"
+                : "LHR-LEFT";
+            var replacementSerial = selectedHand == MetaLinkHand.Left
+                ? "LHR-LEFT-NEW"
+                : "LHR-RIGHT-NEW";
+            var unrelatedSerial = selectedHand == MetaLinkHand.Left
+                ? "LHR-LEFT-FBT"
+                : "LHR-RIGHT-FBT";
+            var opposite = Profile(oppositeControllerHand, oppositeSerial, "opposite");
+            var unrelated = Profile(
+                selectedControllerHand,
+                unrelatedSerial,
+                "unrelated");
+            CalibrationProfileFile.SaveStore(
+                path,
+                new CalibrationProfileStore([opposite, unrelated]));
+            var oppositeBytes = CalibrationProfileJson.SerializeProfile(opposite);
+            var unrelatedBytes = CalibrationProfileJson.SerializeProfile(unrelated);
+            var runtime = ProductionRuntime(path, new InternalDriverSessionOptions
+            {
+                Intent = selectedHand == MetaLinkHand.Left
+                    ? InternalDriverSessionIntent.CalibrateLeft
+                    : InternalDriverSessionIntent.CalibrateRight,
+            });
+
+            var resolved = runtime.ResolveSelectedHandBase(
+                new InternalDriverCalibration(path),
+                reusablePair: null,
+                selectedHand == MetaLinkHand.Left
+                    ? InternalDriverCalibrationHandSet.Left
+                    : InternalDriverCalibrationHandSet.Right,
+                [replacementSerial, oppositeSerial]);
+
+            Assert.Equal(oppositeSerial, resolved.PreservedOpposite.TrackerSerial);
+            Assert.Null(resolved.ReplacedTrackerSerial);
+
+            var replacement = Profile(
+                selectedControllerHand,
+                replacementSerial,
+                "new selected");
+            ProductionInternalDriverSessionRuntime.RunSelectedHandProfileStoreTransaction(
+                path,
+                selectedHand,
+                stagedPath =>
+                {
+                    var staged = CalibrationProfileFile.LoadStore(stagedPath);
+                    CalibrationProfileFile.SaveStore(
+                        stagedPath,
+                        InternalDriverCalibration.ReplaceSelectedProfile(
+                            staged,
+                            replacement,
+                            resolved.ReplacedTrackerSerial));
+                    return true;
+                });
+
+            var committed = CalibrationProfileFile.LoadStore(path);
+            Assert.Equal(
+                replacement,
+                committed.FindCandidateProfile(
+                    replacementSerial,
+                    selectedControllerHand));
+            Assert.Equal(
+                oppositeBytes,
+                CalibrationProfileJson.SerializeProfile(
+                    committed.FindCandidateProfile(
+                        oppositeSerial,
+                        oppositeControllerHand)!));
+            Assert.Equal(
+                unrelatedBytes,
+                CalibrationProfileJson.SerializeProfile(
+                    committed.FindCandidateProfile(
+                        unrelatedSerial,
+                        selectedControllerHand)!));
+            Assert.Empty(StageFiles(path));
         });
     }
 
@@ -300,8 +393,11 @@ public sealed class InternalDriverPerHandCalibrationTests
         });
     }
 
-    [Fact]
-    public void SelectedHandCancellationPreservesExactCanonicalBytesAndLeavesNoResidue()
+    [Theory]
+    [InlineData(MetaLinkHand.Left)]
+    [InlineData(MetaLinkHand.Right)]
+    public void SelectedHandCancellationPreservesExactCanonicalBytesAndLeavesNoResidue(
+        MetaLinkHand selectedHand)
     {
         WithTemporaryProfilePath(path =>
         {
@@ -318,22 +414,80 @@ public sealed class InternalDriverPerHandCalibrationTests
             Assert.Throws<OperationCanceledException>(() =>
                 ProductionInternalDriverSessionRuntime.RunSelectedHandProfileStoreTransaction(
                     path,
-                    MetaLinkHand.Right,
+                    selectedHand,
+                    stagedPath =>
+                    {
+                        var staged = CalibrationProfileFile.LoadStore(stagedPath);
+                        var controllerHand = selectedHand == MetaLinkHand.Left
+                            ? ControllerHand.Left
+                            : ControllerHand.Right;
+                        var trackerSerial = selectedHand == MetaLinkHand.Left
+                            ? "LHR-LEFT"
+                            : "LHR-RIGHT";
+                        CalibrationProfileFile.SaveStore(
+                            stagedPath,
+                            staged.Upsert(Profile(
+                                controllerHand,
+                                trackerSerial,
+                                "replacement")));
+                        cancellation.Cancel();
+                        return true;
+                    },
+                    cancellationToken: cancellation.Token));
+
+            Assert.Equal(canonicalBefore, File.ReadAllBytes(path));
+            Assert.Empty(StageFiles(path));
+        });
+    }
+
+    [Theory]
+    [InlineData(MetaLinkHand.Left)]
+    [InlineData(MetaLinkHand.Right)]
+    public void SelectedHandCommitWinsCancellationAfterCanonicalBoundary(
+        MetaLinkHand selectedHand)
+    {
+        WithTemporaryProfilePath(path =>
+        {
+            var initial = new CalibrationProfileStore(
+                [
+                    Profile(ControllerHand.Left, "LHR-LEFT", "left"),
+                    Profile(ControllerHand.Right, "LHR-RIGHT", "right"),
+                    Profile(ControllerHand.Left, "LHR-FBT", "unrelated"),
+                ]);
+            CalibrationProfileFile.SaveStore(path, initial);
+            using var cancellation = new CancellationTokenSource();
+            var selectedControllerHand = selectedHand == MetaLinkHand.Left
+                ? ControllerHand.Left
+                : ControllerHand.Right;
+            var selectedSerial = selectedHand == MetaLinkHand.Left
+                ? "LHR-LEFT"
+                : "LHR-RIGHT";
+
+            var result = ProductionInternalDriverSessionRuntime
+                .RunSelectedHandProfileStoreTransaction(
+                    path,
+                    selectedHand,
                     stagedPath =>
                     {
                         var staged = CalibrationProfileFile.LoadStore(stagedPath);
                         CalibrationProfileFile.SaveStore(
                             stagedPath,
                             staged.Upsert(Profile(
-                                ControllerHand.Right,
-                                "LHR-RIGHT",
-                                "replacement")));
-                        cancellation.Cancel();
-                        return true;
+                                selectedControllerHand,
+                                selectedSerial,
+                                "committed replacement")));
+                        return "committed";
                     },
-                    cancellation.Token));
+                    commitStarted: cancellation.Cancel,
+                    cancellationToken: cancellation.Token);
 
-            Assert.Equal(canonicalBefore, File.ReadAllBytes(path));
+            Assert.Equal("committed", result);
+            Assert.True(cancellation.IsCancellationRequested);
+            Assert.Equal(
+                "committed replacement",
+                CalibrationProfileFile.LoadStore(path)
+                    .FindCandidateProfile(selectedSerial, selectedControllerHand)!
+                    .ProfileName);
             Assert.Empty(StageFiles(path));
         });
     }

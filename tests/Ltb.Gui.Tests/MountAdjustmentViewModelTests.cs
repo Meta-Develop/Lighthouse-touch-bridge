@@ -61,6 +61,11 @@ public sealed class MountAdjustmentViewModelTests
 
         var toRadians = MathF.PI / 180f;
         var expected = Quaternion.Normalize(Quaternion.Multiply(
+            Quaternion.CreateFromAxisAngle(Vector3.UnitX, 20f * toRadians),
+            Quaternion.Multiply(
+                Quaternion.CreateFromAxisAngle(Vector3.UnitY, 30f * toRadians),
+                Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 40f * toRadians))));
+        var reversed = Quaternion.Normalize(Quaternion.Multiply(
             Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 40f * toRadians),
             Quaternion.Multiply(
                 Quaternion.CreateFromAxisAngle(Vector3.UnitY, 30f * toRadians),
@@ -68,7 +73,33 @@ public sealed class MountAdjustmentViewModelTests
         var actual = port.ApplyRequests[^1].Adjustments.ControllerSide.RotationXyzw;
 
         Assert.InRange(MathF.Abs(Quaternion.Dot(expected, actual)), 0.999999f, 1f);
-        Assert.Contains("q = Qz * Qy * Qx", viewModel.AxisOrderHelpText, StringComparison.Ordinal);
+        Assert.True(MathF.Abs(Quaternion.Dot(reversed, actual)) < 0.999f);
+        Assert.Contains("q = Qx * Qy * Qz", viewModel.AxisOrderHelpText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NoncommutingQuaternionSnapshotRoundTripsThroughIntrinsicLocalXyzEditors()
+    {
+        var toRadians = MathF.PI / 180f;
+        var adjustment = new MountAdjustmentTransform(
+            Vector3.Zero,
+            Quaternion.Normalize(Quaternion.Multiply(
+                Quaternion.CreateFromAxisAngle(Vector3.UnitX, 23f * toRadians),
+                Quaternion.Multiply(
+                    Quaternion.CreateFromAxisAngle(Vector3.UnitY, -31f * toRadians),
+                    Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 47f * toRadians)))));
+        var left = HandSnapshot(
+            MountAdjustmentTransform.Identity,
+            new MountAdjustmentPair(adjustment, MountAdjustmentTransform.Identity),
+            MountAdjustmentPair.Identity);
+        var port = new FakeMountAdjustmentPort(AvailableSnapshot() with { Left = left });
+
+        using var viewModel = NewViewModel(port);
+
+        Assert.True(
+            MathF.Abs(Quaternion.Dot(
+                adjustment.RotationXyzw,
+                viewModel.LeftHand.TrackerSide.Transform.RotationXyzw)) >= 0.999999f);
     }
 
     [Fact]
@@ -200,7 +231,7 @@ public sealed class MountAdjustmentViewModelTests
         port.Publish(port.CurrentSnapshot with
         {
             Neutralization = new MountAdjustmentNeutralizationSnapshot(
-                MountAdjustmentNeutralizationPhase.Neutralized,
+                Ltb.App.InternalDriverTrackerNeutralizationState.Active,
                 "Both tracker outputs are neutral for calibration."),
             RestoreWarning = MountAdjustmentRestoreWarningUpdate.Failure(
                 "TRACKER RESTORE FAILED: outputs remain neutral."),
@@ -226,6 +257,29 @@ public sealed class MountAdjustmentViewModelTests
 
         Assert.False(viewModel.HasRestoreFailureWarning);
         Assert.Equal(string.Empty, viewModel.RestoreFailureWarningText);
+    }
+
+    [Fact]
+    public void EqualRevisionStatusSnapshotDoesNotEraseVisibleDirtyEdits()
+    {
+        var port = new FakeMountAdjustmentPort(AvailableSnapshot());
+        using var viewModel = NewViewModel(port);
+        viewModel.LeftHand.TrackerSide.PositionXMillimeters = 17d;
+        var revision = port.CurrentSnapshot.Revision;
+
+        port.Publish(port.CurrentSnapshot with
+        {
+            Revision = revision,
+            Left = HandSnapshot(MountAdjustmentTransform.Identity),
+            Neutralization = new MountAdjustmentNeutralizationSnapshot(
+                Ltb.App.InternalDriverTrackerNeutralizationState.Restoring,
+                "Restoring tracker roles."),
+            RestoreWarning = MountAdjustmentRestoreWarningUpdate.Unchanged,
+        });
+
+        Assert.Equal(17d, viewModel.LeftHand.TrackerSide.PositionXMillimeters, 6);
+        Assert.True(viewModel.IsDirty);
+        Assert.Contains("Restoring", viewModel.TrackerNeutralizationStatusText);
     }
 
     private static MountAdjustmentViewModel NewViewModel(

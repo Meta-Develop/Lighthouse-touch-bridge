@@ -160,7 +160,7 @@ public sealed class MainWindowSmokeTests
                 "Intrinsic local rotation order is X then Y then Z",
                 axisOrderHelp.Text,
                 StringComparison.Ordinal);
-            Assert.Contains("Qz * Qy * Qx", axisOrderHelp.Text, StringComparison.Ordinal);
+            Assert.Contains("Qx * Qy * Qz", axisOrderHelp.Text, StringComparison.Ordinal);
 
             var prefixes = new[]
             {

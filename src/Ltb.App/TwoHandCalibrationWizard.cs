@@ -148,14 +148,16 @@ public sealed record CalibrationWizardRecalibrationObservations
                 "Legacy schema-version-1 ALVR/VMT observations cannot specify a driver profile.");
         }
 
-        if (ExpectedSchemaVersion == CalibrationProfileSchema.CurrentVersion &&
+        if (ExpectedSchemaVersion is
+                CalibrationProfileSchema.DriverProfileVersion or
+                CalibrationProfileSchema.CurrentVersion &&
             !string.Equals(
                 DriverProfile,
                 CalibrationDriverProfiles.LtbTouch,
                 StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"Schema-version-2 observations require driver profile " +
+                $"Schema-version-{ExpectedSchemaVersion} observations require driver profile " +
                 $"'{CalibrationDriverProfiles.LtbTouch}'.");
         }
 

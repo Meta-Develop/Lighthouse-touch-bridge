@@ -75,9 +75,11 @@ separately. Move only the requested mounted controller continuously through
 pitch, yaw, and roll; add moderate translation while keeping the controller
 visible to the Quest cameras if full 6DoF is desired. LTB associates the two
 trackers from real motion, estimates residual lag, validates rotation, attempts
-translation only when observable, saves schema-2 profiles, then starts a fresh
+translation only when observable, saves schema-3 profiles, then starts a fresh
 IPC feed. No position or poor translation observability may validly select
-rotation-only; bad rotation coverage or quality is a failure.
+rotation-only; bad rotation coverage or quality is a failure. Existing valid
+schema-2 first-party profiles remain reusable with identity mount adjustments
+without capture or an automatic profile rewrite.
 
 Explicit recalibration stages both hand results against a private copy of the
 profile store. Cancellation and canonical commit share one explicit decision
@@ -86,6 +88,23 @@ leaves the prior pair and unrelated profiles unchanged with no stage residue.
 Once commit wins, the atomic canonical replace completes and is reported as a
 successful saved pair; a later Stop request applies to the session, not to the
 already committed profile transaction.
+
+The mount-adjustment panel provides left/right tracker-side and
+controller-side edits in millimeters and degrees. Human-entered rotations are
+intrinsic local `X`, then `Y`, then `Z`, with
+`q = Qx * Qy * Qz`. Edits apply immediately to
+`X_eff = A_tracker * X_mount * A_controller`, including pose and lever-arm
+linear velocity from one immutable App snapshot. Reset affects only the chosen
+slot. Dirty state remains visible across same-revision lifecycle events, and
+the profile store changes only after **Save** succeeds. Saving upgrades the
+active schema-2 pair to schema 3; a failed Save does not relabel the current
+live/saved snapshot.
+
+While stopped, the panel can request left-only, right-only, or both-hand
+calibration. A selected-hand run requires one reusable opposite-hand profile
+but no prior profile for the selected hand. It captures only the requested
+hand, scores every viable contender, adds or replaces only that selected key,
+and preserves the opposite and unrelated serialized profile records.
 
 The GUI presents readiness, per-hand tracker/input/publication state, neutral
 reasons, the shared calibration phase, and feed health. The structured JSONL
@@ -110,6 +129,7 @@ fields. From a packaged build, the default paths are:
 | Settings | `%LOCALAPPDATA%\LighthouseTouchBridge\settings\internal-driver.json` |
 | Calibration profiles | `%LOCALAPPDATA%\LighthouseTouchBridge\profiles\calibration-profiles.json` |
 | Registration receipts | `%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json` |
+| Tracker-role recovery receipt | `%LOCALAPPDATA%\LighthouseTouchBridge\driver\tracker-role-recovery.json` |
 | Structured log | `%LOCALAPPDATA%\LighthouseTouchBridge\logs\internal-driver.jsonl` |
 
 The log appends JSON records, rotates at its configured bound, and may include
@@ -211,7 +231,7 @@ OpenVR, Meta Link, driver, pipe, or application dependency.
 | Angles and angular velocity | Radians and radians per second |
 | Quaternion storage | `(x, y, z, w)`, finite and normalized before publication |
 | Transform meaning | Active parent-from-child transforms |
-| Runtime composition | `T_output = T_tracker * X_mount` |
+| Runtime composition | `X_eff = A_tracker * X_mount * A_controller`; `T_output = T_tracker * X_eff` |
 | Driver pose time | Monotonic nanoseconds mapped from `Stopwatch`/QPC |
 | Clock alignment | Paired Meta-time and QPC samples establish and refresh the mapping |
 
@@ -315,6 +335,24 @@ lock, sibling backup, same-directory temporary write, read-back verification,
 compare-before-commit guard, rollback, and `FindRecoveryBackups` recovery
 boundary.
 
+The production App persists a separate recovery receipt before the role write.
+The receipt identifies the exact settings file, original hash, expected
+transaction-owned neutral post-image, exact two paths, pre-existing backup
+set, and owned backup once known. A later startup calls `FindRecoveryBackups`
+before activation and restores only an unambiguous owned backup whose bytes
+match the captured original. If the current file instead reflects an external
+writer, automatic recovery is refused, the receipt remains for inspection, and
+the GUI retains an explicit restore-failure warning. If a prior process
+restored the original but crashed before deleting the receipt, the next
+startup verifies the original hash and safely clears the receipt.
+
+Session activation publishes neutralizing and active state, and cleanup
+publishes restoring/restored or restore-failed state. Stop, disposal, desktop
+window close, activation failure, Meta/driver recovery, and stable
+serial/device-path churn all restore before a new neutralization. The warning
+is cleared only by explicit successful recovery/restore evidence; a generic
+stopped snapshot cannot erase it.
+
 This transaction does not configure, create, remove, or repair ALVR, VMT, or
 SteamVR `TrackingOverrides`; those remain unsupported legacy integration
 material. It changes no tracker-role entry other than the two caller-supplied
@@ -377,8 +415,8 @@ They are not Windows runtime or hardware evidence. Complete and retain the
 [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
 on the target machine.
 
-The tracked checklist contains 59 live acceptance items: the 59 lines that
-begin with `- [ ]`. All 59 remain unchecked, and the repository does not
+The tracked checklist contains 72 live acceptance items: the 72 lines that
+begin with `- [ ]`. All 72 remain unchecked, and the repository does not
 assign them to additional evidence categories. Existing automated and Linux
 evidence does not satisfy the Windows runtime and connected-hardware gates in
 specification sections 23.3 and 23.4 or Definition of Done item 14. The next

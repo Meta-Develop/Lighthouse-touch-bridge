@@ -13,8 +13,8 @@ cannot satisfy any item here.
 
 ## Repository-visible evidence boundary
 
-This tracked checklist contains 59 live acceptance items: the 59 lines below
-that begin with `- [ ]`. All 59 remain unchecked. The repository does not
+This tracked checklist contains 72 live acceptance items: the 72 lines below
+that begin with `- [ ]`. All 72 remain unchecked. The repository does not
 assign these items to additional evidence categories, so no category subtotals
 are claimed here. Existing automated and Linux evidence does not satisfy the
 Windows runtime and connected-hardware gates in specification sections 23.3
@@ -164,7 +164,7 @@ still does not replace the connected-hardware gates.
 
 ## Per-hand association and calibration evidence
 
-- [ ] Begin with no matching schema-2 profiles and confirm the GUI requests a
+- [ ] Begin with no matching compatible first-party profiles and confirm the GUI requests a
   separate left-hand capture followed by a separate right-hand capture.
 - [ ] For the left hand, record sample count, tracking/orientation/position
   validity fractions, motion-axis coverage, total rotation, rotation progress,
@@ -177,7 +177,7 @@ still does not replace the connected-hardware gates.
   not enumeration order, display name, or transient device index.
 - [ ] For each hand, record estimated residual lag in milliseconds, selected
   mode, selection reason, rotation RMS in degrees, inlier ratio, and profile
-  creation time from the retained schema-2 profile evidence.
+  creation time from the retained schema-3 profile evidence.
 - [ ] For each full-6DoF result, also record position RMS in millimeters and
   translation condition number. Confirm full 6DoF is not reported without
   both metrics.
@@ -187,9 +187,10 @@ still does not replace the connected-hardware gates.
 - [ ] Produce poor rotation coverage/quality and confirm calibration fails
   rather than treating it as a rotation-only success.
 - [ ] Stop and start without moving either mount, including with three
-  unrelated trackers still connected; confirm both exact schema-2 profiles are
-  reused with their original selected mode, lag, quality, tracker identity, and
-  `ltb_touch` driver profile.
+  unrelated trackers still connected; confirm exact compatible schema-2 or
+  schema-3 profiles are reused with their original selected mode, lag, quality,
+  tracker identity, and `ltb_touch` driver profile. For a schema-2 fixture,
+  confirm identity adjustment evidence and byte-for-byte no-rewrite reuse.
 - [ ] Move or swap a mount, stop the session, and press **Calibrate /
   Recalibrate** with the two mounted trackers and three unrelated trackers
   connected; confirm both hands are captured instead of reusing the saved pair,
@@ -200,6 +201,42 @@ still does not replace the connected-hardware gates.
   prior pair and unrelated store entries remain byte-for-byte unchanged, then
   repeat successfully and confirm the new pair replaces the prior pair
   together with no staging residue.
+
+## Mount adjustment and exact tracker-role recovery
+
+- [ ] Enter `Active` with exactly one associated left tracker and one
+  associated right tracker, record their registered device paths, and confirm
+  only those exact two entries become `TrackerRole_None`; unrelated tracker
+  role entries and all unrelated settings must remain unchanged.
+- [ ] With the exact two physical trackers neutralized, run VRChat and confirm
+  VRChat no longer consumes either as a full-body tracker while the two LTB
+  controllers continue to provide current pose and input.
+- [ ] Edit noncommuting per-hand tracker-side and controller-side trim in
+  millimeters/degrees and confirm the live pose plus rotating lever-arm linear
+  velocity change from one coherent effective-transform snapshot, with no
+  torn generation or discontinuity.
+- [ ] Confirm unsaved trim remains visibly dirty and survives unrelated
+  same-revision status updates without changing profile bytes. Press **Save**,
+  restart LTB, and confirm schema-3 persistence and the exact effective
+  transform; separately confirm normal schema-2 reuse stays identity and
+  byte-exact until Save.
+- [ ] In separate controlled runs, confirm **Stop**, desktop window close, and
+  activation failure restore both exact original tracker-role entries and
+  leave unrelated roles/settings unchanged.
+- [ ] Terminate LTB after neutralization without managed cleanup, restart it,
+  and confirm startup processes the durable owned receipt and restores the
+  exact original settings before a new activation. Also exercise the
+  restore-completed/receipt-delete crash window and confirm startup clears the
+  already-restored receipt safely.
+- [ ] Force settings to differ from the transaction-owned neutral post-image
+  and confirm automatic recovery refuses to overwrite the external writer,
+  retains the receipt, and keeps an explicit visible restore-failure warning
+  through generic stopped/status updates until successful restore/recovery.
+- [ ] Run left-only and right-only calibration separately. For each, confirm
+  only the requested hand is captured and committed, a new selected hand need
+  not have a prior profile, and the retained opposite profile plus unrelated
+  serialized profile objects remain byte-for-byte unchanged. Repeat both-hand
+  calibration to confirm its existing all-or-nothing pair semantics.
 
 ## Feed, reconnect, watchdog, and shutdown fail-safe
 

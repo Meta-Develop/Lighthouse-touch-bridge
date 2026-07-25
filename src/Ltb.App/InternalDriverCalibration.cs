@@ -9,9 +9,10 @@ using Ltb.MetaLink;
 namespace Ltb.App;
 
 /// <summary>
-/// Current observations that authorize schema-2 profile reuse. Public LibOVR
-/// exposes no stable per-controller identity, so the identity is deliberately
-/// absent rather than replaced with a capture-stream or SteamVR identity.
+/// Current observations that authorize compatible schema-2 or schema-3
+/// profile reuse. Public LibOVR exposes no stable per-controller identity, so
+/// the identity is deliberately absent rather than replaced with a
+/// capture-stream or SteamVR identity.
 /// </summary>
 internal sealed record InternalDriverCalibrationContext
 {
@@ -70,7 +71,8 @@ internal sealed record InternalDriverCalibrationRunResult(
 /// <summary>
 /// File-backed first-party calibration/profile adapter. Association and guided
 /// capture are owned by the session; this class reuses the existing portable
-/// lag/alignment/solver pipeline and schema-2 configuration store.
+/// lag/alignment/solver pipeline and the compatible schema-2/schema-3
+/// configuration store.
 /// </summary>
 internal sealed class InternalDriverCalibration
 {
@@ -144,14 +146,15 @@ internal sealed class InternalDriverCalibration
         {
             return CalibrationRequired(
                 context,
-                "profile failed the exact schema-2 first-party identity match");
+                "profile failed the exact compatible first-party identity match");
         }
 
         return new InternalDriverProfileLookup(
             context,
             exact,
             evaluation,
-            $"reusing schema-2 {context.Hand} profile for tracker '{context.TrackerSerial}'");
+            $"reusing schema-{exact.SchemaVersion} {context.Hand} profile for " +
+            $"tracker '{context.TrackerSerial}'");
     }
 
     internal IReadOnlyList<string> FindCandidateTrackerSerials(MetaLinkHand hand)
@@ -171,7 +174,9 @@ internal sealed class InternalDriverCalibration
             .Profiles
             .Where(profile =>
                 profile.Hand == controllerHand &&
-                profile.SchemaVersion == CalibrationProfileSchema.CurrentVersion &&
+                profile.SchemaVersion is
+                    CalibrationProfileSchema.DriverProfileVersion or
+                    CalibrationProfileSchema.CurrentVersion &&
                 string.Equals(
                     profile.DriverProfile,
                     CalibrationDriverProfiles.LtbTouch,
@@ -242,7 +247,7 @@ internal sealed class InternalDriverCalibration
             capture,
             pipeline,
             reloaded,
-            $"saved schema-2 {context.Hand} profile with " +
+            $"saved schema-{reloaded.SchemaVersion} {context.Hand} profile with " +
             $"{capture.ClockEvidence.Count} per-hand Meta clock observations");
     }
 

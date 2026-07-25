@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using Ltb.App;
 
 namespace Ltb.Gui.ViewModels;
 
@@ -83,7 +84,7 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
 
     public string AxisOrderHelpText { get; } =
         "Right-handed axes: +X right, +Y up, -Z forward. " +
-        "Intrinsic local rotation order is X then Y then Z (q = Qz * Qy * Qx).";
+        "Intrinsic local rotation order is X then Y then Z (q = Qx * Qy * Qz).";
 
     public bool IsAvailable
     {
@@ -190,15 +191,15 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
         _dispatch(() => StatusText = $"Requesting {CalibrationLabel(target)} calibration...");
         try
         {
-            if (IsAvailable)
+            if (_unavailableCalibrationFallback is not null)
+            {
+                await _unavailableCalibrationFallback(target).ConfigureAwait(false);
+            }
+            else if (IsAvailable)
             {
                 await _port.RequestCalibrationAsync(
                     target,
                     _lifetimeCancellation.Token).ConfigureAwait(false);
-            }
-            else if (_unavailableCalibrationFallback is not null)
-            {
-                await _unavailableCalibrationFallback(target).ConfigureAwait(false);
             }
 
             _dispatch(() => StatusText = $"{CalibrationLabel(target)} calibration requested.");
@@ -216,9 +217,7 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     private bool CanRequestCalibration(MountAdjustmentCalibrationTarget target) =>
         !_disposed &&
         _canCalibrate(target) &&
-        (IsAvailable ||
-         (target == MountAdjustmentCalibrationTarget.Both &&
-          _unavailableCalibrationFallback is not null));
+        (IsAvailable || _unavailableCalibrationFallback is not null);
 
     private void OnSlotEdited(MountAdjustmentHand hand)
     {
@@ -379,6 +378,15 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (normalized.Revision == currentRevision && IsDirty)
+        {
+            IsAvailable = normalized.IsAvailable;
+            LeftHand.UpdateAuthoritativeTransforms(normalized.Left);
+            RightHand.UpdateAuthoritativeTransforms(normalized.Right);
+            RaiseCommandAvailability();
+            return;
+        }
+
         Interlocked.Exchange(ref _revision, normalized.Revision);
         IsAvailable = normalized.IsAvailable;
         LeftHand.Load(normalized.Left);
@@ -402,8 +410,14 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     {
         var neutralization = snapshot.Neutralization;
         TrackerNeutralizationStatusText =
-            $"{SplitPascalCase(neutralization.Phase.ToString())}: {neutralization.Detail}";
+            $"{NeutralizationLabel(neutralization.Phase)}: {neutralization.Detail}";
     }
+
+    private static string NeutralizationLabel(
+        InternalDriverTrackerNeutralizationState state) =>
+        state == InternalDriverTrackerNeutralizationState.Active
+            ? "Neutralized"
+            : SplitPascalCase(state.ToString());
 
     private void ApplyRestoreWarning(MountAdjustmentRestoreWarningUpdate warning)
     {
@@ -709,6 +723,11 @@ public sealed class MountAdjustmentHandViewModel : ObservableObject
     {
         TrackerSide.Load(snapshot.AppliedAdjustments.TrackerSide);
         ControllerSide.Load(snapshot.AppliedAdjustments.ControllerSide);
+        UpdateAuthoritativeTransforms(snapshot);
+    }
+
+    internal void UpdateAuthoritativeTransforms(MountAdjustmentHandSnapshot snapshot)
+    {
         BaseMountTransform = FormatTransform(snapshot.BaseMount);
         EffectiveTransform = FormatTransform(snapshot.EffectiveMount);
     }
@@ -838,7 +857,7 @@ public sealed class MountAdjustmentSlotViewModel : ObservableObject
                 Vector3.UnitZ,
                 (float)_rotationZDegrees * toRadians);
             var rotation = Quaternion.Normalize(
-                Quaternion.Multiply(qz, Quaternion.Multiply(qy, qx)));
+                Quaternion.Multiply(qx, Quaternion.Multiply(qy, qz)));
             return new MountAdjustmentTransform(
                 new Vector3(
                     (float)(_positionXMillimeters / 1000d),
@@ -961,14 +980,14 @@ public sealed class MountAdjustmentSlotViewModel : ObservableObject
     private static Vector3 ToIntrinsicXyzDegrees(Quaternion quaternion)
     {
         var x = Math.Atan2(
-            2d * ((quaternion.W * quaternion.X) + (quaternion.Y * quaternion.Z)),
+            2d * ((quaternion.W * quaternion.X) - (quaternion.Y * quaternion.Z)),
             1d - (2d * ((quaternion.X * quaternion.X) + (quaternion.Y * quaternion.Y))));
         var y = Math.Asin(Math.Clamp(
-            2d * ((quaternion.W * quaternion.Y) - (quaternion.Z * quaternion.X)),
+            2d * ((quaternion.W * quaternion.Y) + (quaternion.X * quaternion.Z)),
             -1d,
             1d));
         var z = Math.Atan2(
-            2d * ((quaternion.W * quaternion.Z) + (quaternion.X * quaternion.Y)),
+            2d * ((quaternion.W * quaternion.Z) - (quaternion.X * quaternion.Y)),
             1d - (2d * ((quaternion.Y * quaternion.Y) + (quaternion.Z * quaternion.Z))));
 
         var toDegrees = 180d / Math.PI;

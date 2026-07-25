@@ -375,7 +375,8 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
                 hand.Lag.LagSeconds * 1000d,
                 persistedQuality,
                 createdUtc),
-            CalibrationProfileSchema.CurrentVersion => new CalibrationProfile(
+            CalibrationProfileSchema.DriverProfileVersion or
+                CalibrationProfileSchema.CurrentVersion => new CalibrationProfile(
                 CalibrationProfileSchema.CurrentVersion,
                 profileName,
                 controllerHand,
@@ -385,7 +386,7 @@ public sealed class FileCalibrationWizardBackend : ICalibrationWizardBackend
                 hand.TrackerSerial,
                 recalibration.DriverProfile
                     ?? throw new InvalidOperationException(
-                        "Schema-version-2 calibration requires a driver profile."),
+                        "First-party schema-3 calibration requires a driver profile."),
                 ProfileCalibrationPolicy.Auto,
                 mode,
                 result.SelectionReason,

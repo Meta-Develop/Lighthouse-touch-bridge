@@ -13,7 +13,8 @@ namespace Ltb.App;
 /// </summary>
 internal sealed class InternalDriverSession :
     IInternalDriverSession,
-    IInternalDriverEffectiveMountControl
+    IInternalDriverEffectiveMountControl,
+    IInternalDriverMountAdjustmentControl
 {
     private readonly IInternalDriverSessionRuntime _runtime;
     private readonly IInternalDriverSessionOutput _output;
@@ -22,6 +23,8 @@ internal sealed class InternalDriverSession :
     private readonly object _lifecycleSync = new();
     private readonly object _publicationSync = new();
     private readonly object _snapshotSync = new();
+    private readonly object _mountAdjustmentSync = new();
+    private readonly object _mountAdjustmentPublicationSync = new();
     private CancellationTokenSource? _runCancellation;
     private Task? _runTask;
     private IDriverFeed? _feed;
@@ -41,6 +44,8 @@ internal sealed class InternalDriverSession :
     private bool _publicationFinalized = true;
     private bool _disposed;
     private InternalDriverSessionSnapshot _snapshot = InternalDriverSessionSnapshot.Initial;
+    private InternalDriverMountAdjustmentSnapshot _mountAdjustmentSnapshot =
+        InternalDriverMountAdjustmentSnapshot.Unavailable;
 
     internal InternalDriverSession(
         IInternalDriverSessionRuntime runtime,
@@ -60,6 +65,8 @@ internal sealed class InternalDriverSession :
 
     public event EventHandler<InternalDriverSessionSnapshot>? SnapshotChanged;
 
+    public event EventHandler<InternalDriverMountAdjustmentSnapshot>? MountAdjustmentChanged;
+
     public InternalDriverSessionSnapshot CurrentSnapshot
     {
         get
@@ -67,6 +74,17 @@ internal sealed class InternalDriverSession :
             lock (_snapshotSync)
             {
                 return _snapshot;
+            }
+        }
+    }
+
+    public InternalDriverMountAdjustmentSnapshot CurrentMountAdjustment
+    {
+        get
+        {
+            lock (_mountAdjustmentSync)
+            {
+                return _mountAdjustmentSnapshot;
             }
         }
     }
@@ -128,6 +146,131 @@ internal sealed class InternalDriverSession :
         }
 
         _ = source.Update(trackerFromController);
+    }
+
+    public ValueTask<InternalDriverMountAdjustmentResult> ApplyMountAdjustmentAsync(
+        long revision,
+        ProtocolHand hand,
+        MountAdjustment adjustment,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(adjustment);
+        ArgumentOutOfRangeException.ThrowIfNegative(revision);
+
+        InternalDriverMountAdjustmentSnapshot snapshot;
+        lock (_mountAdjustmentSync)
+        {
+            if (_profiles is not { IsValid: true } profiles ||
+                !_mountAdjustmentSnapshot.IsAvailable)
+            {
+                return ValueTask.FromResult(new InternalDriverMountAdjustmentResult(
+                    revision,
+                    Succeeded: false,
+                    "Effective mounts are unavailable until an exact profile pair is resolved.",
+                    _mountAdjustmentSnapshot));
+            }
+
+            if (revision < _mountAdjustmentSnapshot.Revision)
+            {
+                return ValueTask.FromResult(new InternalDriverMountAdjustmentResult(
+                    revision,
+                    Succeeded: false,
+                    "The mount-adjustment revision is older than the App-authoritative state.",
+                    _mountAdjustmentSnapshot));
+            }
+
+            var selected = hand switch
+            {
+                ProtocolHand.Left => profiles.Left,
+                ProtocolHand.Right => profiles.Right,
+                _ => throw new ArgumentOutOfRangeException(nameof(hand)),
+            };
+            var effective = CoordinateConventions.ComposeEffectiveMount(
+                selected.TrackerFromController,
+                adjustment);
+            UpdateEffectiveMount(hand, effective);
+            _profiles = hand == ProtocolHand.Left
+                ? profiles with { Left = selected with { MountAdjustment = adjustment } }
+                : profiles with { Right = selected with { MountAdjustment = adjustment } };
+            snapshot = BuildMountAdjustmentSnapshot(
+                revision,
+                _profiles,
+                _mountAdjustmentSnapshot.Left.SavedAdjustments,
+                _mountAdjustmentSnapshot.Right.SavedAdjustments);
+            _mountAdjustmentSnapshot = snapshot;
+        }
+
+        PublishMountAdjustmentSnapshotIfCurrent(snapshot);
+        return ValueTask.FromResult(new InternalDriverMountAdjustmentResult(
+            revision,
+            Succeeded: true,
+            $"Applied revision {revision} to the {hand} effective mount.",
+            snapshot));
+    }
+
+    public ValueTask<InternalDriverMountAdjustmentResult> SaveMountAdjustmentsAsync(
+        long revision,
+        MountAdjustment left,
+        MountAdjustment right,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        ArgumentOutOfRangeException.ThrowIfNegative(revision);
+
+        InternalDriverMountAdjustmentSnapshot snapshot;
+        lock (_mountAdjustmentSync)
+        {
+            if (_profiles is not { IsValid: true } profiles ||
+                !_mountAdjustmentSnapshot.IsAvailable)
+            {
+                return ValueTask.FromResult(new InternalDriverMountAdjustmentResult(
+                    revision,
+                    Succeeded: false,
+                    "Mount adjustments are unavailable until an exact profile pair is resolved.",
+                    _mountAdjustmentSnapshot));
+            }
+
+            if (revision < _mountAdjustmentSnapshot.Revision)
+            {
+                return ValueTask.FromResult(new InternalDriverMountAdjustmentResult(
+                    revision,
+                    Succeeded: false,
+                    "The save revision is older than the App-authoritative state.",
+                    _mountAdjustmentSnapshot));
+            }
+
+            var leftEffective = CoordinateConventions.ComposeEffectiveMount(
+                profiles.Left.TrackerFromController,
+                left);
+            var rightEffective = CoordinateConventions.ComposeEffectiveMount(
+                profiles.Right.TrackerFromController,
+                right);
+            var adjusted = profiles with
+            {
+                Left = profiles.Left with { MountAdjustment = left },
+                Right = profiles.Right with { MountAdjustment = right },
+            };
+            var persisted = _runtime.SaveMountAdjustments(adjusted, left, right);
+            UpdateEffectiveMount(ProtocolHand.Left, leftEffective);
+            UpdateEffectiveMount(ProtocolHand.Right, rightEffective);
+            _profiles = persisted;
+            snapshot = BuildMountAdjustmentSnapshot(
+                revision,
+                persisted,
+                left,
+                right);
+            _mountAdjustmentSnapshot = snapshot;
+        }
+
+        PublishMountAdjustmentSnapshotIfCurrent(snapshot);
+        return ValueTask.FromResult(new InternalDriverMountAdjustmentResult(
+            revision,
+            Succeeded: true,
+            $"Saved mount-adjustment revision {revision}.",
+            snapshot));
     }
 
     public async ValueTask DisposeAsync()
@@ -246,12 +389,13 @@ internal sealed class InternalDriverSession :
                 ref _leftEffectiveMount,
                 new InternalDriverEffectiveMountSource(
                     ProtocolHand.Left,
-                    _profiles.Left.TrackerFromController));
+                    _profiles.Left.EffectiveTrackerFromController));
             Volatile.Write(
                 ref _rightEffectiveMount,
                 new InternalDriverEffectiveMountSource(
                     ProtocolHand.Right,
-                    _profiles.Right.TrackerFromController));
+                    _profiles.Right.EffectiveTrackerFromController));
+            PublishMountAdjustmentState(_profiles);
             EnsureProfileTrackersWereObserved(readyObservation, _profiles);
             if (_trackerNeutralization is not null)
             {
@@ -315,6 +459,80 @@ internal sealed class InternalDriverSession :
                         rightReason: InternalDriverNeutralReason.SessionStopped,
                         retainRunEvidence: false);
             PublishFinalSnapshot(finalSnapshot);
+        }
+    }
+
+    private void PublishMountAdjustmentState(InternalDriverProfilePair profiles)
+    {
+        InternalDriverMountAdjustmentSnapshot snapshot;
+        lock (_mountAdjustmentSync)
+        {
+            var revision = checked(_mountAdjustmentSnapshot.Revision + 1);
+            snapshot = BuildMountAdjustmentSnapshot(
+                revision,
+                profiles,
+                profiles.Left.MountAdjustment,
+                profiles.Right.MountAdjustment);
+            _mountAdjustmentSnapshot = snapshot;
+        }
+
+        PublishMountAdjustmentSnapshotIfCurrent(snapshot);
+    }
+
+    private static InternalDriverMountAdjustmentSnapshot BuildMountAdjustmentSnapshot(
+        long revision,
+        InternalDriverProfilePair profiles,
+        MountAdjustment savedLeft,
+        MountAdjustment savedRight) => new(
+        revision,
+        IsAvailable: true,
+        new InternalDriverMountAdjustmentHandSnapshot(
+            profiles.Left.TrackerFromController,
+            profiles.Left.MountAdjustment,
+            savedLeft,
+            profiles.Left.EffectiveTrackerFromController),
+        new InternalDriverMountAdjustmentHandSnapshot(
+            profiles.Right.TrackerFromController,
+            profiles.Right.MountAdjustment,
+            savedRight,
+            profiles.Right.EffectiveTrackerFromController));
+
+    private void PublishMountAdjustmentSnapshotIfCurrent(
+        InternalDriverMountAdjustmentSnapshot snapshot)
+    {
+        lock (_mountAdjustmentPublicationSync)
+        {
+            lock (_mountAdjustmentSync)
+            {
+                if (!ReferenceEquals(_mountAdjustmentSnapshot, snapshot))
+                {
+                    return;
+                }
+            }
+
+            // External handlers run without the state lock. The separate
+            // publication lock keeps event order authoritative while allowing
+            // an App adapter's session callback to read CurrentMountAdjustment
+            // without a mount-lock/adapter-lock cycle.
+            var handlers = MountAdjustmentChanged;
+            if (handlers is null)
+            {
+                return;
+            }
+
+            foreach (EventHandler<InternalDriverMountAdjustmentSnapshot> handler
+                     in handlers.GetInvocationList())
+            {
+                try
+                {
+                    handler(this, snapshot);
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    // Presentation listeners cannot turn an applied or
+                    // persisted control-plane transition into a failure.
+                }
+            }
         }
     }
 
@@ -1748,9 +1966,13 @@ internal sealed class InternalDriverSession :
 
         _registration = null;
         _platformProbe = null;
-        _profiles = null;
-        Volatile.Write(ref _leftEffectiveMount, null);
-        Volatile.Write(ref _rightEffectiveMount, null);
+        lock (_mountAdjustmentSync)
+        {
+            _profiles = null;
+            Volatile.Write(ref _leftEffectiveMount, null);
+            Volatile.Write(ref _rightEffectiveMount, null);
+        }
+
         _lastObservation = null;
         _leftCapture = null;
         _rightCapture = null;
@@ -1764,15 +1986,31 @@ internal sealed class InternalDriverSession :
     {
         _registration = null;
         _platformProbe = null;
-        _profiles = null;
-        Volatile.Write(ref _leftEffectiveMount, null);
-        Volatile.Write(ref _rightEffectiveMount, null);
         _lastObservation = null;
         _leftCapture = null;
         _rightCapture = null;
         _timing = null;
         _lastLeftTimestamp = 0;
         _lastRightTimestamp = 0;
+        InternalDriverMountAdjustmentSnapshot mountSnapshot;
+        lock (_mountAdjustmentSync)
+        {
+            // Apply/Save, effective-source retirement, and availability form
+            // one linearized control-plane transition. Cleanup waits for an
+            // in-flight persistence commit and no completed Apply/Save can
+            // observe sources retired underneath it.
+            _profiles = null;
+            Volatile.Write(ref _leftEffectiveMount, null);
+            Volatile.Write(ref _rightEffectiveMount, null);
+            mountSnapshot = _mountAdjustmentSnapshot with
+            {
+                Revision = checked(_mountAdjustmentSnapshot.Revision + 1),
+                IsAvailable = false,
+            };
+            _mountAdjustmentSnapshot = mountSnapshot;
+        }
+
+        PublishMountAdjustmentSnapshotIfCurrent(mountSnapshot);
     }
 
     private static MetaLinkHand ToMetaHand(ProtocolHand hand) => hand switch

@@ -7,6 +7,31 @@ namespace Ltb.Integration.Tests;
 
 public sealed class TwoHandCalibrationWizardEndToEndTests
 {
+    [Theory]
+    [InlineData(CalibrationProfileSchema.DriverProfileVersion)]
+    [InlineData(CalibrationProfileSchema.CurrentVersion)]
+    public void InternalDriverObservationsAcceptReusableSchemaTwoAndThree(
+        int schemaVersion)
+    {
+        var observations = new CalibrationWizardRecalibrationObservations
+        {
+            ControllerRuntime = ControllerRuntimeIdentities.MetaLinkLibOvr,
+            ControllerModel = "Quest 2 Touch",
+            DriverProfile = CalibrationDriverProfiles.LtbTouch,
+            ExpectedSchemaVersion = schemaVersion,
+            ObservedLeftTrackerSerial =
+                ScriptedCalibrationWizardRuntime.LeftTrackerSerial,
+            ObservedRightTrackerSerial =
+                ScriptedCalibrationWizardRuntime.RightTrackerSerial,
+        };
+
+        observations.Validate(
+            [
+                ScriptedCalibrationWizardRuntime.LeftTrackerSerial,
+                ScriptedCalibrationWizardRuntime.RightTrackerSerial,
+            ]);
+    }
+
     [Fact]
     public void ScriptedWizardCommandRequiresProfilesAndAcceptsAnOptionalLog()
     {
@@ -252,7 +277,7 @@ public sealed class TwoHandCalibrationWizardEndToEndTests
 
             var incompatible = File.ReadAllText(profilePath).Replace(
                 "\"schema_version\": 1",
-                "\"schema_version\": 3",
+                $"\"schema_version\": {CalibrationProfileSchema.CurrentVersion + 1}",
                 StringComparison.Ordinal);
             File.WriteAllText(profilePath, incompatible);
             var schemaOutput = new RecordingWizardOutput();

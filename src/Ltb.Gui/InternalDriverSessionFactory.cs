@@ -18,9 +18,20 @@ public interface IInternalDriverSessionFactory
 /// </summary>
 public sealed class InternalDriverSessionFactory : IInternalDriverSessionFactory
 {
-    public IInternalDriverSession Create(InternalDriverSessionIntent intent) =>
-        Ltb.App.InternalDriverSessionFactory.Create(new InternalDriverSessionOptions
+    private readonly AppMountAdjustmentPort? _mountAdjustmentPort;
+
+    public InternalDriverSessionFactory(AppMountAdjustmentPort? mountAdjustmentPort = null)
+    {
+        _mountAdjustmentPort = mountAdjustmentPort;
+    }
+
+    public IInternalDriverSession Create(InternalDriverSessionIntent intent)
+    {
+        var session = Ltb.App.InternalDriverSessionFactory.Create(new InternalDriverSessionOptions
         {
             Intent = intent,
         });
+        _mountAdjustmentPort?.Bind(session);
+        return session;
+    }
 }

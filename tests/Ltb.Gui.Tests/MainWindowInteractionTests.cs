@@ -302,8 +302,9 @@ public sealed class MainWindowInteractionTests
     {
         var session = new ControlledSession();
         var port = new ControlledMountAdjustmentPort(CreateMountSnapshot());
+        var factory = new ControlledSessionFactory(session);
         var viewModel = new InternalDriverViewModel(
-            new ControlledSessionFactory(session),
+            factory,
             action => action(),
             mountAdjustmentPort: port);
         var window = new MainWindow
@@ -324,15 +325,10 @@ public sealed class MainWindowInteractionTests
             Assert.True(both.IsEffectivelyEnabled);
 
             Click(window, left);
-            Assert.True(
-                SpinWait.SpinUntil(
-                    () => port.CalibrationTargets.Count == 1,
-                    InteractionTimeout),
-                "The left-only calibration action did not dispatch.");
-            Assert.Equal(MountAdjustmentCalibrationTarget.Left, port.CalibrationTargets[0]);
-
-            Click(window, action);
             AssertCompletes(session.Started, "The controlled session did not start.");
+            Assert.Equal(
+                InternalDriverSessionIntent.CalibrateLeft,
+                Assert.Single(factory.Intents));
             Assert.False(left.IsEffectivelyEnabled);
             Assert.False(right.IsEffectivelyEnabled);
             Assert.False(both.IsEffectivelyEnabled);
@@ -347,20 +343,6 @@ public sealed class MainWindowInteractionTests
                         viewModel.MountAdjustments.CalibrateBothCommand.CanExecute(null),
                     InteractionTimeout),
                 "The controlled session did not stop.");
-            ExecuteBoundCommand(right);
-            ExecuteBoundCommand(both);
-            Assert.True(
-                SpinWait.SpinUntil(
-                    () => port.CalibrationTargets.Count == 3,
-                    InteractionTimeout),
-                "The right-only and both-hand actions did not dispatch.");
-            Assert.Equal(
-                [
-                    MountAdjustmentCalibrationTarget.Left,
-                    MountAdjustmentCalibrationTarget.Right,
-                    MountAdjustmentCalibrationTarget.Both,
-                ],
-                port.CalibrationTargets);
         }
         finally
         {
@@ -369,12 +351,45 @@ public sealed class MainWindowInteractionTests
         }
     }
 
+    [Theory]
+    [InlineData(
+        MountAdjustmentCalibrationTarget.Left,
+        InternalDriverSessionIntent.CalibrateLeft)]
+    [InlineData(
+        MountAdjustmentCalibrationTarget.Right,
+        InternalDriverSessionIntent.CalibrateRight)]
+    [InlineData(
+        MountAdjustmentCalibrationTarget.Both,
+        InternalDriverSessionIntent.Calibrate)]
+    public async Task SelectedCalibrationTargetsMapToExactStoppedSessionIntent(
+        MountAdjustmentCalibrationTarget target,
+        InternalDriverSessionIntent expectedIntent)
+    {
+        var factory = new CompletingSessionFactory();
+        var viewModel = new InternalDriverViewModel(
+            factory,
+            action => action(),
+            mountAdjustmentPort: new ControlledMountAdjustmentPort(
+                CreateMountSnapshot()));
+        try
+        {
+            await viewModel.MountAdjustments.RequestCalibrationAsync(target);
+
+            Assert.Equal(expectedIntent, Assert.Single(factory.Intents));
+            Assert.Equal(InternalDriverSessionState.Stopped, viewModel.CurrentPhase);
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
     [AvaloniaFact]
     public void NeutralizationStateAndRestoreFailureWarningRemainConspicuousUntilCleared()
     {
         var initial = CreateMountSnapshot(
             neutralization: new MountAdjustmentNeutralizationSnapshot(
-                MountAdjustmentNeutralizationPhase.RestoreFailed,
+                InternalDriverTrackerNeutralizationState.RestoreFailed,
                 "Tracker roles could not be restored."),
             warning: MountAdjustmentRestoreWarningUpdate.Failure(
                 "Restore failed: inspect SteamVR tracker roles before continuing."));
@@ -411,7 +426,7 @@ public sealed class MainWindowInteractionTests
             port.Publish(initial with
             {
                 Neutralization = new MountAdjustmentNeutralizationSnapshot(
-                    MountAdjustmentNeutralizationPhase.Restored,
+                    InternalDriverTrackerNeutralizationState.Restored,
                     "Tracker roles restored after teardown."),
                 RestoreWarning = MountAdjustmentRestoreWarningUpdate.Unchanged,
             });
@@ -589,6 +604,39 @@ public sealed class MainWindowInteractionTests
     {
         public IInternalDriverSession Create(InternalDriverSessionIntent intent) =>
             throw new InvalidOperationException("synthetic factory failure");
+    }
+
+    private sealed class CompletingSessionFactory : IInternalDriverSessionFactory
+    {
+        private readonly List<InternalDriverSessionIntent> _intents = [];
+
+        public IReadOnlyList<InternalDriverSessionIntent> Intents => _intents;
+
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent)
+        {
+            _intents.Add(intent);
+            return new CompletingSession();
+        }
+    }
+
+    private sealed class CompletingSession : IInternalDriverSession
+    {
+        public event EventHandler<InternalDriverSessionSnapshot>? SnapshotChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public InternalDriverSessionSnapshot CurrentSnapshot =>
+            InternalDriverSessionSnapshot.Initial;
+
+        public Task RunAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public ValueTask StopAsync(CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class ControlledSession : IInternalDriverSession

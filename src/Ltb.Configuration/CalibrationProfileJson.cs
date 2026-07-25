@@ -318,13 +318,13 @@ public static class CalibrationProfileJson
             values[1] * values[1] +
             values[2] * values[2];
         var maximumSquared =
-            ProfileValidation.MaximumMountAdjustmentTranslationMeters *
-            ProfileValidation.MaximumMountAdjustmentTranslationMeters;
+            MountAdjustment.MaximumTranslationMeters *
+            MountAdjustment.MaximumTranslationMeters;
         if (magnitudeSquared > maximumSquared)
         {
             throw Invalid(
                 $"'{field}' magnitude must be at most " +
-                $"{ProfileValidation.MaximumMountAdjustmentTranslationMeters} meters.");
+                $"{MountAdjustment.MaximumTranslationMeters} meters.");
         }
     }
 

@@ -230,7 +230,7 @@ public sealed record InternalDriverLighthouseHmdEvidence
     public string? ModelNumber { get; }
 }
 
-/// <summary>Calibration model selected in an exact retained schema-2 profile.</summary>
+/// <summary>Calibration model selected in a reusable first-party profile.</summary>
 public enum InternalDriverCalibrationMode
 {
     RotationOnly = 0,
@@ -269,7 +269,7 @@ public sealed record InternalDriverCalibrationQualityEvidence
     public double InlierRatio { get; }
 }
 
-/// <summary>Typed evidence copied from an exact retained schema-2 profile.</summary>
+/// <summary>Typed evidence copied from an exact retained schema-2 or schema-3 profile.</summary>
 public sealed record InternalDriverCalibrationEvidence
 {
     public InternalDriverCalibrationEvidence(
@@ -280,12 +280,16 @@ public sealed record InternalDriverCalibrationEvidence
         InternalDriverCalibrationQualityEvidence quality,
         DateTimeOffset createdUtc)
     {
-        if (schemaVersion != CalibrationProfileSchema.CurrentVersion)
+        if (schemaVersion is not
+                CalibrationProfileSchema.DriverProfileVersion and not
+                CalibrationProfileSchema.CurrentVersion)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(schemaVersion),
                 schemaVersion,
-                $"Calibration evidence requires schema {CalibrationProfileSchema.CurrentVersion}.");
+                $"Calibration evidence requires reusable schema " +
+                $"{CalibrationProfileSchema.DriverProfileVersion} or " +
+                $"{CalibrationProfileSchema.CurrentVersion}.");
         }
 
         if (!Enum.IsDefined(selectedMode))
@@ -532,7 +536,10 @@ public sealed record InternalDriverHandSnapshot(
     InternalDriverNeutralReason NeutralReason,
     string Diagnostic)
 {
-    /// <summary>Exact retained schema-2 profile evidence, when one exists for this run.</summary>
+    /// <summary>
+    /// Exact retained compatible schema-2 or schema-3 profile evidence, when
+    /// one exists for this run.
+    /// </summary>
     public InternalDriverCalibrationEvidence? Calibration { get; init; }
 
     /// <summary>Latest real guided-capture evidence for this hand in this run.</summary>
@@ -647,8 +654,8 @@ public sealed record InternalDriverSessionSnapshot(
     public InternalDriverTimingSnapshot? Timing { get; init; }
 
     /// <summary>
-    /// Additive exact-two tracker-path snapshot/restore evidence when the
-    /// provisional W3 runtime capability is present.
+    /// Additive exact-two tracker-path snapshot/restore evidence from the
+    /// production or test runtime capability.
     /// </summary>
     public InternalDriverTrackerNeutralizationSnapshot? TrackerNeutralization { get; init; }
 
@@ -695,6 +702,70 @@ public interface IInternalDriverSession : IAsyncDisposable
 public interface IInternalDriverEffectiveMountControl
 {
     void UpdateEffectiveMount(ProtocolHand hand, RigidTransform trackerFromController);
+}
+
+/// <summary>App-authoritative per-hand mount-adjustment state.</summary>
+public sealed record InternalDriverMountAdjustmentHandSnapshot(
+    RigidTransform BaseMount,
+    MountAdjustment AppliedAdjustments,
+    MountAdjustment SavedAdjustments,
+    RigidTransform EffectiveMount);
+
+/// <summary>
+/// Immutable mount-adjustment state. Revision advances when adjustment values
+/// change and when lifecycle teardown retires availability. Status-only
+/// snapshots do not advance it, so they cannot overwrite a same-revision GUI
+/// edit buffer; delayed operation acknowledgements cannot overwrite teardown.
+/// </summary>
+public sealed record InternalDriverMountAdjustmentSnapshot(
+    long Revision,
+    bool IsAvailable,
+    InternalDriverMountAdjustmentHandSnapshot Left,
+    InternalDriverMountAdjustmentHandSnapshot Right)
+{
+    public static InternalDriverMountAdjustmentSnapshot Unavailable { get; } = new(
+        Revision: 0,
+        IsAvailable: false,
+        new(
+            RigidTransform.Identity,
+            MountAdjustment.Identity,
+            MountAdjustment.Identity,
+            RigidTransform.Identity),
+        new(
+            RigidTransform.Identity,
+            MountAdjustment.Identity,
+            MountAdjustment.Identity,
+            RigidTransform.Identity));
+}
+
+public sealed record InternalDriverMountAdjustmentResult(
+    long AcknowledgedRevision,
+    bool Succeeded,
+    string Diagnostic,
+    InternalDriverMountAdjustmentSnapshot Snapshot);
+
+/// <summary>
+/// Concrete App control plane for live effective mounts and explicit profile
+/// persistence. Apply never writes the profile store; Save is the only
+/// adjustment persistence operation.
+/// </summary>
+public interface IInternalDriverMountAdjustmentControl
+{
+    event EventHandler<InternalDriverMountAdjustmentSnapshot>? MountAdjustmentChanged;
+
+    InternalDriverMountAdjustmentSnapshot CurrentMountAdjustment { get; }
+
+    ValueTask<InternalDriverMountAdjustmentResult> ApplyMountAdjustmentAsync(
+        long revision,
+        ProtocolHand hand,
+        MountAdjustment adjustment,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<InternalDriverMountAdjustmentResult> SaveMountAdjustmentsAsync(
+        long revision,
+        MountAdjustment left,
+        MountAdjustment right,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>Semantic hand set selected for an explicit calibration request.</summary>
@@ -857,6 +928,15 @@ internal sealed record InternalDriverHandProfile(
     string Diagnostic)
 {
     public InternalDriverCalibrationEvidence? Calibration { get; init; }
+
+    public MountAdjustment MountAdjustment { get; init; } = MountAdjustment.Identity;
+
+    public CalibrationProfile? SourceProfile { get; init; }
+
+    public RigidTransform EffectiveTrackerFromController =>
+        CoordinateConventions.ComposeEffectiveMount(
+            TrackerFromController,
+            MountAdjustment);
 }
 
 internal sealed record InternalDriverProfilePair(
@@ -892,6 +972,13 @@ internal interface IInternalDriverSessionRuntime : IAsyncDisposable
         InternalDriverRuntimeObservation observation,
         InternalDriverProgress progress,
         CancellationToken cancellationToken);
+
+    InternalDriverProfilePair SaveMountAdjustments(
+        InternalDriverProfilePair profiles,
+        MountAdjustment left,
+        MountAdjustment right) =>
+        throw new NotSupportedException(
+            "This runtime does not provide calibration-profile adjustment persistence.");
 
     IDriverFeed CreateFeed();
 
