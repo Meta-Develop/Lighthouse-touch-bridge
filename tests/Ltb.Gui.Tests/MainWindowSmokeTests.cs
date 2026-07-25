@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Headless.XUnit;
+using Avalonia.LogicalTree;
 using Avalonia.Styling;
 using Avalonia.VisualTree;
 using Ltb.App;
@@ -27,7 +28,19 @@ public sealed class MainWindowSmokeTests
 
             Assert.Same(viewModel, window.DataContext);
             Assert.Equal(ThemeVariant.Dark, Application.Current!.RequestedThemeVariant);
+            var tabs = window.FindControl<TabControl>("MainTabs");
+            Assert.NotNull(tabs);
+            Assert.Equal(4, tabs!.ItemCount);
+            Assert.Equal(
+                ["Setup", "Status", "Calibration", "Diagnostics (Debug)"],
+                tabs.Items
+                    .OfType<TabItem>()
+                    .Select(tab => Assert.IsType<string>(tab.Header)));
+            Assert.Equal(0, tabs.SelectedIndex);
+            Assert.True(window.FindControl<Border>("PersistentHeader")!.IsVisible);
+            Assert.True(window.FindControl<Border>("EvidenceOriginBadge")!.IsVisible);
             Assert.Equal("Stopped", window.FindControl<TextBlock>("PhaseText")!.Text);
+            Assert.Equal("Stopped", window.FindControl<TextBlock>("OverallStatusText")!.Text);
             Assert.Equal("Start", window.FindControl<Button>("ActionButton")!.Content);
             var calibrationButton = window.FindControl<Button>("CalibrationButton");
             Assert.NotNull(calibrationButton);
@@ -117,20 +130,20 @@ public sealed class MainWindowSmokeTests
             Assert.Contains("hardware/device acquisition", timingScope.Text, StringComparison.Ordinal);
             Assert.Contains("SteamVR compositor", timingScope.Text, StringComparison.Ordinal);
             Assert.Contains("display scanout", timingScope.Text, StringComparison.Ordinal);
-            var visibleText = window.GetVisualDescendants()
+            var surfaceText = window.GetLogicalDescendants()
                 .OfType<TextBlock>()
                 .Select(text => text.Text ?? string.Empty)
                 .ToArray();
-            Assert.Equal(2, visibleText.Count(text => text == "Rotation progress"));
+            Assert.Equal(2, surfaceText.Count(text => text == "Rotation progress"));
             Assert.Equal(
                 2,
-                visibleText.Count(text => text == "Position tracking availability (optional)"));
-            Assert.DoesNotContain(visibleText, text => text == "Position progress");
+                surfaceText.Count(text => text == "Position tracking availability (optional)"));
+            Assert.DoesNotContain(surfaceText, text => text == "Position progress");
             Assert.DoesNotContain(
-                visibleText,
+                surfaceText,
                 text => text.Contains("Global calibration phase estimate", StringComparison.Ordinal));
             Assert.DoesNotContain(
-                visibleText,
+                surfaceText,
                 text => text.Contains("Not exposed", StringComparison.Ordinal));
             Assert.NotNull(window.FindControl<TextBlock>("FeedStateText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedSessionText"));
@@ -138,6 +151,46 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<TextBlock>("FeedHeartbeatText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedReconnectText"));
             Assert.NotNull(window.FindControl<TextBlock>("FeedErrorText"));
+        }
+        finally
+        {
+            window.Close();
+            viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    }
+
+    [AvaloniaFact]
+    public void SharedSetupBindingsPopulateTheHeadlessSurface()
+    {
+        var viewModel = new InternalDriverViewModel(
+            new IdleSessionFactory(),
+            action => action());
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+        };
+        try
+        {
+            window.Show();
+
+            var setupSteps = window.FindControl<ItemsControl>("SetupStepsList");
+            Assert.NotNull(setupSteps);
+            Assert.Equal(5, setupSteps!.ItemCount);
+            Assert.Same(
+                RequiredProperty(viewModel, "SetupSteps"),
+                setupSteps.ItemsSource);
+            Assert.Same(
+                RequiredProperty(viewModel, "RefreshPrerequisitesCommand"),
+                window.FindControl<Button>("RefreshPrerequisitesButton")!.Command);
+            Assert.Equal(
+                RequiredProperty(viewModel, "StartGateReason"),
+                window.FindControl<TextBlock>("StartGateReasonText")!.Text);
+            Assert.Equal(
+                RequiredProperty(viewModel, "CalibrationGateReason"),
+                window.FindControl<TextBlock>("CalibrationGateReasonText")!.Text);
+            Assert.Equal(
+                RequiredProperty(viewModel, "IsPreflightProbing"),
+                window.FindControl<ProgressBar>("PreflightProgress")!.IsVisible);
         }
         finally
         {
@@ -179,7 +232,7 @@ public sealed class MainWindowSmokeTests
     }
 
     [AvaloniaFact]
-    public void PrimaryActionsRemainPinnedAndUsableAtMinimumSizeWithLargeText()
+    public void TabbedWorkflowKeepsPersistentHeaderAndLocalScrollOrderAtMinimumSize()
     {
         var viewModel = new InternalDriverViewModel(
             new IdleSessionFactory(),
@@ -195,19 +248,115 @@ public sealed class MainWindowSmokeTests
         {
             window.Show();
 
-            var scrollViewer = window.FindControl<ScrollViewer>("EvidenceScrollViewer");
+            var tabs = window.FindControl<TabControl>("MainTabs");
+            var header = window.FindControl<Border>("PersistentHeader");
+            var setupScroll = window.FindControl<ScrollViewer>("SetupScrollViewer");
+            var statusScroll = window.FindControl<ScrollViewer>("StatusScrollViewer");
+            var calibrationScroll = window.FindControl<ScrollViewer>("CalibrationScrollViewer");
+            var diagnosticsScroll = window.FindControl<ScrollViewer>("DiagnosticsScrollViewer");
+            var actions = window.FindControl<WrapPanel>("SetupActionsPanel");
             var calibration = window.FindControl<Button>("CalibrationButton");
             var action = window.FindControl<Button>("ActionButton");
-            Assert.NotNull(scrollViewer);
+            Assert.NotNull(tabs);
+            Assert.NotNull(header);
+            Assert.NotNull(setupScroll);
+            Assert.NotNull(statusScroll);
+            Assert.NotNull(calibrationScroll);
+            Assert.NotNull(diagnosticsScroll);
+            Assert.NotNull(actions);
             Assert.NotNull(calibration);
             Assert.NotNull(action);
+            Assert.Equal(
+                ["Setup", "Status", "Calibration", "Diagnostics (Debug)"],
+                tabs!.Items
+                    .OfType<TabItem>()
+                    .Select(tab => Assert.IsType<string>(tab.Header)));
             Assert.True(calibration!.Bounds.Width >= calibration.MinWidth);
             Assert.True(action!.Bounds.Width >= action.MinWidth);
-            Assert.DoesNotContain(scrollViewer!, calibration.GetVisualAncestors());
-            Assert.DoesNotContain(scrollViewer, action.GetVisualAncestors());
-            Assert.Equal(ScrollBarVisibility.Disabled, scrollViewer.HorizontalScrollBarVisibility);
+            Assert.Equal(
+                [action, calibration],
+                actions!.Children.OfType<Button>());
+            Assert.Contains("primary", action.Classes);
+            Assert.DoesNotContain("secondary", action.Classes);
+            Assert.Contains("secondary", calibration.Classes);
+            Assert.DoesNotContain("primary", calibration.Classes);
+            Assert.Contains(setupScroll!, action.GetVisualAncestors());
+            Assert.Contains(setupScroll, calibration.GetVisualAncestors());
+            Assert.DoesNotContain(setupScroll, header!.GetVisualAncestors());
+            Assert.All(
+                new[]
+                {
+                    setupScroll,
+                    statusScroll!,
+                    calibrationScroll!,
+                    diagnosticsScroll!,
+                },
+                scroll => Assert.Equal(
+                    ScrollBarVisibility.Disabled,
+                    scroll.HorizontalScrollBarVisibility));
+
+            for (var index = 0; index < tabs.ItemCount; index++)
+            {
+                tabs.SelectedIndex = index;
+                Assert.True(header.IsVisible);
+                Assert.True(window.FindControl<TextBlock>("PhaseText")!.IsVisible);
+                Assert.True(window.FindControl<TextBlock>("OverallStatusText")!.IsVisible);
+                Assert.True(window.FindControl<Border>("EvidenceOriginBadge")!.IsVisible);
+            }
+
             Assert.True(window.Bounds.Width >= window.MinWidth);
             Assert.True(window.Bounds.Height >= window.MinHeight);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    }
+
+    [AvaloniaFact]
+    public void DiagnosticsContentIsOptInAndKeepsBoundedSamplingDisclosure()
+    {
+        var viewModel = new InternalDriverViewModel(
+            new IdleSessionFactory(),
+            action => action());
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+        };
+        try
+        {
+            window.Show();
+            window.FindControl<TabControl>("MainTabs")!.SelectedIndex = 3;
+
+            var toggle = window.FindControl<ToggleSwitch>("DebugToggle");
+            var drawer = window.FindControl<Border>("DebugDrawer");
+            Assert.NotNull(toggle);
+            Assert.NotNull(drawer);
+            Assert.False(toggle!.IsChecked);
+            Assert.False(drawer!.IsVisible);
+
+            viewModel.IsDebugEnabled = true;
+
+            Assert.True(viewModel.IsDebugEnabled);
+            Assert.True(toggle.IsChecked);
+            Assert.True(drawer.IsVisible);
+            var disclosure = drawer.GetVisualDescendants()
+                .OfType<TextBlock>()
+                .Select(text => text.Text ?? string.Empty)
+                .Single(text => text.Contains("fixed 600-sample ring", StringComparison.Ordinal));
+            Assert.Contains("Opt-in only", disclosure, StringComparison.Ordinal);
+            Assert.Contains("10 Hz maximum", disclosure, StringComparison.Ordinal);
+            Assert.Contains("last 60 seconds", drawer.GetVisualDescendants()
+                .OfType<TextBlock>()
+                .Select(text => text.Text ?? string.Empty)
+                .Single(text => text.StartsWith("Debug diagnostics", StringComparison.Ordinal)));
+
+            viewModel.IsDebugEnabled = false;
+
+            Assert.False(viewModel.IsDebugEnabled);
+            Assert.False(toggle.IsChecked);
+            Assert.False(drawer.IsVisible);
         }
         finally
         {
@@ -273,4 +422,9 @@ public sealed class MainWindowSmokeTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
+
+    private static object RequiredProperty(object instance, string propertyName) =>
+        instance.GetType().GetProperty(propertyName)?.GetValue(instance) ??
+        throw new InvalidOperationException(
+            $"Required shared ViewModel property '{propertyName}' was not available.");
 }
