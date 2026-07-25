@@ -28,7 +28,7 @@ public enum SteamVrControllerRole
 public sealed record SteamVrDeviceMetadata
 {
     public SteamVrDeviceMetadata(
-        string driverId,
+        string? driverId,
         string? trackingSystemName,
         string? manufacturerName,
         string? modelNumber,
@@ -39,30 +39,62 @@ public sealed record SteamVrDeviceMetadata
             manufacturerName,
             modelNumber,
             controllerType,
-            inputProfilePath: null)
+            inputProfilePath: null,
+            driverVersion: null)
     {
     }
 
     public SteamVrDeviceMetadata(
-        string driverId,
+        string? driverId,
         string? trackingSystemName,
         string? manufacturerName,
         string? modelNumber,
         string? controllerType,
         string? inputProfilePath)
+        : this(
+            driverId,
+            trackingSystemName,
+            manufacturerName,
+            modelNumber,
+            controllerType,
+            inputProfilePath,
+            driverVersion: null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(driverId);
-        DriverId = driverId;
+    }
+
+    public SteamVrDeviceMetadata(
+        string? driverId,
+        string? trackingSystemName,
+        string? manufacturerName,
+        string? modelNumber,
+        string? controllerType,
+        string? inputProfilePath,
+        string? driverVersion)
+    {
+        DriverId = NormalizeOptional(driverId);
         TrackingSystemName = NormalizeOptional(trackingSystemName);
         ManufacturerName = NormalizeOptional(manufacturerName);
         ModelNumber = NormalizeOptional(modelNumber);
         ControllerType = NormalizeOptional(controllerType);
         InputProfilePath = NormalizeOptional(inputProfilePath);
+        DriverVersion = NormalizeOptional(driverVersion);
     }
 
-    public string DriverId { get; }
+    /// <summary>
+    /// Driver identity parsed from the registered-device path when OpenVR
+    /// reports a canonical path. This remains unavailable when that property
+    /// is absent or invalid; it is never inferred from other metadata.
+    /// </summary>
+    public string? DriverId { get; }
 
     public string? TrackingSystemName { get; }
+
+    /// <summary>
+    /// Literal local tracking-system identity reported by OpenVR. This is kept
+    /// separate from <see cref="TrackingSystemName"/> so aliases and the
+    /// underlying runtime observation retain distinct provenance.
+    /// </summary>
+    public string? ActualTrackingSystemName { get; internal init; }
 
     public string? ManufacturerName { get; }
 
@@ -75,6 +107,12 @@ public sealed record SteamVrDeviceMetadata
     /// evidence and is not inferred from a stored calibration profile.
     /// </summary>
     public string? InputProfilePath { get; }
+
+    /// <summary>
+    /// Version string reported by OpenVR's active device driver. This is
+    /// observed runtime evidence rather than a staged or configured version.
+    /// </summary>
+    public string? DriverVersion { get; }
 
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();

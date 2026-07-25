@@ -41,6 +41,7 @@ public sealed class OpenVrPoseSourceTests
         Assert.Equal(0.025, sample.PredictionOffsetSeconds);
         Assert.Equal(0.003, sample.SampleAgeSeconds);
         Assert.Equal(0.025, runtime.LastPredictionOffsetSeconds);
+        Assert.Equal(OpenVrTrackingUniverse.Standing, runtime.LastTrackingUniverse);
 
         var recorded = sample.ToRecordedPoseSample();
         Assert.Equal(sample.PoseSample, recorded.PoseSample);
@@ -49,6 +50,292 @@ public sealed class OpenVrPoseSourceTests
         Assert.Equal(sample.RuntimeTimeSeconds, recorded.RuntimeTimeSeconds);
         Assert.Equal(sample.PredictionOffsetSeconds, recorded.PredictionOffsetSeconds);
         Assert.Equal(sample.SampleAgeSeconds, recorded.SampleAgeSeconds);
+    }
+
+    [Fact]
+    public void SessionDefaultPoseFactoriesPreserveStandingUniverse()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        using var session = new OpenVrSession(runtime);
+
+        session.CreateInputControllerPoseSource(ControllerDescriptor()).ReadPose();
+        Assert.Equal(OpenVrTrackingUniverse.Standing, runtime.LastTrackingUniverse);
+
+        session.CreateTrackedPoseSource(TrackerDescriptor()).ReadPose();
+        Assert.Equal(OpenVrTrackingUniverse.Standing, runtime.LastTrackingUniverse);
+    }
+
+    [Fact]
+    public void SessionExplicitRawTrackerSourcePropagatesRawDriverSpaceUniverse()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        using var session = new OpenVrSession(runtime);
+        var source = session.CreateTrackedPoseSource(
+            TrackerDescriptor(),
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+
+        source.ReadPose();
+
+        Assert.Equal(
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            runtime.LastTrackingUniverse);
+    }
+
+    [Fact]
+    public void RawTrackerSourcePreservesExactIngressTimestampAndFiniteVelocities()
+    {
+        const double expectedIngressTime = 1234.567890123;
+        var expectedLinearVelocity = new Vector3(1.25f, -2.5f, 0.75f);
+        var expectedAngularVelocity = new Vector3(-0.5f, 1.5f, 2.25f);
+        var runtimePose = new OpenVrRuntimePose(
+            RigidTransform.Identity,
+            PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid,
+            IsConnected: true,
+            PoseTrackingResult.RunningOk,
+            RuntimeTimeSeconds: null,
+            PredictionOffsetSeconds: 0d,
+            SampleAgeSeconds: null,
+            LinearVelocityMetersPerSecond: expectedLinearVelocity,
+            AngularVelocityRadiansPerSecond: expectedAngularVelocity);
+        using var runtime = new FakeOpenVrRuntime(pose: runtimePose);
+        var source = new OpenVrTrackedPoseSourceAdapter(
+            runtime,
+            new AssertingClock(runtime, expectedIngressTime),
+            TrackerDescriptor(),
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            predictionOffsetSeconds: 0d);
+
+        var sample = source.ReadPose();
+
+        Assert.Equal(expectedIngressTime, sample.MonotonicHostTimeSeconds);
+        Assert.Equal(expectedLinearVelocity, sample.LinearVelocityMetersPerSecond);
+        Assert.Equal(expectedAngularVelocity, sample.AngularVelocityRadiansPerSecond);
+        Assert.Equal(
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            runtime.LastTrackingUniverse);
+    }
+
+    [Fact]
+    public void BatchSourceUsesOneRuntimeAcquisitionAndOneSharedPostCallIngressTimestamp()
+    {
+        using var runtime = new BatchFakeOpenVrRuntime();
+        var source = new OpenVrTrackedPoseBatchSourceAdapter(
+            runtime,
+            new BatchAssertingClock(runtime, 9876.54321),
+            [
+                TrackerDescriptor("tracker-left", 7),
+                TrackerDescriptor("tracker-right", 11),
+            ],
+            OpenVrTrackingUniverse.RawAndUncalibrated,
+            predictionOffsetSeconds: 0.0125);
+
+        var samples = source.ReadPoses();
+
+        Assert.Equal(1, runtime.BatchReadCount);
+        Assert.Equal(new uint[] { 7, 11 }, runtime.LastTransientDeviceIndexes);
+        Assert.Equal(OpenVrTrackingUniverse.RawAndUncalibrated, runtime.LastTrackingUniverse);
+        Assert.Equal(0.0125, runtime.LastPredictionOffsetSeconds);
+        Assert.Collection(
+            samples,
+            left =>
+            {
+                Assert.Equal("tracker-left", left.Device.StableDeviceId);
+                Assert.Equal(9876.54321, left.Sample.MonotonicHostTimeSeconds);
+                Assert.Equal(new Vector3(7f, 0f, 0f), left.Sample.Pose.TranslationMeters);
+            },
+            right =>
+            {
+                Assert.Equal("tracker-right", right.Device.StableDeviceId);
+                Assert.Equal(9876.54321, right.Sample.MonotonicHostTimeSeconds);
+                Assert.Equal(new Vector3(11f, 0f, 0f), right.Sample.Pose.TranslationMeters);
+            });
+    }
+
+    [Fact]
+    public void SessionBatchSourceUsesExplicitDeterministicFakeSnapshot()
+    {
+        using var runtime = new FakeOpenVrRuntime(
+        [
+            RuntimeTracker("tracker-left", 7),
+            RuntimeTracker("tracker-right", 11),
+        ]);
+        using var session = new OpenVrSession(runtime);
+        var source = session.CreateTrackedPoseBatchSource(
+            [
+                TrackerDescriptor("tracker-left", 7),
+                TrackerDescriptor("tracker-right", 11),
+            ],
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+
+        var samples = source.ReadPoses();
+
+        Assert.Equal(2, runtime.ReadPoseCount);
+        Assert.Equal(2, samples.Count);
+        Assert.Equal(
+            samples[0].Sample.MonotonicHostTimeSeconds,
+            samples[1].Sample.MonotonicHostTimeSeconds);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsTransientIndexReuseAfterEnumeration()
+    {
+        using var runtime = new ReassigningIndexOpenVrRuntime(
+            RuntimeTracker("tracker-left", 7));
+        using var session = new OpenVrSession(runtime);
+        var enumerated = session.EnumerateDevices();
+        var source = session.CreateTrackedPoseBatchSource(
+            enumerated,
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+        runtime.ReplaceDevice(RuntimeTracker("tracker-other", 7));
+
+        var error = Assert.Throws<InvalidDataException>(source.ReadPoses);
+
+        Assert.Contains("no longer resolves", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, runtime.ReadPoseCount);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsTransientIndexReuseDuringExplicitFakeAcquisition()
+    {
+        using var runtime = new ReassigningIndexOpenVrRuntime(
+            RuntimeTracker("tracker-left", 7));
+        using var session = new OpenVrSession(runtime);
+        var source = session.CreateTrackedPoseBatchSource(
+            session.EnumerateDevices(),
+            OpenVrTrackingUniverse.RawAndUncalibrated);
+        runtime.ReplaceDeviceDuringNextRead(RuntimeTracker("tracker-other", 7));
+
+        var error = Assert.Throws<InvalidDataException>(source.ReadPoses);
+
+        Assert.Contains("no longer resolves", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, runtime.ReadPoseCount);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsEmptyDuplicateAndOutOfRangeIndexesBeforeRuntimeRead()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        var clock = new AssertingClock(runtime, 1d);
+
+        Assert.Throws<ArgumentException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: 0d));
+        Assert.Throws<ArgumentException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [
+                    TrackerDescriptor("tracker-left", 7),
+                    TrackerDescriptor("tracker-alias", 7),
+                ],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: 0d));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [TrackerDescriptor(
+                    "tracker-out-of-range",
+                    OpenVrRuntimePoseBatchValidation.MaximumTrackedDeviceCount)],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: 0d));
+
+        Assert.Equal(0, runtime.ReadPoseCount);
+    }
+
+    [Fact]
+    public void BatchSourceRejectsInvalidUniverseAndPredictionBeforeRuntimeRead()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        var device = TrackerDescriptor();
+        var clock = new AssertingClock(runtime, 1d);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [device],
+                (OpenVrTrackingUniverse)int.MaxValue,
+                predictionOffsetSeconds: 0d));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [device],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: double.NaN));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new OpenVrTrackedPoseBatchSourceAdapter(
+                runtime,
+                clock,
+                [device],
+                OpenVrTrackingUniverse.RawAndUncalibrated,
+                predictionOffsetSeconds: double.MaxValue));
+
+        Assert.Equal(0, runtime.ReadPoseCount);
+    }
+
+    [Fact]
+    public void NativeVelocityMappingPreservesFiniteVectorAndDropsInvalidVectors()
+    {
+        Assert.Equal(
+            new Vector3(1.25f, -2.5f, 0.75f),
+            ValveOpenVrRuntime.MapFiniteVelocity(1.25f, -2.5f, 0.75f));
+        Assert.Null(ValveOpenVrRuntime.MapFiniteVelocity(float.NaN, 0f, 0f));
+        Assert.Null(ValveOpenVrRuntime.MapFiniteVelocity(0f, float.PositiveInfinity, 0f));
+        Assert.Null(ValveOpenVrRuntime.MapFiniteVelocity(0f, 0f, float.NegativeInfinity));
+    }
+
+    [Fact]
+    public void PoseSourceSampleRejectsNonFiniteVelocityComponents()
+    {
+        var poseSample = new TimestampedPoseSample(
+            1d,
+            RigidTransform.Identity,
+            PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid);
+
+        var linearException = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PoseSourceSample(
+                poseSample,
+                true,
+                PoseTrackingResult.RunningOk,
+                runtimeTimeSeconds: null,
+                predictionOffsetSeconds: null,
+                sampleAgeSeconds: null,
+                linearVelocityMetersPerSecond: new Vector3(float.NaN, 0f, 0f),
+                angularVelocityRadiansPerSecond: null));
+        var angularException = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PoseSourceSample(
+                poseSample,
+                true,
+                PoseTrackingResult.RunningOk,
+                runtimeTimeSeconds: null,
+                predictionOffsetSeconds: null,
+                sampleAgeSeconds: null,
+                linearVelocityMetersPerSecond: null,
+                angularVelocityRadiansPerSecond: new Vector3(0f, float.PositiveInfinity, 0f)));
+
+        Assert.Equal("linearVelocityMetersPerSecond", linearException.ParamName);
+        Assert.Equal("angularVelocityRadiansPerSecond", angularException.ParamName);
+    }
+
+    [Fact]
+    public void PoseFactoryRejectsUndefinedTrackingUniverse()
+    {
+        using var runtime = new FakeOpenVrRuntime();
+        using var session = new OpenVrSession(runtime);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            session.CreateTrackedPoseSource(
+                TrackerDescriptor(),
+                (OpenVrTrackingUniverse)int.MaxValue));
+
+        Assert.Equal("trackingUniverse", exception.ParamName);
+        Assert.False(runtime.HasReadPose);
     }
 
     [Fact]
@@ -158,6 +445,31 @@ public sealed class OpenVrPoseSourceTests
     }
 
     [Fact]
+    public void LegacyAndVelocityPoseSourceSampleConstructorsRemainAvailable()
+    {
+        Assert.NotNull(typeof(PoseSourceSample).GetConstructor(
+        [
+            typeof(TimestampedPoseSample),
+            typeof(bool),
+            typeof(PoseTrackingResult),
+            typeof(double?),
+            typeof(double?),
+            typeof(double?),
+        ]));
+        Assert.NotNull(typeof(PoseSourceSample).GetConstructor(
+        [
+            typeof(TimestampedPoseSample),
+            typeof(bool),
+            typeof(PoseTrackingResult),
+            typeof(double?),
+            typeof(double?),
+            typeof(double?),
+            typeof(Vector3?),
+            typeof(Vector3?),
+        ]));
+    }
+
+    [Fact]
     public void NonWindowsFactoryFailureIsBoundedAndDoesNotLoadNativeRuntime()
     {
         if (OperatingSystem.IsWindows())
@@ -200,6 +512,27 @@ public sealed class OpenVrPoseSourceTests
             SteamVrControllerRole.LeftHand,
             true);
 
+    private static SteamVrDeviceDescriptor TrackerDescriptor(
+        string serialNumber = "tracker-left",
+        uint transientDeviceIndex = 7) =>
+        new(
+            new SteamVrDeviceIdentity(serialNumber, $"lighthouse/{serialNumber}"),
+            transientDeviceIndex,
+            SteamVrDeviceCategory.GenericTracker,
+            SteamVrControllerRole.None,
+            true);
+
+    private static OpenVrRuntimeDevice RuntimeTracker(
+        string serialNumber,
+        uint transientDeviceIndex) =>
+        new(
+            transientDeviceIndex,
+            serialNumber,
+            $"lighthouse/{serialNumber}",
+            OpenVrRuntimeDeviceClass.GenericTracker,
+            OpenVrRuntimeControllerRole.None,
+            IsConnected: true);
+
     private static void AssertVectorClose(Vector3 expected, Vector3 actual)
     {
         Assert.InRange(Vector3.Distance(expected, actual), 0f, 1e-5f);
@@ -215,7 +548,7 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
         IReadOnlyList<OpenVrRuntimeDevice>? devices = null,
         OpenVrRuntimePose? pose = null)
     {
-        _devices = devices ?? [];
+        _devices = Array.AsReadOnly((devices ?? []).ToArray());
         _pose = pose ?? new OpenVrRuntimePose(
             RigidTransform.Identity,
             PoseValidity.None,
@@ -228,19 +561,242 @@ internal sealed class FakeOpenVrRuntime : IOpenVrRuntime
 
     public bool HasReadPose { get; private set; }
 
+    public int ReadPoseCount { get; private set; }
+
     public double? LastPredictionOffsetSeconds { get; private set; }
+
+    public OpenVrTrackingUniverse? LastTrackingUniverse { get; private set; }
 
     public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => _devices;
 
-    public OpenVrRuntimePose ReadPose(uint transientDeviceIndex, double predictionOffsetSeconds)
+    public OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
     {
         HasReadPose = true;
+        ReadPoseCount++;
+        LastTrackingUniverse = trackingUniverse;
         LastPredictionOffsetSeconds = predictionOffsetSeconds;
         return _pose;
     }
 
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var observed = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            _devices,
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(observed
+            .Select(device => new OpenVrRuntimeVerifiedPose(
+                device,
+                ReadPose(
+                    device.TransientDeviceIndex,
+                    trackingUniverse,
+                    predictionOffsetSeconds)))
+            .ToArray());
+    }
+
     public void Dispose()
     {
+    }
+}
+
+internal sealed class BatchFakeOpenVrRuntime : IOpenVrRuntime
+{
+    private static readonly IReadOnlyList<OpenVrRuntimeDevice> Devices = Array.AsReadOnly(
+    [
+        new OpenVrRuntimeDevice(
+            7,
+            "tracker-left",
+            "lighthouse/tracker-left",
+            OpenVrRuntimeDeviceClass.GenericTracker,
+            OpenVrRuntimeControllerRole.None,
+            IsConnected: true),
+        new OpenVrRuntimeDevice(
+            11,
+            "tracker-right",
+            "lighthouse/tracker-right",
+            OpenVrRuntimeDeviceClass.GenericTracker,
+            OpenVrRuntimeControllerRole.None,
+            IsConnected: true),
+    ]);
+
+    public int BatchReadCount { get; private set; }
+
+    public IReadOnlyList<uint> LastTransientDeviceIndexes { get; private set; } = [];
+
+    public OpenVrTrackingUniverse? LastTrackingUniverse { get; private set; }
+
+    public double? LastPredictionOffsetSeconds { get; private set; }
+
+    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => Devices;
+
+    public OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds) =>
+        throw new InvalidOperationException("The optimized batch path called the single-pose fallback.");
+
+    public IReadOnlyList<OpenVrRuntimePose> ReadPoses(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        BatchReadCount++;
+        LastTransientDeviceIndexes = transientDeviceIndexes.ToArray();
+        LastTrackingUniverse = trackingUniverse;
+        LastPredictionOffsetSeconds = predictionOffsetSeconds;
+        return Array.AsReadOnly(transientDeviceIndexes
+            .Select(index => new OpenVrRuntimePose(
+                new RigidTransform(Quaternion.Identity, new Vector3(index, 0f, 0f)),
+                PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid,
+                IsConnected: true,
+                PoseTrackingResult.RunningOk,
+                RuntimeTimeSeconds: null,
+                PredictionOffsetSeconds: predictionOffsetSeconds,
+                SampleAgeSeconds: null))
+            .ToArray());
+    }
+
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var observed = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            Devices,
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        var poses = ReadPoses(
+            observed.Select(device => device.TransientDeviceIndex).ToArray(),
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(observed
+            .Select((device, index) => new OpenVrRuntimeVerifiedPose(device, poses[index]))
+            .ToArray());
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+internal sealed class ReassigningIndexOpenVrRuntime : IOpenVrRuntime
+{
+    private OpenVrRuntimeDevice _device;
+    private OpenVrRuntimeDevice? _replacementDuringNextRead;
+
+    public ReassigningIndexOpenVrRuntime(OpenVrRuntimeDevice device)
+    {
+        _device = device;
+    }
+
+    public int ReadPoseCount { get; private set; }
+
+    public IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices() => [_device];
+
+    public OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        ReadPoseCount++;
+        if (_replacementDuringNextRead is { } replacement)
+        {
+            _device = replacement;
+            _replacementDuringNextRead = null;
+        }
+
+        return new OpenVrRuntimePose(
+            RigidTransform.Identity,
+            PoseValidity.Orientation | PoseValidity.Position | PoseValidity.TrackingValid,
+            IsConnected: true,
+            PoseTrackingResult.RunningOk,
+            RuntimeTimeSeconds: null,
+            PredictionOffsetSeconds: predictionOffsetSeconds,
+            SampleAgeSeconds: null);
+    }
+
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var before = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            [_device],
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        var poses = before
+            .Select(device => ReadPose(
+                device.TransientDeviceIndex,
+                trackingUniverse,
+                predictionOffsetSeconds))
+            .ToArray();
+        var after = DeterministicOpenVrRuntimeSnapshot.VerifyRequests(
+            [_device],
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(after
+            .Select((device, index) => new OpenVrRuntimeVerifiedPose(device, poses[index]))
+            .ToArray());
+    }
+
+    public void ReplaceDevice(OpenVrRuntimeDevice device)
+    {
+        _device = device;
+    }
+
+    public void ReplaceDeviceDuringNextRead(OpenVrRuntimeDevice device)
+    {
+        _replacementDuringNextRead = device;
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+internal static class DeterministicOpenVrRuntimeSnapshot
+{
+    public static OpenVrRuntimePoseRequest[] VerifyRequests(
+        IReadOnlyList<OpenVrRuntimeDevice> devices,
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var validated = OpenVrRuntimePoseBatchValidation.ValidateRequests(
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        var currentByIndex = devices.ToDictionary(device => device.TransientDeviceIndex);
+        var observed = new OpenVrRuntimePoseRequest[validated.Length];
+        for (var index = 0; index < validated.Length; index++)
+        {
+            var request = validated[index];
+            if (!currentByIndex.TryGetValue(request.TransientDeviceIndex, out var current) ||
+                !string.Equals(current.SerialNumber, request.StableSerial, StringComparison.Ordinal) ||
+                !string.Equals(current.DevicePath, request.DevicePath, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"OpenVR transient device index {request.TransientDeviceIndex} no longer resolves to " +
+                    $"serial '{request.StableSerial}' at path '{request.DevicePath}'.");
+            }
+
+            observed[index] = new OpenVrRuntimePoseRequest(
+                current.TransientDeviceIndex,
+                current.SerialNumber,
+                current.DevicePath);
+        }
+
+        return observed;
     }
 }
 
@@ -258,6 +814,24 @@ internal sealed class AssertingClock : IMonotonicClock
     public double GetTimestampSeconds()
     {
         Assert.True(_runtime.HasReadPose, "Host time was captured before the runtime pose entered LTB.");
+        return _timestamp;
+    }
+}
+
+internal sealed class BatchAssertingClock : IMonotonicClock
+{
+    private readonly BatchFakeOpenVrRuntime _runtime;
+    private readonly double _timestamp;
+
+    public BatchAssertingClock(BatchFakeOpenVrRuntime runtime, double timestamp)
+    {
+        _runtime = runtime;
+        _timestamp = timestamp;
+    }
+
+    public double GetTimestampSeconds()
+    {
+        Assert.Equal(1, _runtime.BatchReadCount);
         return _timestamp;
     }
 }

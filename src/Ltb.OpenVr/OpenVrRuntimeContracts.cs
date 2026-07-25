@@ -1,3 +1,4 @@
+using System.Numerics;
 using Ltb.Core;
 
 namespace Ltb.OpenVr;
@@ -47,15 +48,178 @@ internal readonly record struct OpenVrRuntimePose(
     PoseTrackingResult TrackingResult,
     double? RuntimeTimeSeconds,
     double? PredictionOffsetSeconds,
-    double? SampleAgeSeconds);
+    double? SampleAgeSeconds,
+    Vector3? LinearVelocityMetersPerSecond,
+    Vector3? AngularVelocityRadiansPerSecond)
+{
+    public OpenVrRuntimePose(
+        RigidTransform Pose,
+        PoseValidity Validity,
+        bool IsConnected,
+        PoseTrackingResult TrackingResult,
+        double? RuntimeTimeSeconds,
+        double? PredictionOffsetSeconds,
+        double? SampleAgeSeconds)
+        : this(
+            Pose,
+            Validity,
+            IsConnected,
+            TrackingResult,
+            RuntimeTimeSeconds,
+            PredictionOffsetSeconds,
+            SampleAgeSeconds,
+            LinearVelocityMetersPerSecond: null,
+            AngularVelocityRadiansPerSecond: null)
+    {
+    }
+}
+
+internal readonly record struct OpenVrRuntimePoseRequest(
+    uint TransientDeviceIndex,
+    string StableSerial,
+    string DevicePath);
+
+internal readonly record struct OpenVrRuntimeVerifiedPose(
+    OpenVrRuntimePoseRequest Device,
+    OpenVrRuntimePose Pose);
 
 internal interface IOpenVrRuntime : IDisposable
 {
     IReadOnlyList<OpenVrRuntimeDevice> EnumerateDevices();
 
-    OpenVrRuntimePose ReadPose(uint transientDeviceIndex, double predictionOffsetSeconds);
+    OpenVrRuntimePose ReadPose(
+        uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds);
+
+    /// <summary>
+    /// Reads several transient indexes for one logical acquisition. Runtime
+    /// implementations may override this to take one native all-device
+    /// snapshot. The default preserves compatibility with deterministic fakes
+    /// and other narrow implementations by delegating to <see cref="ReadPose"/>.
+    /// </summary>
+    IReadOnlyList<OpenVrRuntimePose> ReadPoses(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var indexes = OpenVrRuntimePoseBatchValidation.Validate(
+            transientDeviceIndexes,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        return Array.AsReadOnly(indexes
+            .Select(index => ReadPose(index, trackingUniverse, predictionOffsetSeconds))
+            .ToArray());
+    }
+
+    /// <summary>
+    /// Returns one logical pose batch together with the identity actually
+    /// verified for each transient index. Every implementation must define this
+    /// contract explicitly: deterministic fakes may use one immutable logical
+    /// snapshot, while production implementations must keep identity validation
+    /// and acquisition in one runtime critical section.
+    /// </summary>
+    IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds);
 
     OpenVrRuntimeHealthSnapshot GetRuntimeHealth() => OpenVrRuntimeHealthSnapshot.Running;
+}
+
+internal static class OpenVrRuntimePoseBatchValidation
+{
+    // OpenVR fixes this limit at k_unMaxTrackedDeviceCount. Keep the portable
+    // contract independent of generated Valve types so Linux fakes validate
+    // the same transient-index range as the Windows adapter.
+    public const uint MaximumTrackedDeviceCount = 64;
+
+    public static uint[] Validate(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(transientDeviceIndexes);
+        if (transientDeviceIndexes.Count == 0)
+        {
+            throw new ArgumentException(
+                "A pose batch must request at least one transient device index.",
+                nameof(transientDeviceIndexes));
+        }
+
+        if (!Enum.IsDefined(trackingUniverse))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(trackingUniverse),
+                trackingUniverse,
+                "Tracking universe must be a defined OpenVR frame contract.");
+        }
+
+        if (!double.IsFinite(predictionOffsetSeconds) ||
+            predictionOffsetSeconds < float.MinValue ||
+            predictionOffsetSeconds > float.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(predictionOffsetSeconds),
+                "Prediction offset must be finite and representable by OpenVR's float-seconds API.");
+        }
+
+        var indexes = new uint[transientDeviceIndexes.Count];
+        var distinctIndexes = new HashSet<uint>();
+        for (var index = 0; index < transientDeviceIndexes.Count; index++)
+        {
+            var transientDeviceIndex = transientDeviceIndexes[index];
+            if (transientDeviceIndex >= MaximumTrackedDeviceCount)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(transientDeviceIndexes),
+                    transientDeviceIndex,
+                    $"Transient device indexes must be below {MaximumTrackedDeviceCount}.");
+            }
+
+            if (!distinctIndexes.Add(transientDeviceIndex))
+            {
+                throw new ArgumentException(
+                    $"Transient device index {transientDeviceIndex} was requested more than once.",
+                    nameof(transientDeviceIndexes));
+            }
+
+            indexes[index] = transientDeviceIndex;
+        }
+
+        return indexes;
+    }
+
+    public static OpenVrRuntimePoseRequest[] ValidateRequests(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        var snapshot = requests.ToArray();
+        _ = Validate(
+            snapshot.Select(request => request.TransientDeviceIndex).ToArray(),
+            trackingUniverse,
+            predictionOffsetSeconds);
+        foreach (var request in snapshot)
+        {
+            if (string.IsNullOrWhiteSpace(request.StableSerial))
+            {
+                throw new ArgumentException(
+                    "Pose-batch stable serials cannot be blank.",
+                    nameof(requests));
+            }
+
+            if (string.IsNullOrWhiteSpace(request.DevicePath))
+            {
+                throw new ArgumentException(
+                    "Pose-batch device paths cannot be blank.",
+                    nameof(requests));
+            }
+        }
+
+        return snapshot;
+    }
 }
 
 internal interface IMonotonicClock

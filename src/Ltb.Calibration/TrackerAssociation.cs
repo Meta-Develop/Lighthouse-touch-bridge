@@ -199,8 +199,9 @@ public sealed record TrackerAssociationResult(
 }
 
 /// <summary>
-/// Associates two trackers to hands from angular-speed magnitude correlation.
-/// It never compares world-space directions or assumes runtime device order.
+/// Selects a unique left/right tracker pair from two or more candidates using
+/// angular-speed magnitude correlation. It never compares world-space
+/// directions or assumes runtime device order.
 /// </summary>
 public static class TrackerHandAssociator
 {
@@ -265,6 +266,7 @@ public static class TrackerHandAssociator
         var perHandAmbiguity = FindPerHandAmbiguity(
             acceptedLeft,
             acceptedRight,
+            scores,
             options.MinimumAssignmentScoreMargin);
         if (perHandAmbiguity is not null)
         {
@@ -360,20 +362,7 @@ public static class TrackerHandAssociator
         TrackerAssociationOptions options)
     {
         var currentHealth = EvaluateHealth(candidate, options);
-        if (!currentHealth.IsHealthy)
-        {
-            return Rejected(capture.Hand, candidate.TrackerSerial,
-                currentHealth.Rejection,
-                $"Tracker failed health gates during the {capture.Hand.ToString().ToLowerInvariant()} capture: {currentHealth.Reason}");
-        }
-
         var oppositeHealth = EvaluateHealth(oppositeCaptureCandidate, options);
-        if (!oppositeHealth.IsHealthy)
-        {
-            return Rejected(capture.Hand, candidate.TrackerSerial,
-                oppositeHealth.Rejection,
-                $"Tracker failed health gates during the opposite hand capture: {oppositeHealth.Reason}");
-        }
 
         try
         {
@@ -381,6 +370,22 @@ public static class TrackerHandAssociator
                 candidate.Samples,
                 capture.ControllerSamples,
                 options.LagEstimation);
+            if (!currentHealth.IsHealthy)
+            {
+                return Rejected(capture.Hand, candidate.TrackerSerial,
+                    currentHealth.Rejection,
+                    $"Tracker failed health gates during the {capture.Hand.ToString().ToLowerInvariant()} capture: {currentHealth.Reason}",
+                    lag);
+            }
+
+            if (!oppositeHealth.IsHealthy)
+            {
+                return Rejected(capture.Hand, candidate.TrackerSerial,
+                    oppositeHealth.Rejection,
+                    $"Tracker failed health gates during the opposite hand capture: {oppositeHealth.Reason}",
+                    lag);
+            }
+
             if (lag.CorrelationScore < options.MinimumAcceptedCorrelation)
             {
                 return Rejected(capture.Hand, candidate.TrackerSerial,
@@ -398,6 +403,16 @@ public static class TrackerHandAssociator
         }
         catch (LagEstimationException exception)
         {
+            var healthRejection = HealthRejection(
+                capture,
+                candidate,
+                currentHealth,
+                oppositeHealth);
+            if (healthRejection is not null)
+            {
+                return healthRejection;
+            }
+
             return Rejected(
                 capture.Hand,
                 candidate.TrackerSerial,
@@ -406,12 +421,45 @@ public static class TrackerHandAssociator
         }
         catch (ArgumentException exception)
         {
+            var healthRejection = HealthRejection(
+                capture,
+                candidate,
+                currentHealth,
+                oppositeHealth);
+            if (healthRejection is not null)
+            {
+                return healthRejection;
+            }
+
             return Rejected(
                 capture.Hand,
                 candidate.TrackerSerial,
                 TrackerAssociationCandidateRejection.InvalidTimestamps,
                 exception.Message);
         }
+    }
+
+    private static TrackerAssociationCandidateScore? HealthRejection(
+        HandMotionCapture capture,
+        TrackerAssociationCandidate candidate,
+        CandidateHealth currentHealth,
+        CandidateHealth oppositeHealth)
+    {
+        if (!currentHealth.IsHealthy)
+        {
+            return Rejected(capture.Hand, candidate.TrackerSerial,
+                currentHealth.Rejection,
+                $"Tracker failed health gates during the {capture.Hand.ToString().ToLowerInvariant()} capture: {currentHealth.Reason}");
+        }
+
+        if (!oppositeHealth.IsHealthy)
+        {
+            return Rejected(capture.Hand, candidate.TrackerSerial,
+                oppositeHealth.Rejection,
+                $"Tracker failed health gates during the opposite hand capture: {oppositeHealth.Reason}");
+        }
+
+        return null;
     }
 
     private static CandidateHealth EvaluateHealth(
@@ -444,9 +492,10 @@ public static class TrackerHandAssociator
             "tracker was connected with sufficient orientation validity");
     }
 
-    private static string? FindPerHandAmbiguity(
+    internal static string? FindPerHandAmbiguity(
         IReadOnlyList<TrackerAssociationCandidateScore> acceptedLeft,
         IReadOnlyList<TrackerAssociationCandidateScore> acceptedRight,
+        IReadOnlyList<TrackerAssociationCandidateScore> allScores,
         double minimumMargin)
     {
         foreach (var (hand, scores) in new[]
@@ -455,19 +504,35 @@ public static class TrackerHandAssociator
                      (CalibrationHand.Right, acceptedRight),
                  })
         {
-            var ranked = scores
+            var winner = scores
                 .OrderByDescending(score => score.CorrelationScore)
                 .ThenBy(score => score.TrackerSerial, StringComparer.Ordinal)
-                .ToArray();
-            if (ranked.Length < 2)
+                .FirstOrDefault();
+            if (winner is null)
             {
                 continue;
             }
 
-            var margin = ranked[0].CorrelationScore - ranked[1].CorrelationScore;
+            var runnerUp = allScores
+                .Where(score =>
+                    score.Hand == hand &&
+                    score.Lag is not null &&
+                    !string.Equals(
+                        score.TrackerSerial,
+                        winner.TrackerSerial,
+                        StringComparison.Ordinal))
+                .OrderByDescending(score => score.CorrelationScore)
+                .ThenBy(score => score.TrackerSerial, StringComparer.Ordinal)
+                .FirstOrDefault();
+            if (runnerUp is null)
+            {
+                continue;
+            }
+
+            var margin = winner.CorrelationScore - runnerUp.CorrelationScore;
             if (margin < minimumMargin)
             {
-                return $"The {hand.ToString().ToLowerInvariant()} capture has similar motion on {ranked[0].TrackerSerial} and {ranked[1].TrackerSerial}; winner/runner-up correlation margin {margin:F4} is below the {minimumMargin:F4} gate.";
+                return $"The {hand.ToString().ToLowerInvariant()} capture has similar motion on {winner.TrackerSerial} and {runnerUp.TrackerSerial}; winner/runner-up correlation margin {margin:F4} is below the {minimumMargin:F4} gate. The runner-up remains an ambiguity contender even though it failed another acceptance gate.";
             }
         }
 

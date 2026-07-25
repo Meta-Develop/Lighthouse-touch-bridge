@@ -25,16 +25,45 @@ public enum ProfileCalibrationMode
     FullSixDof,
 }
 
-/// <summary>Constants defining calibration profile schema version 1.</summary>
+/// <summary>Constants defining supported calibration profile schema versions.</summary>
 public static class CalibrationProfileSchema
 {
-    public const int CurrentVersion = 1;
+    public const int LegacyVersion = 1;
+
+    public const int CurrentVersion = 2;
 
     /// <summary>
-    /// The schema-1 transform convention: <c>T_T_C</c>, translation in meters,
+    /// The schema transform convention: <c>T_T_C</c>, translation in meters,
     /// and quaternion components serialized in XYZW order.
     /// </summary>
     public const string TransformConvention = "T_T_C:translation_m:rotation_xyzw";
+}
+
+/// <summary>Driver profile identities supported by schema version 2.</summary>
+public static class CalibrationDriverProfiles
+{
+    public const string LtbTouch = "ltb_touch";
+
+    internal static string RequireSupported(string value, string parameterName)
+    {
+        var identity = ProfileValidation.RequireIdentity(value, parameterName);
+        if (!string.Equals(identity, LtbTouch, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Unsupported driver profile '{identity}'; expected '{LtbTouch}'.",
+                parameterName);
+        }
+
+        return identity;
+    }
+}
+
+/// <summary>Known controller runtime identities; these are not hardware identifiers.</summary>
+public static class ControllerRuntimeIdentities
+{
+    public const string MetaLinkLibOvr = "meta_link_libovr";
+
+    public const string LegacyAlvr = "ALVR";
 }
 
 /// <summary>
@@ -83,7 +112,7 @@ public sealed record TrackerToControllerTransform
     }
 }
 
-/// <summary>Persisted validation metrics with the units required by schema version 1.</summary>
+/// <summary>Persisted validation metrics with the units required by the profile schema.</summary>
 public sealed record CalibrationProfileQuality
 {
     public CalibrationProfileQuality(
@@ -121,13 +150,19 @@ public sealed record CalibrationProfileQuality
 }
 
 /// <summary>
-/// One complete schema-version-1 calibration profile. Candidate profiles are
+/// One complete calibration profile. Candidate profiles are
 /// located by the exact <see cref="TrackerSerial"/> plus <see cref="Hand"/>
 /// pair, then checked against the currently observed controller runtime and
-/// model. Collection order and controller serial are not matching keys.
+/// model, schema-2 driver profile, and runtime controller identity when the
+/// source exposes one.
+/// Collection order is not a matching key.
 /// </summary>
 public sealed record CalibrationProfile
 {
+    /// <summary>
+    /// Constructs a schema-1 legacy profile. Passing schema version 2 through
+    /// this overload is rejected because it cannot supply a driver profile.
+    /// </summary>
     public CalibrationProfile(
         int schemaVersion,
         string profileName,
@@ -143,13 +178,108 @@ public sealed record CalibrationProfile
         double estimatedLagMilliseconds,
         CalibrationProfileQuality quality,
         DateTimeOffset createdUtc)
+        : this(
+            schemaVersion,
+            profileName,
+            hand,
+            controllerRuntime,
+            controllerModel,
+            controllerSerial,
+            trackerSerial,
+            driverProfile: null,
+            calibrationPolicy,
+            selectedMode,
+            selectionReason,
+            trackerToController,
+            estimatedLagMilliseconds,
+            quality,
+            createdUtc,
+            driverProfileIsExplicit: false)
     {
-        if (schemaVersion != CalibrationProfileSchema.CurrentVersion)
+    }
+
+    /// <summary>
+    /// Constructs a schema-2 profile with an explicit driver identity and an
+    /// optional controller-runtime identity. Public LibOVR does not expose a
+    /// stable per-controller hardware identifier, so Meta Link profiles may
+    /// leave <paramref name="controllerIdentity"/> null.
+    /// </summary>
+    public CalibrationProfile(
+        int schemaVersion,
+        string profileName,
+        ControllerHand hand,
+        string controllerRuntime,
+        string controllerModel,
+        string? controllerIdentity,
+        string trackerSerial,
+        string driverProfile,
+        ProfileCalibrationPolicy calibrationPolicy,
+        ProfileCalibrationMode selectedMode,
+        string selectionReason,
+        TrackerToControllerTransform trackerToController,
+        double estimatedLagMilliseconds,
+        CalibrationProfileQuality quality,
+        DateTimeOffset createdUtc)
+        : this(
+            schemaVersion,
+            profileName,
+            hand,
+            controllerRuntime,
+            controllerModel,
+            controllerIdentity,
+            trackerSerial,
+            driverProfile ?? throw new ArgumentNullException(nameof(driverProfile)),
+            calibrationPolicy,
+            selectedMode,
+            selectionReason,
+            trackerToController,
+            estimatedLagMilliseconds,
+            quality,
+            createdUtc,
+            driverProfileIsExplicit: true)
+    {
+    }
+
+    private CalibrationProfile(
+        int schemaVersion,
+        string profileName,
+        ControllerHand hand,
+        string controllerRuntime,
+        string controllerModel,
+        string? controllerIdentity,
+        string trackerSerial,
+        string? driverProfile,
+        ProfileCalibrationPolicy calibrationPolicy,
+        ProfileCalibrationMode selectedMode,
+        string selectionReason,
+        TrackerToControllerTransform trackerToController,
+        double estimatedLagMilliseconds,
+        CalibrationProfileQuality quality,
+        DateTimeOffset createdUtc,
+        bool driverProfileIsExplicit)
+    {
+        if (schemaVersion is not CalibrationProfileSchema.LegacyVersion and
+            not CalibrationProfileSchema.CurrentVersion)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(schemaVersion),
                 schemaVersion,
-                $"Only calibration profile schema version {CalibrationProfileSchema.CurrentVersion} is supported.");
+                $"Only calibration profile schema versions {CalibrationProfileSchema.LegacyVersion} and " +
+                $"{CalibrationProfileSchema.CurrentVersion} are supported.");
+        }
+
+        if (schemaVersion == CalibrationProfileSchema.LegacyVersion && driverProfileIsExplicit)
+        {
+            throw new ArgumentException(
+                "Legacy schema-version-1 profiles must not contain a driver profile.",
+                nameof(driverProfile));
+        }
+
+        if (schemaVersion == CalibrationProfileSchema.CurrentVersion && !driverProfileIsExplicit)
+        {
+            throw new ArgumentException(
+                "Schema-version-2 profiles require an explicit driver profile.",
+                nameof(driverProfile));
         }
 
         ProfileValidation.RequireDefined(hand, nameof(hand));
@@ -187,8 +317,13 @@ public sealed record CalibrationProfile
         Hand = hand;
         ControllerRuntime = ProfileValidation.RequireText(controllerRuntime, nameof(controllerRuntime));
         ControllerModel = ProfileValidation.RequireText(controllerModel, nameof(controllerModel));
-        ControllerSerial = ProfileValidation.OptionalIdentity(controllerSerial, nameof(controllerSerial));
+        ControllerIdentity = ProfileValidation.OptionalIdentity(
+            controllerIdentity,
+            nameof(controllerIdentity));
         TrackerSerial = ProfileValidation.RequireIdentity(trackerSerial, nameof(trackerSerial));
+        DriverProfile = driverProfileIsExplicit
+            ? CalibrationDriverProfiles.RequireSupported(driverProfile!, nameof(driverProfile))
+            : null;
         CalibrationPolicy = calibrationPolicy;
         SelectedMode = selectedMode;
         SelectionReason = ProfileValidation.RequireText(selectionReason, nameof(selectionReason));
@@ -222,6 +357,8 @@ public sealed record CalibrationProfile
 
     public int SchemaVersion { get; }
 
+    public bool IsLegacy => SchemaVersion == CalibrationProfileSchema.LegacyVersion;
+
     public string ProfileName { get; }
 
     public ControllerHand Hand { get; }
@@ -230,9 +367,25 @@ public sealed record CalibrationProfile
 
     public string ControllerModel { get; }
 
-    public string? ControllerSerial { get; }
+    /// <summary>
+    /// Identity reported by the controller runtime. Schema 1 serialized an
+    /// optional value as <c>controller_serial</c>; schema 2 uses
+    /// <c>controller_identity</c>. Schema 2 keeps that value optional because
+    /// the public Meta LibOVR ABI does not expose a stable per-controller
+    /// hardware identity. When present, it is part of the exact reuse contract.
+    /// </summary>
+    public string? ControllerIdentity { get; }
+
+    /// <summary>Legacy schema-1 alias retained for callers inspecting old profiles.</summary>
+    public string? ControllerSerial => IsLegacy ? ControllerIdentity : null;
 
     public string TrackerSerial { get; }
+
+    /// <summary>
+    /// Schema-2 driver profile identity, or <see langword="null"/> for an
+    /// unchanged schema-1 legacy profile.
+    /// </summary>
+    public string? DriverProfile { get; }
 
     public ProfileCalibrationPolicy CalibrationPolicy { get; }
 
@@ -249,9 +402,9 @@ public sealed record CalibrationProfile
     public DateTimeOffset CreatedUtc { get; }
 
     /// <summary>
-    /// Returns whether current controller observations are compatible with
-    /// this profile. Compatibility is intentionally driven by the persisted
-    /// schema-1 runtime/model values rather than model-specific code branches.
+    /// Returns whether legacy controller observations match a schema-1 profile.
+    /// This overload can never authorize a schema-2 profile because it has no
+    /// current driver-profile observation.
     /// </summary>
     public bool MatchesController(string controllerRuntime, string controllerModel)
     {
@@ -261,8 +414,36 @@ public sealed record CalibrationProfile
         var model = ProfileValidation.RequireText(
             controllerModel,
             nameof(controllerModel));
-        return string.Equals(runtime, ControllerRuntime, StringComparison.Ordinal) &&
+        return IsLegacy &&
+            string.Equals(runtime, ControllerRuntime, StringComparison.Ordinal) &&
             string.Equals(model, ControllerModel, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Returns whether all current runtime identity observations are compatible
+    /// with a schema-2 profile. Legacy profiles always return false. Identity
+    /// is exact when present; an identity-free stored profile only matches an
+    /// identity-free current observation. The enclosing store lookup supplies
+    /// the exact tracker serial and hand binding.
+    /// </summary>
+    public bool MatchesController(
+        string driverProfile,
+        string controllerRuntime,
+        string controllerModel,
+        string? controllerIdentity = null)
+    {
+        var currentDriverProfile = CalibrationDriverProfiles.RequireSupported(
+            driverProfile,
+            nameof(driverProfile));
+        var runtime = ProfileValidation.RequireText(controllerRuntime, nameof(controllerRuntime));
+        var model = ProfileValidation.RequireText(controllerModel, nameof(controllerModel));
+        var identity = ProfileValidation.OptionalIdentity(controllerIdentity, nameof(controllerIdentity));
+
+        return !IsLegacy &&
+            string.Equals(currentDriverProfile, DriverProfile, StringComparison.Ordinal) &&
+            string.Equals(runtime, ControllerRuntime, StringComparison.Ordinal) &&
+            string.Equals(model, ControllerModel, StringComparison.Ordinal) &&
+            string.Equals(identity, ControllerIdentity, StringComparison.Ordinal);
     }
 }
 

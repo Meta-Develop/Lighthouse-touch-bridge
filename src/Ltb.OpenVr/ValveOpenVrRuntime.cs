@@ -79,27 +79,29 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
                 var devicePath = OpenVrDevicePath.Resolve(
                     registeredDeviceType,
                     serialNumber);
-                SteamVrDeviceMetadata? metadata = null;
-                if (OpenVrDevicePath.TryGetDriverId(devicePath, out var driverId))
-                {
-                    metadata = new SteamVrDeviceMetadata(
-                        driverId,
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_TrackingSystemName_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_ManufacturerName_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_ModelNumber_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String),
-                        ReadStringProperty(
-                            index,
-                            ValveVr.ETrackedDeviceProperty.Prop_InputProfilePath_String));
-                }
+                var metadata = OpenVrDeviceMetadataComposer.Compose(
+                    devicePath,
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_TrackingSystemName_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ActualTrackingSystemName_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ManufacturerName_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ModelNumber_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_ControllerType_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_InputProfilePath_String),
+                    ReadStringProperty(
+                        index,
+                        ValveVr.ETrackedDeviceProperty.Prop_DriverVersion_String));
 
                 devices.Add(new OpenVrRuntimeDevice(
                     index,
@@ -117,6 +119,7 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
 
     public OpenVrRuntimePose ReadPose(
         uint transientDeviceIndex,
+        OpenVrTrackingUniverse trackingUniverse,
         double predictionOffsetSeconds)
     {
         lock (_sync)
@@ -128,40 +131,85 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
             }
 
             _system.GetDeviceToAbsoluteTrackingPose(
-                ValveVr.ETrackingUniverseOrigin.TrackingUniverseStanding,
+                MapTrackingUniverse(trackingUniverse),
                 (float)predictionOffsetSeconds,
                 _poseBuffer);
-            var nativePose = _poseBuffer[transientDeviceIndex];
-            var matrix = nativePose.mDeviceToAbsoluteTracking;
-            var hasPose = OpenVrMatrixConverter.TryConvert(
-                new OpenVrMatrix34(
-                    matrix.m0,
-                    matrix.m1,
-                    matrix.m2,
-                    matrix.m3,
-                    matrix.m4,
-                    matrix.m5,
-                    matrix.m6,
-                    matrix.m7,
-                    matrix.m8,
-                    matrix.m9,
-                    matrix.m10,
-                    matrix.m11),
-                out var pose);
+            return MapPose(_poseBuffer[transientDeviceIndex], predictionOffsetSeconds);
+        }
+    }
 
-            var validity = OpenVrPoseValidityMapper.Map(
-                hasPose,
-                nativePose.bPoseIsValid,
-                nativePose.eTrackingResult == ValveVr.ETrackingResult.Fallback_RotationOnly);
+    public IReadOnlyList<OpenVrRuntimePose> ReadPoses(
+        IReadOnlyList<uint> transientDeviceIndexes,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var indexes = OpenVrRuntimePoseBatchValidation.Validate(
+            transientDeviceIndexes,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            _system.GetDeviceToAbsoluteTrackingPose(
+                MapTrackingUniverse(trackingUniverse),
+                (float)predictionOffsetSeconds,
+                _poseBuffer);
 
-            return new OpenVrRuntimePose(
-                hasPose ? pose : RigidTransform.Identity,
-                validity,
-                nativePose.bDeviceIsConnected,
-                MapTrackingResult((OpenVrTrackingResultCode)(int)nativePose.eTrackingResult),
-                RuntimeTimeSeconds: null,
-                PredictionOffsetSeconds: predictionOffsetSeconds,
-                SampleAgeSeconds: null);
+            var poses = new OpenVrRuntimePose[indexes.Length];
+            for (var index = 0; index < poses.Length; index++)
+            {
+                poses[index] = MapPose(
+                    _poseBuffer[indexes[index]],
+                    predictionOffsetSeconds);
+            }
+
+            return Array.AsReadOnly(poses);
+        }
+    }
+
+    public IReadOnlyList<OpenVrRuntimeVerifiedPose> ReadVerifiedPoses(
+        IReadOnlyList<OpenVrRuntimePoseRequest> requests,
+        OpenVrTrackingUniverse trackingUniverse,
+        double predictionOffsetSeconds)
+    {
+        var validated = OpenVrRuntimePoseBatchValidation.ValidateRequests(
+            requests,
+            trackingUniverse,
+            predictionOffsetSeconds);
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            foreach (var request in validated)
+            {
+                _ = RequireCurrentPoseIdentity(request);
+            }
+
+            _system.GetDeviceToAbsoluteTrackingPose(
+                MapTrackingUniverse(trackingUniverse),
+                (float)predictionOffsetSeconds,
+                _poseBuffer);
+
+            // Recheck after the native acquisition as well. The process lock
+            // serializes all LTB runtime operations; the second check also
+            // rejects an OpenVR topology change observed during the call.
+            var observedDevices = new OpenVrRuntimePoseRequest[validated.Length];
+            for (var index = 0; index < validated.Length; index++)
+            {
+                observedDevices[index] = RequireCurrentPoseIdentity(validated[index]);
+            }
+
+            var poses = new OpenVrRuntimeVerifiedPose[validated.Length];
+            for (var index = 0; index < poses.Length; index++)
+            {
+                var request = validated[index];
+                poses[index] = new OpenVrRuntimeVerifiedPose(
+                    observedDevices[index],
+                    MapPose(
+                        _poseBuffer[request.TransientDeviceIndex],
+                        predictionOffsetSeconds));
+            }
+
+            return Array.AsReadOnly(poses);
         }
     }
 
@@ -259,6 +307,38 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
             : null;
     }
 
+    private OpenVrRuntimePoseRequest RequireCurrentPoseIdentity(
+        OpenVrRuntimePoseRequest expected)
+    {
+        var nativeClass = _system.GetTrackedDeviceClass(expected.TransientDeviceIndex);
+        var serialNumber = nativeClass == ValveVr.ETrackedDeviceClass.Invalid
+            ? null
+            : ReadStringProperty(
+                expected.TransientDeviceIndex,
+                ValveVr.ETrackedDeviceProperty.Prop_SerialNumber_String);
+        var registeredDeviceType = nativeClass == ValveVr.ETrackedDeviceClass.Invalid
+            ? null
+            : ReadStringProperty(
+                expected.TransientDeviceIndex,
+                ValveVr.ETrackedDeviceProperty.Prop_RegisteredDeviceType_String);
+        var devicePath = string.IsNullOrWhiteSpace(serialNumber)
+            ? null
+            : OpenVrDevicePath.Resolve(registeredDeviceType, serialNumber);
+        if (string.Equals(serialNumber, expected.StableSerial, StringComparison.Ordinal) &&
+            string.Equals(devicePath, expected.DevicePath, StringComparison.Ordinal))
+        {
+            return new OpenVrRuntimePoseRequest(
+                expected.TransientDeviceIndex,
+                serialNumber!,
+                devicePath!);
+        }
+
+        throw new InvalidDataException(
+            $"OpenVR transient device index {expected.TransientDeviceIndex} changed identity: " +
+            $"expected serial '{expected.StableSerial}' at path '{expected.DevicePath}', observed " +
+            $"serial '{serialNumber ?? "<unavailable>"}' at path '{devicePath ?? "<unavailable>"}'.");
+    }
+
     private static OpenVrRuntimeDeviceClass MapDeviceClass(
         ValveVr.ETrackedDeviceClass deviceClass) => deviceClass switch
     {
@@ -292,6 +372,68 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
         _ => PoseTrackingResult.Unknown,
     };
 
+    internal static Vector3? MapFiniteVelocity(float x, float y, float z) =>
+        float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z)
+            ? new Vector3(x, y, z)
+            : null;
+
+    private static OpenVrRuntimePose MapPose(
+        ValveVr.TrackedDevicePose_t nativePose,
+        double predictionOffsetSeconds)
+    {
+        var matrix = nativePose.mDeviceToAbsoluteTracking;
+        var hasPose = OpenVrMatrixConverter.TryConvert(
+            new OpenVrMatrix34(
+                matrix.m0,
+                matrix.m1,
+                matrix.m2,
+                matrix.m3,
+                matrix.m4,
+                matrix.m5,
+                matrix.m6,
+                matrix.m7,
+                matrix.m8,
+                matrix.m9,
+                matrix.m10,
+                matrix.m11),
+            out var pose);
+
+        var validity = OpenVrPoseValidityMapper.Map(
+            hasPose,
+            nativePose.bPoseIsValid,
+            nativePose.eTrackingResult == ValveVr.ETrackingResult.Fallback_RotationOnly);
+
+        return new OpenVrRuntimePose(
+            hasPose ? pose : RigidTransform.Identity,
+            validity,
+            nativePose.bDeviceIsConnected,
+            MapTrackingResult((OpenVrTrackingResultCode)(int)nativePose.eTrackingResult),
+            RuntimeTimeSeconds: null,
+            PredictionOffsetSeconds: predictionOffsetSeconds,
+            SampleAgeSeconds: null,
+            MapFiniteVelocity(
+                nativePose.vVelocity.v0,
+                nativePose.vVelocity.v1,
+                nativePose.vVelocity.v2),
+            MapFiniteVelocity(
+                nativePose.vAngularVelocity.v0,
+                nativePose.vAngularVelocity.v1,
+                nativePose.vAngularVelocity.v2));
+    }
+
+    private static ValveVr.ETrackingUniverseOrigin MapTrackingUniverse(
+        OpenVrTrackingUniverse trackingUniverse) => trackingUniverse switch
+    {
+        OpenVrTrackingUniverse.Standing =>
+            ValveVr.ETrackingUniverseOrigin.TrackingUniverseStanding,
+        OpenVrTrackingUniverse.RawAndUncalibrated =>
+            ValveVr.ETrackingUniverseOrigin.TrackingUniverseRawAndUncalibrated,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(trackingUniverse),
+            trackingUniverse,
+            "Tracking universe must be a defined OpenVR frame contract."),
+    };
+
     private static string FormatInitError(ValveVr.EVRInitError error)
     {
         try
@@ -311,6 +453,40 @@ internal sealed class ValveOpenVrRuntime : IOpenVrRuntime
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
+}
+
+internal static class OpenVrDeviceMetadataComposer
+{
+    public static SteamVrDeviceMetadata Compose(
+        string devicePath,
+        string? trackingSystemName,
+        string? actualTrackingSystemName,
+        string? manufacturerName,
+        string? modelNumber,
+        string? controllerType,
+        string? inputProfilePath,
+        string? driverVersion)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(devicePath);
+
+        string? driverId = OpenVrDevicePath.TryGetDriverId(devicePath, out var parsedDriverId)
+            ? parsedDriverId
+            : null;
+        return new SteamVrDeviceMetadata(
+            driverId,
+            trackingSystemName,
+            manufacturerName,
+            modelNumber,
+            controllerType,
+            inputProfilePath,
+            driverVersion)
+        {
+            ActualTrackingSystemName = NormalizeOptional(actualTrackingSystemName),
+        };
+    }
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
 internal static class OpenVrMatrixConverter
