@@ -169,7 +169,7 @@ internal sealed class InternalDriverSession : IInternalDriverSession
                 PublishState(
                     InternalDriverSessionState.Faulted,
                     _registration.Diagnostic,
-                    "Repair the staged driver and OpenVR registration, then run the session again.",
+                    InternalDriverSessionRemediation.DriverRegistration,
                     leftReason: InternalDriverNeutralReason.DriverNotReady,
                     rightReason: InternalDriverNeutralReason.DriverNotReady);
                 return;
@@ -325,21 +325,21 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         if (!observation.SteamVrRunning)
         {
             diagnostic = observation.SteamVrDiagnostic;
-            remediation = "Start SteamVR with the intended Lighthouse HMD as the sole HMD.";
+            remediation = InternalDriverSessionRemediation.SteamVr;
             return InternalDriverSessionState.WaitingForSteamVR;
         }
 
         if (!MetaBothReady(observation.Meta))
         {
             diagnostic = MetaDiagnostic(observation.Meta);
-            remediation = "Start Quest Link or Air Link and wake both Touch controllers.";
+            remediation = InternalDriverSessionRemediation.MetaLink;
             return InternalDriverSessionState.WaitingForMetaLink;
         }
 
         if (!AtLeastTwoReadyTrackerCandidates(observation))
         {
             diagnostic = TrackerDiagnostic(observation);
-            remediation = "Connect at least two distinct physical Lighthouse trackers and restore valid raw poses.";
+            remediation = InternalDriverSessionRemediation.Trackers;
             return InternalDriverSessionState.WaitingForTrackers;
         }
 
@@ -347,12 +347,12 @@ internal sealed class InternalDriverSession : IInternalDriverSession
         if (!loaded.IsReady)
         {
             diagnostic = loaded.Diagnostic;
-            remediation = "Remove disallowed SteamVR devices, verify the staged driver registration, and restart SteamVR.";
+            remediation = InternalDriverSessionRemediation.Driver;
             return InternalDriverSessionState.WaitingForDriver;
         }
 
         diagnostic = loaded.Diagnostic;
-        remediation = "No remediation is required.";
+        remediation = InternalDriverSessionRemediation.NoAction;
         return null;
     }
 
