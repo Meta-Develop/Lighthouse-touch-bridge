@@ -13,6 +13,8 @@ public sealed class SteamVrSettingsManager
     private const string SteamVrSectionName = "steamvr";
     private const string ActivateMultipleDriversName = "activateMultipleDrivers";
     private const string TrackingOverridesSectionName = "TrackingOverrides";
+    private const string TrackersSectionName = "trackers";
+    private const string NeutralTrackerRole = "TrackerRole_None";
     private const string BackupMarker = ".ltb-backup";
     private const string BackupWriteMarker = ".ltb-backup-write";
     private const string TemporaryMarker = ".ltb-write";
@@ -161,6 +163,60 @@ public sealed class SteamVrSettingsManager
     }
 
     /// <summary>
+    /// Sets exactly two caller-supplied physical tracker registered-device
+    /// paths to SteamVR's neutral tracker role. The exact prior presence and
+    /// JSON value of each target are captured for a later targeted restore.
+    /// Every unrelated setting is preserved.
+    /// </summary>
+    public SteamVrSettingsRecoveryPoint NeutralizePhysicalTrackerRoles(
+        PhysicalTrackerRoleTargets targets)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        using var operationLock = AcquireOperationLock();
+        return ApplyJsonMutation(
+            SteamVrSettingsOperation.NeutralizePhysicalTrackerRoles,
+            binding: null,
+            root => NeutralizePhysicalTrackerRoles(root, targets),
+            root => ValidatePhysicalTrackerRolesNeutralized(root, targets),
+            root => CapturePhysicalTrackerRoleState(root, targets));
+    }
+
+    /// <summary>
+    /// Restores only the two physical tracker role entries captured by
+    /// <see cref="NeutralizePhysicalTrackerRoles"/>. Each target must still be
+    /// neutral or already equal to its own prior value; an unrelated later
+    /// settings change is preserved.
+    /// </summary>
+    public SteamVrSettingsRecoveryPoint RestorePhysicalTrackerRoles(
+        SteamVrSettingsRecoveryPoint recoveryPoint)
+    {
+        ArgumentNullException.ThrowIfNull(recoveryPoint);
+        if (!PathsEqual(recoveryPoint.SettingsFilePath, SettingsFilePath))
+        {
+            throw new ArgumentException(
+                "The recovery point belongs to a different SteamVR settings file.",
+                nameof(recoveryPoint));
+        }
+
+        if (recoveryPoint.Operation is not
+                SteamVrSettingsOperation.NeutralizePhysicalTrackerRoles ||
+            recoveryPoint.PhysicalTrackerRoleState is not { } priorState)
+        {
+            throw new ArgumentException(
+                "The recovery point was not created by a physical tracker role " +
+                "neutralization operation.",
+                nameof(recoveryPoint));
+        }
+
+        using var operationLock = AcquireOperationLock();
+        return ApplyJsonMutation(
+            SteamVrSettingsOperation.RestorePhysicalTrackerRoles,
+            binding: null,
+            root => RestorePhysicalTrackerRoles(root, priorState),
+            root => ValidatePhysicalTrackerRolesRestored(root, priorState));
+    }
+
+    /// <summary>
     /// Restores the bytes captured by a completed operation. The content being
     /// replaced is backed up first, so the returned recovery point can undo
     /// this rollback if necessary.
@@ -287,10 +343,12 @@ public sealed class SteamVrSettingsManager
         SteamVrSettingsOperation operation,
         TrackingOverrideBinding? binding,
         Func<JsonObject, bool> mutate,
-        Action<JsonObject> validateOperation)
+        Action<JsonObject> validateOperation,
+        Func<JsonObject, PhysicalTrackerRoleState?>? capturePhysicalTrackerRoleState = null)
     {
         var originalBytes = ReadSettingsBytes();
         var root = ParseRoot(originalBytes, SettingsFilePath);
+        var physicalTrackerRoleState = capturePhysicalTrackerRoleState?.Invoke(root);
         if (!mutate(root))
         {
             EnsureSettingsUnchanged(originalBytes);
@@ -301,7 +359,8 @@ public sealed class SteamVrSettingsManager
                 operation,
                 binding,
                 settingsChanged: false,
-                expectedPostImage: null);
+                expectedPostImage: null,
+                physicalTrackerRoleState);
         }
 
         var updatedBytes = Serialize(root);
@@ -331,7 +390,8 @@ public sealed class SteamVrSettingsManager
                 operation,
                 binding,
                 settingsChanged: true,
-                expectedPostImage: updatedBytes);
+                expectedPostImage: updatedBytes,
+                physicalTrackerRoleState);
         }
         catch (Exception failure) when (targetReplaced)
         {
@@ -343,6 +403,212 @@ public sealed class SteamVrSettingsManager
             throw;
         }
     }
+
+    private static PhysicalTrackerRoleState CapturePhysicalTrackerRoleState(
+        JsonObject root,
+        PhysicalTrackerRoleTargets targets)
+    {
+        var sectionWasPresent = root.TryGetPropertyValue(
+            TrackersSectionName,
+            out var trackersNode);
+        JsonObject? trackers = null;
+        if (sectionWasPresent)
+        {
+            trackers = trackersNode as JsonObject
+                ?? throw WrongSectionType(TrackersSectionName);
+        }
+
+        return new PhysicalTrackerRoleState(
+            targets,
+            sectionWasPresent,
+            CapturePhysicalTrackerRoleSnapshot(
+                trackers,
+                targets.LeftTrackerDevicePath),
+            CapturePhysicalTrackerRoleSnapshot(
+                trackers,
+                targets.RightTrackerDevicePath));
+    }
+
+    private static PhysicalTrackerRoleSnapshot CapturePhysicalTrackerRoleSnapshot(
+        JsonObject? trackers,
+        string registeredDevicePath)
+    {
+        JsonNode? previousValue = null;
+        var wasPresent = trackers is not null &&
+            trackers.TryGetPropertyValue(registeredDevicePath, out previousValue);
+        return new PhysicalTrackerRoleSnapshot(
+            registeredDevicePath,
+            wasPresent,
+            previousValue);
+    }
+
+    private static bool NeutralizePhysicalTrackerRoles(
+        JsonObject root,
+        PhysicalTrackerRoleTargets targets)
+    {
+        var changed = false;
+        var trackers = GetOrCreateObject(root, TrackersSectionName, ref changed);
+        changed |= SetNeutralPhysicalTrackerRole(
+            trackers,
+            targets.LeftTrackerDevicePath);
+        changed |= SetNeutralPhysicalTrackerRole(
+            trackers,
+            targets.RightTrackerDevicePath);
+        return changed;
+    }
+
+    private static bool SetNeutralPhysicalTrackerRole(
+        JsonObject trackers,
+        string registeredDevicePath)
+    {
+        if (trackers.TryGetPropertyValue(
+                registeredDevicePath,
+                out var existingValue) &&
+            IsNeutralPhysicalTrackerRole(existingValue))
+        {
+            return false;
+        }
+
+        trackers[registeredDevicePath] = NeutralTrackerRole;
+        return true;
+    }
+
+    private static void ValidatePhysicalTrackerRolesNeutralized(
+        JsonObject root,
+        PhysicalTrackerRoleTargets targets)
+    {
+        var trackers = RequireObject(root, TrackersSectionName);
+        ValidatePhysicalTrackerRoleNeutralized(
+            trackers,
+            targets.LeftTrackerDevicePath);
+        ValidatePhysicalTrackerRoleNeutralized(
+            trackers,
+            targets.RightTrackerDevicePath);
+    }
+
+    private static void ValidatePhysicalTrackerRoleNeutralized(
+        JsonObject trackers,
+        string registeredDevicePath)
+    {
+        if (!trackers.TryGetPropertyValue(
+                registeredDevicePath,
+                out var roleValue) ||
+            !IsNeutralPhysicalTrackerRole(roleValue))
+        {
+            throw new InvalidDataException(
+                $"SteamVR tracker role '{registeredDevicePath}' was not neutralized.");
+        }
+    }
+
+    private static bool RestorePhysicalTrackerRoles(
+        JsonObject root,
+        PhysicalTrackerRoleState priorState)
+    {
+        var sectionIsPresent = root.TryGetPropertyValue(
+            TrackersSectionName,
+            out var trackersNode);
+        var trackers = sectionIsPresent
+            ? trackersNode as JsonObject
+                ?? throw WrongSectionType(TrackersSectionName)
+            : new JsonObject();
+
+        foreach (var snapshot in priorState.Snapshots)
+        {
+            var targetIsPresent = trackers.TryGetPropertyValue(
+                snapshot.RegisteredDevicePath,
+                out var currentValue);
+            if ((!targetIsPresent ||
+                    !IsNeutralPhysicalTrackerRole(currentValue)) &&
+                !snapshot.Matches(trackers))
+            {
+                throw new InvalidOperationException(
+                    $"SteamVR tracker role '{snapshot.RegisteredDevicePath}' changed " +
+                    "after LTB neutralized it. Restore was refused because its current " +
+                    "value is neither the neutral role written by LTB nor its captured " +
+                    "prior state.");
+            }
+        }
+
+        var changed = false;
+        foreach (var snapshot in priorState.Snapshots)
+        {
+            if (snapshot.Matches(trackers))
+            {
+                continue;
+            }
+
+            if (snapshot.WasPresent)
+            {
+                trackers[snapshot.RegisteredDevicePath] =
+                    snapshot.ClonePreviousValue();
+            }
+            else
+            {
+                _ = trackers.Remove(snapshot.RegisteredDevicePath);
+            }
+
+            changed = true;
+        }
+
+        if (priorState.TrackersSectionWasPresent)
+        {
+            if (!sectionIsPresent)
+            {
+                root.Add(TrackersSectionName, trackers);
+                changed = true;
+            }
+        }
+        else if (sectionIsPresent && trackers.Count == 0)
+        {
+            _ = root.Remove(TrackersSectionName);
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static void ValidatePhysicalTrackerRolesRestored(
+        JsonObject root,
+        PhysicalTrackerRoleState priorState)
+    {
+        var sectionIsPresent = root.TryGetPropertyValue(
+            TrackersSectionName,
+            out var trackersNode);
+        if (sectionIsPresent && trackersNode is not JsonObject)
+        {
+            throw WrongSectionType(TrackersSectionName);
+        }
+
+        if (priorState.TrackersSectionWasPresent && !sectionIsPresent)
+        {
+            throw new InvalidDataException(
+                "The prior SteamVR 'trackers' section presence was not restored.");
+        }
+
+        var trackers = trackersNode as JsonObject ?? new JsonObject();
+        if (!priorState.TrackersSectionWasPresent &&
+            sectionIsPresent &&
+            trackers.Count == 0)
+        {
+            throw new InvalidDataException(
+                "The 'trackers' section introduced by LTB was not removed.");
+        }
+
+        foreach (var snapshot in priorState.Snapshots)
+        {
+            if (!snapshot.Matches(trackers))
+            {
+                throw new InvalidDataException(
+                    $"The prior SteamVR tracker role " +
+                    $"'{snapshot.RegisteredDevicePath}' was not restored.");
+            }
+        }
+    }
+
+    private static bool IsNeutralPhysicalTrackerRole(JsonNode? roleValue) =>
+        roleValue is JsonValue value &&
+        value.TryGetValue<string>(out var role) &&
+        string.Equals(role, NeutralTrackerRole, StringComparison.Ordinal);
 
     private static bool EnableOverride(
         JsonObject root,

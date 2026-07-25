@@ -8,6 +8,8 @@ public enum SteamVrSettingsOperation
     RestoreBackup = 2,
     ReleaseSemanticHandOverrides = 3,
     ReleaseApplicationSafetyOverrides = 4,
+    NeutralizePhysicalTrackerRoles = 5,
+    RestorePhysicalTrackerRoles = 6,
 }
 
 /// <summary>
@@ -22,7 +24,8 @@ public sealed class SteamVrSettingsRecoveryPoint
         SteamVrSettingsOperation operation,
         TrackingOverrideBinding? binding,
         bool settingsChanged,
-        byte[]? expectedPostImage)
+        byte[]? expectedPostImage,
+        PhysicalTrackerRoleState? physicalTrackerRoleState = null)
     {
         SettingsFilePath = settingsFilePath;
         BackupFilePath = backupFilePath;
@@ -30,6 +33,7 @@ public sealed class SteamVrSettingsRecoveryPoint
         Binding = binding;
         SettingsChanged = settingsChanged;
         ExpectedPostImage = expectedPostImage?.ToArray();
+        PhysicalTrackerRoleState = physicalTrackerRoleState;
     }
 
     public string SettingsFilePath { get; }
@@ -45,6 +49,13 @@ public sealed class SteamVrSettingsRecoveryPoint
     public TrackingOverrideBinding? Binding { get; }
 
     public bool SettingsChanged { get; }
+
+    /// <summary>
+    /// Exact prior tracker-role state captured by a physical tracker
+    /// neutralization operation, or <see langword="null"/> for other settings
+    /// operations.
+    /// </summary>
+    public PhysicalTrackerRoleState? PhysicalTrackerRoleState { get; }
 
     /// <summary>
     /// Exact bytes written by the operation. Explicit rollback may restore the
