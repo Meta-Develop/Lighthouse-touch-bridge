@@ -25,31 +25,61 @@ managed/native coverage, packaging, and fail-safe lifecycle are present. No
 Windows hardware/runtime acceptance evidence is claimed yet. Every required
 live check remains unchecked in the
 [Windows internal-driver verification checklist](docs/windows-internal-driver-verification.md).
+Linux automated build, test, and headless GUI checks do not replace Windows
+Avalonia visual inspection or live SteamVR, Quest Link, and connected-hardware
+verification.
 
 ## Start LTB
 
-Use the packaged `Ltb.Gui.exe` on the Windows SteamVR host. The window opens on
-the **First-party internal driver** flow; **Start** runs the supported path with
-no device indexes, VMT slots, driver paths, or settings paths to enter.
+Use the complete packaged `Ltb.Gui.exe` directory on the Windows SteamVR host.
+The supported daily sequence is:
 
-1. Connect Quest to the official Meta Horizon Link runtime and keep both Touch
-   controllers awake.
-2. Start SteamVR with the intended Lighthouse HMD as its sole HMD and connect
-   the two physical Lighthouse trackers mounted to the controllers. Other
-   Lighthouse trackers used for full-body tracking may remain connected when
-   saved left/right profiles identify the controller-mounted pair.
-3. Run `Ltb.Gui.exe` and press **Start**.
-4. If LTB registers or updates `driver_ltb`, restart SteamVR when the GUI asks,
-   then press **Start** again.
-5. Follow the separate left- and right-hand movement prompts if the mounts need
-   calibration. Stop from the GUI before changing hardware.
+1. Start the official Meta Horizon Link PC application and establish Quest
+   Link or Air Link.
+2. Keep both Touch controllers awake and responding in the Meta runtime.
+3. Start SteamVR with the intended Lighthouse HMD as the sole HMD.
+4. Power the two Lighthouse trackers mounted to the controllers and wait for
+   valid raw poses. Other physical trackers may remain connected when saved
+   profiles identify the mounted pair or a fresh association can select it
+   unambiguously.
+5. Run `Ltb.Gui.exe`, use the **Setup** tab, and press **Start**.
 
-Normal **Start** reuses an exact matching left/right profile pair. Press
-**Calibrate / Recalibrate** while stopped to bypass saved profiles and capture
-both hands again. Fresh association scores every connected physical tracker
-candidate during separate left- and right-hand motion prompts and fails closed
-unless one distinct pair wins unambiguously, so unrelated trackers may remain
-connected.
+**Start** is the primary daily-use action and reuses an exact matching
+left/right profile pair. **Calibrate / Recalibrate** is secondary, available
+only while stopped, and bypasses saved profiles for a fresh two-hand capture.
+Fresh association scores the connected physical tracker candidates during
+separate left- and right-hand motion prompts and fails closed unless one
+distinct pair wins unambiguously.
+
+Before either action, **Setup** performs a live pre-press probe of prerequisites
+that are safely knowable without starting a session. Rows show pass
+(**Ready**), wait (**Waiting**), **Action required**, or **Deferred until
+Start** states. A missing knowable prerequisite disables both **Start** and
+**Calibrate / Recalibrate** and gives both actions the same specific
+remediation from the same probe snapshot.
+
+Driver registration or update is transactional and may not be provable or
+performable by the read-only probe. Final verification that SteamVR loaded
+exactly the two first-party controllers from the staged build may also be
+deferred until **Start**. If the Start transaction changes registration, stop
+LTB, restart SteamVR when prompted, and press **Start** again.
+
+The persistent header keeps phase, overall status, and the evidence-origin badge
+visible across the tabs:
+
+- **Setup** — ordered prerequisites, guidance, and primary actions.
+- **Status** — readiness groups, per-hand tracker/input/publication state,
+  neutral reasons, and driver-feed health.
+- **Calibration** — the guided two-hand capture workspace.
+- **Diagnostics (Debug)** — opt-in, session-local evidence capped at 10 Hz,
+  retaining at most 600 samples (60 seconds).
+
+Diagnostics timing is a software-boundary lower bound. It excludes hardware
+acquisition, the SteamVR compositor and display, and motion-to-photon
+acceptance. Driver removal and the unsupported legacy/migration notice remain
+the only contents of the collapsed, low-prominence **Advanced maintenance and
+legacy migration** surface; it is not a legacy daily-use path. Stop from the
+GUI before changing hardware.
 
 See [Internal driver operations](docs/internal-drivers.md) for discovery,
 readiness, calibration, paths, keep-awake guidance, and failure behavior.

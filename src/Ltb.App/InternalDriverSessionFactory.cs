@@ -25,6 +25,19 @@ public static class InternalDriverSessionFactory
         return new InternalDriverSession(runtime, options, output);
     }
 
+    /// <summary>
+    /// Creates a read-only prerequisite probe. Probing never registers the
+    /// driver, resolves profiles, captures calibration, or starts an IPC feed.
+    /// </summary>
+    public static IInternalDriverPrerequisiteProbe CreatePrerequisiteProbe(
+        InternalDriverSessionOptions? options = null)
+    {
+        options ??= new InternalDriverSessionOptions();
+        options.Validate();
+        return new InternalDriverPrerequisiteProbe(
+            new ProductionInternalDriverPrerequisiteRuntime(ResolvePaths(options)));
+    }
+
     internal static InternalDriverResolvedPaths ResolvePaths(InternalDriverSessionOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -126,14 +139,14 @@ internal sealed class ProductionInternalDriverSessionRuntime : IInternalDriverSe
             return new InternalDriverPlatformProbe(
                 false,
                 "The first-party internal driver requires a Windows x64 process.",
-                "Run the win-x64 LTB application on the SteamVR host.");
+                InternalDriverSessionRemediation.Platform);
         }
 
         var settingsPreparation = EnsureDefaultSettings(_paths);
         return new InternalDriverPlatformProbe(
             true,
             settingsPreparation.Diagnostic,
-            "No remediation is required.");
+            InternalDriverSessionRemediation.NoAction);
     }
 
     public async ValueTask<InternalDriverRegistration> EnsureDriverAsync(
