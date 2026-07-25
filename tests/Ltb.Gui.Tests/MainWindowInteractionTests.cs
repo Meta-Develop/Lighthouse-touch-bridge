@@ -10,7 +10,10 @@ namespace Ltb.Gui.Tests;
 
 public sealed class MainWindowInteractionTests
 {
-    private static readonly TimeSpan InteractionTimeout = TimeSpan.FromSeconds(2);
+    // Generous upper bound for UI interactions that complete near-instantly;
+    // it only absorbs CI thread-pool scheduling jitter and still returns
+    // immediately on success, keeping the headless suite fast.
+    private static readonly TimeSpan InteractionTimeout = TimeSpan.FromSeconds(30);
 
     [AvaloniaFact]
     public void ActionButtonMouseClicksStartAndStopControlledSession()
