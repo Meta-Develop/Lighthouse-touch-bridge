@@ -113,17 +113,17 @@ visible across the tabs:
 - **Status** — readiness groups, per-hand tracker/input/publication state,
   neutral reasons, and driver-feed health.
 - **Calibration** — the guided two-hand capture workspace.
-- **Diagnostics (Debug)** — opt-in, session-local evidence sampled at 10 Hz,
+- **Diagnostics (Debug)** — opt-in, session-local evidence capped at 10 Hz,
   retaining at most 600 samples (60 seconds).
 
 Diagnostics timing is a software-boundary lower bound. It excludes hardware
 acquisition, the SteamVR compositor and display, and motion-to-photon
 acceptance. Driver removal and the unsupported legacy/migration notice remain
-the only contents of a collapsed, low-prominence **Advanced / Maintenance**
-surface; it is not a supported legacy daily-use path. The structured JSONL log
-remains the durable evidence surface for exact staged/loaded identities, stable
-HMD metadata, per-hand capture measurements, selected calibration mode and
-reason, lag, and quality metrics.
+the only contents of the collapsed, low-prominence **Advanced maintenance and
+legacy migration** surface; it is not a supported legacy daily-use path. The
+structured JSONL log remains the durable evidence surface for exact
+staged/loaded identities, stable HMD metadata, per-hand capture measurements,
+selected calibration mode and reason, lag, and quality metrics.
 
 Use **Stop** before changing runtime or hardware state. Closing the window also
 requests the same bounded fail-safe stop and waits for session cleanup. A
