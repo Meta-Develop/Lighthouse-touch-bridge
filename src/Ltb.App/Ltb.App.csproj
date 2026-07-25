@@ -7,6 +7,9 @@
     <ProjectReference Include="..\Ltb.Vmt\Ltb.Vmt.csproj" />
     <ProjectReference Include="..\Ltb.Calibration\Ltb.Calibration.csproj" />
     <ProjectReference Include="..\Ltb.Configuration\Ltb.Configuration.csproj" />
+    <ProjectReference Include="..\Ltb.MetaLink\Ltb.MetaLink.csproj" />
+    <ProjectReference Include="..\Ltb.Driver\Ltb.Driver.csproj" />
+    <ProjectReference Include="..\Ltb.Protocol\Ltb.Protocol.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
