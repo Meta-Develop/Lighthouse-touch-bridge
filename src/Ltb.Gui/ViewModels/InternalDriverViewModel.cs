@@ -1,0 +1,1540 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
+using Ltb.App;
+
+namespace Ltb.Gui.ViewModels;
+
+/// <summary>
+/// Presentation-only first-party desktop flow. It consumes immutable App
+/// snapshots and never polls or sequences runtime modules itself.
+/// </summary>
+public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
+{
+    private static readonly TimeSpan DefaultPrerequisiteProbeTimeout =
+        TimeSpan.FromSeconds(15);
+
+    private readonly IInternalDriverSessionFactory _sessionFactory;
+    private readonly Action<Action> _dispatch;
+    private readonly Func<IInternalDriverRemover> _removerFactory;
+    private readonly bool _supportsPrerequisiteProbing;
+    private readonly TimeSpan _prerequisiteProbeTimeout;
+    private readonly IGuiTimeSource _timeSource;
+    private readonly SnapshotPresentationCoalescer _snapshotCoalescer;
+    private readonly object _lifecycleSync = new();
+    private readonly Dictionary<string, ReadinessRowViewModel> _rowByKey =
+        new(StringComparer.Ordinal);
+    private readonly ObservableCollection<ReadinessRowViewModel> _readinessRows = [];
+    private readonly ObservableCollection<ReadinessGroupViewModel> _readinessGroups = [];
+    private readonly ObservableCollection<ReadinessRowViewModel> _setupSteps = [];
+    private long _nextRunGeneration;
+    private long _presentedRunGeneration;
+    private long _nextSnapshotSequence;
+    private long _presentedSnapshotSequence;
+    private bool _runActive;
+    private bool _removeDriverActive;
+    private bool _preflightActive;
+    private bool _closing;
+    private IInternalDriverSession? _session;
+    private CancellationTokenSource? _runCancellation;
+    private TaskCompletionSource? _runCompletion;
+    private Task? _stopOperation;
+    private CancellationTokenSource? _preflightCancellation;
+    private Task? _preflightOperation;
+    private TaskCompletionSource? _removeDriverCompletion;
+    private long _preflightGeneration;
+    private long _activeRunGeneration;
+    private InternalDriverSessionState _currentPhase = InternalDriverSessionState.Stopped;
+    private string _phaseText = "Stopped";
+    private string _diagnostic = "Internal-driver session has not started.";
+    private string _remediation = "Press Start to run typed dependency checks.";
+    private string _overallStatus = "Stopped";
+    private bool _isReady;
+    private bool _restartRequired;
+    private bool _isRunning;
+    private string _actionButtonText = "Start";
+    private string _lastError = "None";
+    private string _removeDriverStatus =
+        "Removes the driver_ltb SteamVR registration; the session must be stopped first.";
+    private string _feedState = "Stopped";
+    private string _feedSession = "None";
+    private string _feedSequence = "None";
+    private string _feedHeartbeatAge = "None";
+    private string _feedSendAge = "None";
+    private int _feedReconnectAttempts;
+    private string _feedError = "None";
+    private bool _reduceMotion;
+    private bool _isDebugEnabled;
+    private bool _isPreflightProbing;
+    private string _startGateReason =
+        InternalDriverPrerequisiteSnapshot.Unprobed.StartGateReason;
+    private string _calibrationGateReason =
+        InternalDriverPrerequisiteSnapshot.Unprobed.CalibrationGateReason;
+    private InternalDriverPrerequisiteSnapshot _preflightSnapshot =
+        InternalDriverPrerequisiteSnapshot.Unprobed;
+    private InternalDriverSessionSnapshot? _latestPresentedSnapshot;
+
+    public InternalDriverViewModel(
+        IInternalDriverSessionFactory sessionFactory,
+        Action<Action> dispatch,
+        Func<IInternalDriverRemover>? removerFactory = null,
+        IGuiTimeSource? timeSource = null,
+        IGuiDelayScheduler? delayScheduler = null,
+        GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime,
+        TimeSpan? prerequisiteProbeTimeout = null)
+    {
+        _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
+        _supportsPrerequisiteProbing = sessionFactory.SupportsPrerequisiteProbing;
+        _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+        _removerFactory = removerFactory ?? (static () => InternalDriverRemoval.Create());
+        _prerequisiteProbeTimeout =
+            prerequisiteProbeTimeout ?? DefaultPrerequisiteProbeTimeout;
+        if (_prerequisiteProbeTimeout <= TimeSpan.Zero ||
+            _prerequisiteProbeTimeout == Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(prerequisiteProbeTimeout),
+                "The prerequisite probe timeout must be finite and positive.");
+        }
+
+        _timeSource = timeSource ?? SystemGuiTimeSource.Instance;
+        _snapshotCoalescer = new SnapshotPresentationCoalescer(
+            _timeSource,
+            delayScheduler ?? SystemGuiDelayScheduler.Instance,
+            QueueTrailingSnapshot);
+        ReadinessRows = new ReadOnlyObservableCollection<ReadinessRowViewModel>(_readinessRows);
+        ReadinessGroups = new ReadOnlyObservableCollection<ReadinessGroupViewModel>(_readinessGroups);
+        SetupSteps = new ReadOnlyObservableCollection<ReadinessRowViewModel>(_setupSteps);
+        CalibrationGuide = new CalibrationGuideViewModel(_timeSource);
+        DebugDiagnostics = new DebugDiagnosticsViewModel(_timeSource);
+        (EvidenceOriginLabel, EvidenceOriginDetail) = EvidenceOrigin(evidenceOrigin);
+        LeftHand = new InternalDriverHandViewModel("Left hand");
+        RightHand = new InternalDriverHandViewModel("Right hand");
+        ActionCommand = new RelayCommand(
+            () => _ = ToggleAsync(),
+            () => CanToggle);
+        CalibrationCommand = new RelayCommand(
+            () => _ = CalibrateAsync(),
+            () => CanCalibrate);
+        RemoveDriverCommand = new RelayCommand(
+            () => _ = RemoveDriverAsync(),
+            () => CanRemoveDriver);
+        RefreshPrerequisitesCommand = new RelayCommand(
+            () => _ = RefreshPrerequisitesAsync(),
+            () => CanRefreshPrerequisites);
+
+        var rows = new[]
+        {
+            NewRow("platform", "Windows x64"),
+            NewRow("steamvr", "SteamVR"),
+            NewRow("driver-registration", "Driver registration"),
+            NewRow("loaded-driver", "Loaded controllers / build"),
+            NewRow("meta-link", "Meta Link"),
+            NewRow("left-input", "Left input"),
+            NewRow("right-input", "Right input"),
+            NewRow("lighthouse-hmd", "Lighthouse HMD"),
+            NewRow("left-tracker", "Tracker 1 / left"),
+            NewRow("right-tracker", "Tracker 2 / right"),
+            NewRow("profiles", "Profiles / calibration"),
+            NewRow("feed", "Driver feed"),
+        };
+        var groups = new[]
+        {
+            NewGroup("Host and runtime", rows[0], rows[1], rows[7]),
+            NewGroup("First-party driver", rows[2], rows[3], rows[11]),
+            NewGroup("Touch inputs and trackers", rows[4], rows[5], rows[6], rows[8], rows[9]),
+            NewGroup("Calibration profiles", rows[10]),
+        };
+        var setupSteps = new[]
+        {
+            new ReadinessRowViewModel("setup-meta-link", "Meta Link + Quest Link"),
+            new ReadinessRowViewModel("setup-controllers", "Both controllers awake"),
+            new ReadinessRowViewModel("setup-steamvr", "SteamVR + sole Lighthouse HMD"),
+            new ReadinessRowViewModel("setup-trackers", "Two valid physical trackers"),
+            new ReadinessRowViewModel("setup-start", "Start"),
+        };
+        _dispatch(() =>
+        {
+            foreach (var row in rows)
+            {
+                _readinessRows.Add(row);
+            }
+
+            foreach (var group in groups)
+            {
+                _readinessGroups.Add(group);
+            }
+
+            foreach (var step in setupSteps)
+            {
+                _setupSteps.Add(step);
+            }
+        });
+        _ = RefreshPrerequisitesAsync();
+    }
+
+    public ReadOnlyObservableCollection<ReadinessRowViewModel> ReadinessRows { get; }
+
+    public ReadOnlyObservableCollection<ReadinessGroupViewModel> ReadinessGroups { get; }
+
+    public ReadOnlyObservableCollection<ReadinessRowViewModel> SetupSteps { get; }
+
+    public CalibrationGuideViewModel CalibrationGuide { get; }
+
+    public DebugDiagnosticsViewModel DebugDiagnostics { get; }
+
+    public string EvidenceOriginLabel { get; }
+
+    public string EvidenceOriginDetail { get; }
+
+    public InternalDriverHandViewModel LeftHand { get; }
+
+    public InternalDriverHandViewModel RightHand { get; }
+
+    public InternalDriverSessionState CurrentPhase
+    {
+        get => _currentPhase;
+        private set => SetProperty(ref _currentPhase, value);
+    }
+
+    public string PhaseText
+    {
+        get => _phaseText;
+        private set => SetProperty(ref _phaseText, value);
+    }
+
+    public string Diagnostic
+    {
+        get => _diagnostic;
+        private set => SetProperty(ref _diagnostic, value);
+    }
+
+    public string Remediation
+    {
+        get => _remediation;
+        private set => SetProperty(ref _remediation, value);
+    }
+
+    public string OverallStatus
+    {
+        get => _overallStatus;
+        private set => SetProperty(ref _overallStatus, value);
+    }
+
+    public bool IsReady
+    {
+        get => _isReady;
+        private set => SetProperty(ref _isReady, value);
+    }
+
+    public bool RestartRequired
+    {
+        get => _restartRequired;
+        private set => SetProperty(ref _restartRequired, value);
+    }
+
+    public bool IsRunning
+    {
+        get => _isRunning;
+        private set => SetProperty(ref _isRunning, value);
+    }
+
+    public bool CanToggle
+    {
+        get
+        {
+            lock (_lifecycleSync)
+            {
+                return !_closing &&
+                    !_removeDriverActive &&
+                    (_runActive || (!_preflightActive && _preflightSnapshot.CanStart));
+            }
+        }
+    }
+
+    public string ActionButtonText
+    {
+        get => _actionButtonText;
+        private set => SetProperty(ref _actionButtonText, value);
+    }
+
+    public string LastError
+    {
+        get => _lastError;
+        private set => SetProperty(ref _lastError, value);
+    }
+
+    public string RemoveDriverStatus
+    {
+        get => _removeDriverStatus;
+        private set => SetProperty(ref _removeDriverStatus, value);
+    }
+
+    public bool CanCalibrate
+    {
+        get
+        {
+            lock (_lifecycleSync)
+            {
+                return !_closing &&
+                    !_runActive &&
+                    !_removeDriverActive &&
+                    !_preflightActive &&
+                    _preflightSnapshot.CanCalibrate;
+            }
+        }
+    }
+
+    public bool CanRemoveDriver
+    {
+        get
+        {
+            lock (_lifecycleSync)
+            {
+                return !_closing &&
+                    !_runActive &&
+                    !_removeDriverActive &&
+                    !_preflightActive;
+            }
+        }
+    }
+
+    public bool CanRefreshPrerequisites
+    {
+        get
+        {
+            lock (_lifecycleSync)
+            {
+                return !_closing && !_runActive && !_removeDriverActive;
+            }
+        }
+    }
+
+    public bool IsPreflightProbing
+    {
+        get => _isPreflightProbing;
+        private set => SetProperty(ref _isPreflightProbing, value);
+    }
+
+    public string StartGateReason
+    {
+        get => _startGateReason;
+        private set => SetProperty(ref _startGateReason, value);
+    }
+
+    public string CalibrationGateReason
+    {
+        get => _calibrationGateReason;
+        private set => SetProperty(ref _calibrationGateReason, value);
+    }
+
+    public string FeedState
+    {
+        get => _feedState;
+        private set => SetProperty(ref _feedState, value);
+    }
+
+    public string FeedSession
+    {
+        get => _feedSession;
+        private set => SetProperty(ref _feedSession, value);
+    }
+
+    public string FeedSequence
+    {
+        get => _feedSequence;
+        private set => SetProperty(ref _feedSequence, value);
+    }
+
+    public string FeedHeartbeatAge
+    {
+        get => _feedHeartbeatAge;
+        private set => SetProperty(ref _feedHeartbeatAge, value);
+    }
+
+    public string FeedSendAge
+    {
+        get => _feedSendAge;
+        private set => SetProperty(ref _feedSendAge, value);
+    }
+
+    public int FeedReconnectAttempts
+    {
+        get => _feedReconnectAttempts;
+        private set => SetProperty(ref _feedReconnectAttempts, value);
+    }
+
+    public string FeedError
+    {
+        get => _feedError;
+        private set => SetProperty(ref _feedError, value);
+    }
+
+    public bool ReduceMotion
+    {
+        get => _reduceMotion;
+        set => SetProperty(ref _reduceMotion, value);
+    }
+
+    public bool IsDebugEnabled
+    {
+        get => _isDebugEnabled;
+        set
+        {
+            if (!SetProperty(ref _isDebugEnabled, value))
+            {
+                return;
+            }
+
+            DebugDiagnostics.IsEnabled = value;
+            if (value && _latestPresentedSnapshot is { } snapshot)
+            {
+                _ = DebugDiagnostics.TrySample(snapshot, force: true);
+            }
+        }
+    }
+
+    public RelayCommand ActionCommand { get; }
+
+    public RelayCommand CalibrationCommand { get; }
+
+    public RelayCommand RemoveDriverCommand { get; }
+
+    public RelayCommand RefreshPrerequisitesCommand { get; }
+
+    public Task RefreshPrerequisitesAsync()
+    {
+        CancellationTokenSource cancellation;
+        Task priorOperation;
+        long generation;
+        lock (_lifecycleSync)
+        {
+            if (_closing || _runActive || _removeDriverActive)
+            {
+                return Task.CompletedTask;
+            }
+
+            _preflightCancellation?.Cancel();
+            priorOperation = _preflightOperation ?? Task.CompletedTask;
+            cancellation = new CancellationTokenSource();
+            _preflightCancellation = cancellation;
+            _preflightActive = true;
+            generation = ++_preflightGeneration;
+        }
+
+        _dispatch(() =>
+        {
+            IsPreflightProbing = true;
+            PresentLifecycleAvailability();
+        });
+        var operation = ProbePrerequisitesAsync(
+            generation,
+            cancellation,
+            priorOperation);
+        lock (_lifecycleSync)
+        {
+            if (generation == _preflightGeneration && _preflightActive)
+            {
+                _preflightOperation = operation;
+            }
+        }
+
+        return operation;
+    }
+
+    private async Task ProbePrerequisitesAsync(
+        long generation,
+        CancellationTokenSource cancellation,
+        Task priorOperation)
+    {
+        InternalDriverPrerequisiteSnapshot? snapshot = null;
+        try
+        {
+            var probeOperation = RunPrerequisiteProbeAsync(
+                priorOperation,
+                cancellation.Token);
+            var timeoutOperation = Task.Delay(_prerequisiteProbeTimeout);
+            var completedOperation = await Task.WhenAny(
+                probeOperation,
+                timeoutOperation).ConfigureAwait(false);
+            if (!ReferenceEquals(completedOperation, probeOperation))
+            {
+                cancellation.Cancel();
+                _ = ObserveOrphanedProbeAsync(probeOperation);
+                snapshot = InternalDriverPrerequisiteSnapshot.ProbeFailure(
+                    $"Prerequisite check timed out after " +
+                    $"{_prerequisiteProbeTimeout.TotalSeconds:G} seconds. " +
+                    "SteamVR/OpenVR may be unresponsive. " +
+                    "Retry, or restart SteamVR.");
+            }
+            else
+            {
+                snapshot = await probeOperation.ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // A newer refresh, Start/Calibrate, removal, or close owns cancellation.
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            snapshot = InternalDriverPrerequisiteSnapshot.ProbeFailure(
+                $"Prerequisite probing failed: {exception.Message}");
+        }
+        finally
+        {
+            var present = false;
+            lock (_lifecycleSync)
+            {
+                if (generation == _preflightGeneration &&
+                    ReferenceEquals(_preflightCancellation, cancellation))
+                {
+                    present =
+                        !_closing &&
+                        !_runActive &&
+                        !_removeDriverActive &&
+                        snapshot is not null;
+                    if (present)
+                    {
+                        _preflightSnapshot = snapshot!;
+                    }
+
+                    _preflightCancellation = null;
+                    _preflightOperation = null;
+                    _preflightActive = false;
+                }
+            }
+
+            cancellation.Dispose();
+            _dispatch(() =>
+            {
+                if (generation != Volatile.Read(ref _preflightGeneration))
+                {
+                    return;
+                }
+
+                IsPreflightProbing = false;
+                var canPresent = false;
+                lock (_lifecycleSync)
+                {
+                    canPresent =
+                        present &&
+                        !_closing &&
+                        !_runActive &&
+                        !_removeDriverActive;
+                }
+
+                if (canPresent && snapshot is not null)
+                {
+                    ApplyPrerequisiteSnapshotSafely(generation, snapshot);
+                }
+
+                PresentLifecycleAvailability();
+            });
+        }
+    }
+
+    private async Task<InternalDriverPrerequisiteSnapshot> RunPrerequisiteProbeAsync(
+        Task priorOperation,
+        CancellationToken cancellationToken)
+    {
+        await priorOperation.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var snapshot = await _sessionFactory.ProbePrerequisitesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return snapshot ?? throw new InvalidOperationException(
+            "The prerequisite probe returned no snapshot.");
+    }
+
+    private static async Task ObserveOrphanedProbeAsync(Task probeOperation)
+    {
+        try
+        {
+            await probeOperation.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // The bounded owner already published timeout/cancellation state.
+        }
+    }
+
+    /// <summary>
+    /// Secondary maintenance action: transactionally removes the driver_ltb
+    /// registration through the restart-safe App removal boundary. It never
+    /// runs while a session is active and never alters the Start/Stop flow.
+    /// </summary>
+    public async Task RemoveDriverAsync()
+    {
+        TaskCompletionSource completion;
+        lock (_lifecycleSync)
+        {
+            if (_closing || _runActive || _removeDriverActive || _preflightActive)
+            {
+                return;
+            }
+
+            _removeDriverActive = true;
+            completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _removeDriverCompletion = completion;
+        }
+
+        _dispatch(() =>
+        {
+            RemoveDriverStatus = "Removing the driver_ltb registration...";
+            PresentLifecycleAvailability();
+        });
+
+        string status;
+        try
+        {
+            await using var remover = _removerFactory() ?? throw new InvalidOperationException(
+                "The internal-driver remover factory returned null.");
+            var result = await remover.RemoveAsync(CancellationToken.None).ConfigureAwait(false);
+            status = result.Diagnostic;
+        }
+        catch (Exception exception)
+        {
+            status = $"Driver removal failed: {exception.Message}";
+        }
+        finally
+        {
+            lock (_lifecycleSync)
+            {
+                _removeDriverActive = false;
+                if (_supportsPrerequisiteProbing)
+                {
+                    _preflightSnapshot = InternalDriverPrerequisiteSnapshot.Unprobed;
+                }
+                if (ReferenceEquals(_removeDriverCompletion, completion))
+                {
+                    _removeDriverCompletion = null;
+                }
+            }
+            completion.TrySetResult();
+        }
+
+        _dispatch(() =>
+        {
+            RemoveDriverStatus = status;
+            if (_supportsPrerequisiteProbing)
+            {
+                ApplyPrerequisiteSnapshot(InternalDriverPrerequisiteSnapshot.Unprobed);
+            }
+            PresentLifecycleAvailability();
+        });
+        if (_supportsPrerequisiteProbing)
+        {
+            _ = RefreshPrerequisitesAsync();
+        }
+    }
+
+    private void PresentLifecycleAvailability()
+    {
+        OnPropertyChanged(nameof(CanToggle));
+        ActionCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(CanCalibrate));
+        CalibrationCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(CanRemoveDriver));
+        RemoveDriverCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(CanRefreshPrerequisites));
+        RefreshPrerequisitesCommand.RaiseCanExecuteChanged();
+    }
+
+    public Task ToggleAsync()
+    {
+        lock (_lifecycleSync)
+        {
+            return _runActive ? StopAsync() : StartAsync();
+        }
+    }
+
+    public Task StartAsync() => StartSessionAsync(InternalDriverSessionIntent.NormalStart);
+
+    public Task CalibrateAsync() => StartSessionAsync(InternalDriverSessionIntent.Calibrate);
+
+    private async Task StartSessionAsync(InternalDriverSessionIntent intent)
+    {
+        IInternalDriverSession session;
+        CancellationTokenSource cancellation;
+        TaskCompletionSource completion;
+        long generation;
+        try
+        {
+            lock (_lifecycleSync)
+            {
+                var gateAllowsIntent = intent == InternalDriverSessionIntent.Calibrate
+                    ? _preflightSnapshot.CanCalibrate
+                    : _preflightSnapshot.CanStart;
+                if (_closing ||
+                    _runActive ||
+                    _removeDriverActive ||
+                    _preflightActive ||
+                    !gateAllowsIntent)
+                {
+                    return;
+                }
+
+                session = _sessionFactory.Create(intent) ??
+                    throw new InvalidOperationException("The session factory returned null.");
+                cancellation = new CancellationTokenSource();
+                completion = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                generation = ++_nextRunGeneration;
+                _session = session;
+                _runCancellation = cancellation;
+                _runCompletion = completion;
+                _stopOperation = null;
+                _activeRunGeneration = generation;
+                _runActive = true;
+            }
+        }
+        catch (Exception exception)
+        {
+            DispatchStartFailure(
+                $"Unable to create the internal-driver session: {exception.Message}");
+            return;
+        }
+
+        EventHandler<InternalDriverSessionSnapshot> snapshotHandler =
+            (_, snapshot) => DispatchSnapshot(generation, snapshot);
+        session.SnapshotChanged += snapshotHandler;
+        var initialSnapshot = session.CurrentSnapshot;
+        var initialSequence = NextSnapshotSequence();
+        _snapshotCoalescer.Reset(generation, initialSnapshot);
+        DebugDiagnostics.ResetForRun();
+        _dispatch(() =>
+        {
+            if (!PresentGeneration(generation, initialSequence, initialSnapshot))
+            {
+                return;
+            }
+
+            LastError = "None";
+            IsRunning = true;
+            ActionButtonText = "Stop";
+            PresentLifecycleAvailability();
+        });
+
+        string? runError = null;
+        try
+        {
+            await session.RunAsync(cancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Stop owns cancellation and waits below for App fail-safe shutdown.
+        }
+        catch (Exception exception)
+        {
+            runError = $"Internal-driver session failed: {exception.Message}";
+        }
+        finally
+        {
+            session.SnapshotChanged -= snapshotHandler;
+            string? disposeError = null;
+            try
+            {
+                await session.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                disposeError = $"Internal-driver disposal failed: {exception.Message}";
+            }
+
+            cancellation.Dispose();
+            lock (_lifecycleSync)
+            {
+                if (ReferenceEquals(_session, session))
+                {
+                    _session = null;
+                    _runCancellation = null;
+                    _runCompletion = null;
+                    _activeRunGeneration = 0;
+                    if (_supportsPrerequisiteProbing)
+                    {
+                        _preflightSnapshot = InternalDriverPrerequisiteSnapshot.Unprobed;
+                    }
+                    _runActive = false;
+                }
+            }
+
+            var finalSnapshot = session.CurrentSnapshot;
+            var finalSequence = NextSnapshotSequence();
+            _snapshotCoalescer.CancelPending(generation);
+            _dispatch(() =>
+            {
+                if (!PresentGeneration(generation, finalSequence, finalSnapshot))
+                {
+                    return;
+                }
+
+                var finalError = disposeError ?? runError;
+                if (finalError is not null)
+                {
+                    LastError = finalError;
+                    OverallStatus = "Action required";
+                }
+
+                IsRunning = false;
+                ActionButtonText = "Start";
+                PresentLifecycleAvailability();
+            });
+            completion.TrySetResult();
+            if (_supportsPrerequisiteProbing)
+            {
+                _ = RefreshPrerequisitesAsync();
+            }
+        }
+    }
+
+    public Task StopAsync()
+    {
+        IInternalDriverSession? session;
+        CancellationTokenSource? cancellation;
+        Task? completion;
+        long generation;
+        lock (_lifecycleSync)
+        {
+            if (_stopOperation is not null)
+            {
+                return _stopOperation;
+            }
+
+            session = _session;
+            cancellation = _runCancellation;
+            completion = _runCompletion?.Task;
+            generation = _activeRunGeneration;
+            if (session is null || completion is null)
+            {
+                return Task.CompletedTask;
+            }
+
+            _stopOperation = StopRunAsync(session, cancellation, completion, generation);
+            return _stopOperation;
+        }
+    }
+
+    private async Task StopRunAsync(
+        IInternalDriverSession session,
+        CancellationTokenSource? cancellation,
+        Task completion,
+        long generation)
+    {
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Run teardown already observed cancellation.
+        }
+
+        string? stopError = null;
+        try
+        {
+            await session.StopAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            stopError = $"Internal-driver fail-safe stop failed: {exception.Message}";
+        }
+
+        await completion.ConfigureAwait(false);
+        if (stopError is not null)
+        {
+            DispatchError(stopError, generation);
+        }
+    }
+
+    public async Task CloseAsync()
+    {
+        Task? preflightOperation;
+        Task? removalOperation;
+        lock (_lifecycleSync)
+        {
+            _closing = true;
+            _preflightCancellation?.Cancel();
+            preflightOperation = _preflightOperation;
+            _preflightCancellation = null;
+            _preflightOperation = null;
+            _preflightActive = false;
+            _preflightGeneration++;
+            removalOperation = _removeDriverCompletion?.Task;
+        }
+        _snapshotCoalescer.Dispose();
+
+        _dispatch(() =>
+        {
+            IsPreflightProbing = false;
+            PresentLifecycleAvailability();
+        });
+        if (preflightOperation is not null)
+        {
+            await WaitForPreflightShutdownAsync(preflightOperation).ConfigureAwait(false);
+        }
+
+        if (removalOperation is not null)
+        {
+            await removalOperation.ConfigureAwait(false);
+        }
+
+        await StopAsync().ConfigureAwait(false);
+    }
+
+    private async Task WaitForPreflightShutdownAsync(Task preflightOperation)
+    {
+        var completedOperation = await Task.WhenAny(
+            preflightOperation,
+            Task.Delay(_prerequisiteProbeTimeout)).ConfigureAwait(false);
+        if (ReferenceEquals(completedOperation, preflightOperation))
+        {
+            await preflightOperation.ConfigureAwait(false);
+            return;
+        }
+
+        _ = ObserveOrphanedProbeAsync(preflightOperation);
+    }
+
+    public ValueTask DisposeAsync() => new(CloseAsync());
+
+    private ReadinessRowViewModel NewRow(string key, string title)
+    {
+        var row = new ReadinessRowViewModel(key, title);
+        _rowByKey.Add(key, row);
+        return row;
+    }
+
+    private static ReadinessGroupViewModel NewGroup(
+        string title,
+        params ReadinessRowViewModel[] rows) =>
+        new(title, Array.AsReadOnly(rows));
+
+    private void DispatchSnapshot(long generation, InternalDriverSessionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var sequence = NextSnapshotSequence();
+        if (!_snapshotCoalescer.ShouldPresent(generation, sequence, snapshot))
+        {
+            return;
+        }
+
+        QueueSnapshot(generation, sequence, snapshot);
+    }
+
+    private void QueueTrailingSnapshot(
+        long generation,
+        long sequence,
+        InternalDriverSessionSnapshot snapshot) =>
+        QueueSnapshot(generation, sequence, snapshot);
+
+    private void QueueSnapshot(
+        long generation,
+        long sequence,
+        InternalDriverSessionSnapshot snapshot) =>
+        _dispatch(() => _ = PresentGeneration(generation, sequence, snapshot));
+
+    private long NextSnapshotSequence() => Interlocked.Increment(ref _nextSnapshotSequence);
+
+    private bool PresentGeneration(
+        long generation,
+        long sequence,
+        InternalDriverSessionSnapshot snapshot)
+    {
+        if (generation < _presentedRunGeneration ||
+            (generation == _presentedRunGeneration &&
+             sequence <= _presentedSnapshotSequence))
+        {
+            return false;
+        }
+
+        _presentedRunGeneration = generation;
+        _presentedSnapshotSequence = sequence;
+        ApplySnapshot(snapshot);
+        return true;
+    }
+
+    private void ApplySnapshot(InternalDriverSessionSnapshot snapshot)
+    {
+        _latestPresentedSnapshot = snapshot;
+        CurrentPhase = snapshot.State;
+        PhaseText = SplitPascalCase(snapshot.State.ToString());
+        Diagnostic = snapshot.Diagnostic;
+        Remediation = snapshot.Remediation;
+        RestartRequired = snapshot.RestartRequired;
+        IsReady = snapshot.Readiness.CanPublish && !snapshot.RestartRequired;
+        OverallStatus = snapshot.State switch
+        {
+            InternalDriverSessionState.Stopped => "Stopped",
+            _ when snapshot.RestartRequired => "Restart required",
+            _ when IsReady => "Ready",
+            InternalDriverSessionState.Faulted => "Action required",
+            _ => "Waiting",
+        };
+
+        LeftHand.Update(snapshot.Left);
+        RightHand.Update(snapshot.Right);
+        UpdateRows(snapshot);
+        UpdateFeed(snapshot);
+        CalibrationGuide.Update(snapshot);
+        _ = DebugDiagnostics.TrySample(snapshot);
+    }
+
+    private void ApplyPrerequisiteSnapshot(InternalDriverPrerequisiteSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        StartGateReason = snapshot.StartGateReason;
+        CalibrationGateReason = snapshot.CalibrationGateReason;
+
+        ApplyPrerequisite(_setupSteps[0], snapshot.MetaLink);
+        ApplyPrerequisite(_setupSteps[1], snapshot.Controllers);
+        ApplyPrerequisite(_setupSteps[2], snapshot.SteamVr);
+        ApplyPrerequisite(_setupSteps[3], snapshot.Trackers);
+        var deferred = snapshot.Steps.Any(step =>
+            step.Status == InternalDriverPrerequisiteStatus.DeferredUntilStart);
+        _setupSteps[4].Update(
+            snapshot.CanStart && !deferred,
+            snapshot.StartGateReason,
+            snapshot.CanStart
+                ? deferred ? "Deferred until Start" : "Ready"
+                : snapshot.Steps.Any(step =>
+                    step.Status == InternalDriverPrerequisiteStatus.ActionRequired)
+                    ? "Action required"
+                    : "Waiting");
+
+        ApplyPrerequisite(Row("platform"), snapshot.Platform);
+        ApplyPrerequisite(Row("steamvr"), snapshot.SteamVr);
+        ApplyPrerequisite(Row("driver-registration"), snapshot.Driver);
+        ApplyPrerequisite(Row("loaded-driver"), snapshot.Driver);
+        ApplyPrerequisite(Row("meta-link"), snapshot.MetaLink);
+        ApplyPrerequisite(Row("left-input"), snapshot.Controllers);
+        ApplyPrerequisite(Row("right-input"), snapshot.Controllers);
+        ApplyPrerequisite(Row("lighthouse-hmd"), snapshot.SteamVr);
+        ApplyPrerequisite(Row("left-tracker"), snapshot.Trackers);
+        ApplyPrerequisite(Row("right-tracker"), snapshot.Trackers);
+        ApplyPrerequisite(Row("profiles"), snapshot.Profiles);
+        ApplyPrerequisite(Row("feed"), snapshot.Feed);
+    }
+
+    private void ApplyPrerequisiteSnapshotSafely(
+        long generation,
+        InternalDriverPrerequisiteSnapshot snapshot)
+    {
+        try
+        {
+            ApplyPrerequisiteSnapshot(snapshot);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            var diagnostic =
+                $"Prerequisite presentation failed: {exception.Message}";
+            var failure = InternalDriverPrerequisiteSnapshot.ProbeFailure(diagnostic);
+            lock (_lifecycleSync)
+            {
+                if (generation != _preflightGeneration ||
+                    _closing ||
+                    _runActive ||
+                    _removeDriverActive)
+                {
+                    return;
+                }
+
+                _preflightSnapshot = failure;
+            }
+
+            try
+            {
+                LastError = diagnostic;
+                OverallStatus = "Action required";
+                StartGateReason = failure.StartGateReason;
+                CalibrationGateReason = failure.CalibrationGateReason;
+            }
+            catch (Exception presentationException)
+                when (presentationException is not OutOfMemoryException)
+            {
+                // The internal gate remains failed closed even if a binding
+                // observer rejects the fallback presentation.
+            }
+        }
+    }
+
+    private static void ApplyPrerequisite(
+        ReadinessRowViewModel row,
+        InternalDriverPrerequisite prerequisite)
+    {
+        row.Update(
+            prerequisite.Status == InternalDriverPrerequisiteStatus.Ready,
+            $"{prerequisite.Diagnostic} {prerequisite.Remediation}",
+            PrerequisiteStatusText(prerequisite.Status));
+    }
+
+    private static string PrerequisiteStatusText(
+        InternalDriverPrerequisiteStatus status) => status switch
+    {
+        InternalDriverPrerequisiteStatus.Waiting => "Waiting",
+        InternalDriverPrerequisiteStatus.Ready => "Ready",
+        InternalDriverPrerequisiteStatus.ActionRequired => "Action required",
+        InternalDriverPrerequisiteStatus.DeferredUntilStart => "Deferred until Start",
+        _ => throw new ArgumentOutOfRangeException(nameof(status)),
+    };
+
+    private void UpdateRows(InternalDriverSessionSnapshot snapshot)
+    {
+        var readiness = snapshot.Readiness;
+        var driver = snapshot.Driver;
+        var registrationReady = readiness.DriverRegistered && driver is not null &&
+            !snapshot.RestartRequired;
+        var loadedDriverReady = readiness.DriverLoaded && driver?.ExactLoadedBuildReady == true &&
+            !snapshot.RestartRequired;
+        var hmdReady = snapshot.LighthouseHmd is not null && !snapshot.RestartRequired;
+        Row("platform").Update(
+            readiness.PlatformSupported,
+            readiness.PlatformSupported
+                ? "The typed App platform gate reports Windows x64 support."
+                : "Run the win-x64 desktop build on the SteamVR host.");
+        Row("steamvr").Update(
+            readiness.SteamVrRunning,
+            readiness.SteamVrRunning
+                ? "The typed App snapshot reports SteamVR running."
+                : "Start SteamVR and wait for its runtime to become available.");
+        Row("driver-registration").Update(
+            registrationReady,
+            snapshot.RestartRequired
+                ? "Registration changed; restart SteamVR before this gate can be ready."
+                : driver is { } staged
+                    ? $"Staged first-party driver build: {staged.StagedBuildIdentity}."
+                    : "No staged first-party driver evidence is available.",
+            snapshot.RestartRequired ? "Restart required" : null);
+        Row("loaded-driver").Update(
+            loadedDriverReady,
+            DriverDetail(driver),
+            snapshot.RestartRequired ? "Restart required" : null);
+        Row("meta-link").Update(
+            readiness.MetaBothHandsReady,
+            readiness.MetaBothHandsReady
+                ? "The typed App snapshot reports both Meta Link hands ready."
+                : "Connect Quest Link or Air Link and keep both controllers awake.");
+        Row("left-input").Update(
+            snapshot.Left.MetaInputsValid,
+            $"Meta state: {snapshot.Left.MetaReadiness}; inputs valid: {Flag(snapshot.Left.MetaInputsValid)}.");
+        Row("right-input").Update(
+            snapshot.Right.MetaInputsValid,
+            $"Meta state: {snapshot.Right.MetaReadiness}; inputs valid: {Flag(snapshot.Right.MetaInputsValid)}.");
+        Row("lighthouse-hmd").Update(
+            hmdReady,
+            HmdDetail(snapshot.LighthouseHmd),
+            snapshot.RestartRequired ? "Restart required" : null);
+        Row("left-tracker").Update(
+            readiness.TwoDistinctTrackersReady &&
+                snapshot.Left.TrackerConnected &&
+                snapshot.Left.TrackerTracked,
+            $"{TrackerDetail(snapshot.Left)} Distinct-pair gate: {Flag(readiness.TwoDistinctTrackersReady)}.");
+        Row("right-tracker").Update(
+            readiness.TwoDistinctTrackersReady &&
+                snapshot.Right.TrackerConnected &&
+                snapshot.Right.TrackerTracked,
+            $"{TrackerDetail(snapshot.Right)} Distinct-pair gate: {Flag(readiness.TwoDistinctTrackersReady)}.");
+        Row("profiles").Update(
+            readiness.ProfilesReady,
+            $"Left: {ProfileDetail(snapshot.Left)} Right: {ProfileDetail(snapshot.Right)}");
+        Row("feed").Update(
+            readiness.FeedReady,
+            $"Feed state: {snapshot.Feed.Readiness}; reconnect attempts: {snapshot.Feed.ReconnectAttempts}.");
+    }
+
+    private void UpdateFeed(InternalDriverSessionSnapshot snapshot)
+    {
+        var feed = snapshot.Feed;
+        FeedState = feed.Readiness.ToString();
+        FeedSession = feed.SessionId is { } sessionId
+            ? string.Create(
+                CultureInfo.InvariantCulture,
+                $"{sessionId.Word0:X16}{sessionId.Word1:X16}")
+            : "None";
+        FeedSequence = feed.LastSuccessfulSequence?.ToString(CultureInfo.InvariantCulture) ?? "None";
+        FeedHeartbeatAge = FormatAge(feed.LastSuccessfulHeartbeatAge);
+        FeedSendAge = FormatAge(feed.LastSuccessfulSendAge);
+        FeedReconnectAttempts = feed.ReconnectAttempts;
+        FeedError = string.IsNullOrWhiteSpace(feed.LastError) ? "None" : feed.LastError;
+    }
+
+    private ReadinessRowViewModel Row(string key) => _rowByKey[key];
+
+    private void DispatchError(string message, long? generation = null) =>
+        _dispatch(() =>
+        {
+            if (generation is { } expected && expected < _presentedRunGeneration)
+            {
+                return;
+            }
+
+            LastError = message;
+            OverallStatus = "Action required";
+        });
+
+    private void DispatchStartFailure(string message) =>
+        _dispatch(() =>
+        {
+            CurrentPhase = InternalDriverSessionState.Faulted;
+            PhaseText = "Faulted";
+            Diagnostic = message;
+            Remediation =
+                "Review the error, correct the problem, then press Start or Calibrate / Recalibrate to try again.";
+            LastError = message;
+            OverallStatus = "Action required";
+        });
+
+    private static string TrackerDetail(InternalDriverHandSnapshot hand) =>
+        $"Serial: {hand.TrackerSerial ?? "not assigned"}; connected: {Flag(hand.TrackerConnected)}; " +
+        $"tracked: {Flag(hand.TrackerTracked)}; pose age: {FormatAge(hand.PoseAge)}.";
+
+    private static string DriverDetail(InternalDriverDriverEvidence? driver)
+    {
+        if (driver is null)
+        {
+            return "No staged or loaded first-party driver evidence is available.";
+        }
+
+        if (driver.LeftController is not { } left ||
+            driver.RightController is not { } right)
+        {
+            return $"Staged build: {driver.StagedBuildIdentity}; exact loaded left/right controller evidence is unavailable.";
+        }
+
+        return $"Staged build: {driver.StagedBuildIdentity}; " +
+            $"left serial: {left.SerialNumber}, runtime build: {left.RuntimeBuildIdentity}; " +
+            $"right serial: {right.SerialNumber}, runtime build: {right.RuntimeBuildIdentity}.";
+    }
+
+    private static string HmdDetail(InternalDriverLighthouseHmdEvidence? hmd)
+    {
+        if (hmd is null)
+        {
+            return "No validated Lighthouse HMD evidence is available.";
+        }
+
+        return $"Stable ID: {hmd.StableDeviceId}; device path: {hmd.DevicePath}; " +
+            $"driver: {Optional(hmd.DriverId)}; tracking system: {Optional(hmd.TrackingSystemName)}; " +
+            $"actual tracking system: {Optional(hmd.ActualTrackingSystemName)}; " +
+            $"manufacturer: {Optional(hmd.ManufacturerName)}; model: {Optional(hmd.ModelNumber)}.";
+    }
+
+    private static string ProfileDetail(InternalDriverHandSnapshot hand) =>
+        hand.Calibration is { } calibration
+            ? $"{hand.ProfileReadiness}, {FormatCalibrationMode(calibration.SelectedMode)}, " +
+              $"created {FormatCreated(calibration.CreatedUtc)}."
+            : $"{hand.ProfileReadiness}, no retained calibration evidence.";
+
+    private static string Optional(string? value) => value ?? "unavailable";
+
+    private static string FormatCalibrationMode(InternalDriverCalibrationMode mode) => mode switch
+    {
+        InternalDriverCalibrationMode.RotationOnly => "Rotation only",
+        InternalDriverCalibrationMode.FullSixDof => "Full 6DoF",
+        _ => mode.ToString(),
+    };
+
+    private static string FormatCreated(DateTimeOffset createdUtc) =>
+        createdUtc.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+
+    private static string FormatPercent(double value) =>
+        (value * 100d).ToString("F1", CultureInfo.InvariantCulture) + "%";
+
+    private static string FormatAge(TimeSpan? age) => age is { } value
+        ? string.Create(CultureInfo.InvariantCulture, $"{value.TotalMilliseconds:F1} ms")
+        : "None";
+
+    private static string Flag(bool value) => value ? "yes" : "no";
+
+    private static (string Label, string Detail) EvidenceOrigin(GuiEvidenceOrigin origin) =>
+        origin switch
+        {
+            GuiEvidenceOrigin.LiveRuntime => (
+                "LIVE SESSION DATA",
+                "Current process observations; this label is not a hardware compatibility certification."),
+            GuiEvidenceOrigin.ScriptedSimulation => (
+                "SIMULATED DATA",
+                "Deterministic scripted evidence; no live runtime or hardware claim."),
+            GuiEvidenceOrigin.OfflineReplay => (
+                "OFFLINE REPLAY",
+                "Recorded evidence replay; values are not current live-runtime health."),
+            _ => throw new ArgumentOutOfRangeException(nameof(origin)),
+        };
+
+    private static string SplitPascalCase(string value)
+    {
+        if (value.Length < 2)
+        {
+            return value;
+        }
+
+        var characters = new List<char>(value.Length + 4) { value[0] };
+        for (var index = 1; index < value.Length; index++)
+        {
+            if (char.IsUpper(value[index]) && !char.IsUpper(value[index - 1]))
+            {
+                characters.Add(' ');
+            }
+
+            characters.Add(value[index]);
+        }
+
+        return new string([.. characters]);
+    }
+
+    public sealed class InternalDriverHandViewModel : ObservableObject
+    {
+        private string _trackerSerial = "Not assigned";
+        private string _trackerStatus = "Disconnected";
+        private string _poseStatus = "Unavailable";
+        private string _poseAge = "None";
+        private string _inputStatus = "Unavailable";
+        private string _profileStatus = "Missing";
+        private string _publishingStatus = "Neutral";
+        private string _neutralReason = "Session stopped";
+        private string _diagnostic = "No active hand session.";
+        private string _calibrationMode = "Unavailable";
+        private string _calibrationReason = "Unavailable";
+        private string _calibrationLag = "Unavailable";
+        private string _calibrationQuality = "Unavailable";
+        private string _calibrationCreated = "Unavailable";
+        private string _captureSamples = "Unavailable";
+        private string _captureValidity = "Unavailable";
+        private string _captureMotion = "Unavailable";
+        private double _rotationProgress;
+        private string _rotationProgressStatus = "Unavailable";
+        private double _positionProgress;
+        private string _positionProgressStatus = "Unavailable";
+
+        internal InternalDriverHandViewModel(string title)
+        {
+            Title = title;
+        }
+
+        public string Title { get; }
+
+        public string TrackerSerial
+        {
+            get => _trackerSerial;
+            private set => SetProperty(ref _trackerSerial, value);
+        }
+
+        public string TrackerStatus
+        {
+            get => _trackerStatus;
+            private set => SetProperty(ref _trackerStatus, value);
+        }
+
+        public string PoseStatus
+        {
+            get => _poseStatus;
+            private set => SetProperty(ref _poseStatus, value);
+        }
+
+        public string PoseAge
+        {
+            get => _poseAge;
+            private set => SetProperty(ref _poseAge, value);
+        }
+
+        public string InputStatus
+        {
+            get => _inputStatus;
+            private set => SetProperty(ref _inputStatus, value);
+        }
+
+        public string ProfileStatus
+        {
+            get => _profileStatus;
+            private set => SetProperty(ref _profileStatus, value);
+        }
+
+        public string PublishingStatus
+        {
+            get => _publishingStatus;
+            private set => SetProperty(ref _publishingStatus, value);
+        }
+
+        public string NeutralReason
+        {
+            get => _neutralReason;
+            private set => SetProperty(ref _neutralReason, value);
+        }
+
+        public string Diagnostic
+        {
+            get => _diagnostic;
+            private set => SetProperty(ref _diagnostic, value);
+        }
+
+        public string CalibrationMode
+        {
+            get => _calibrationMode;
+            private set => SetProperty(ref _calibrationMode, value);
+        }
+
+        public string CalibrationReason
+        {
+            get => _calibrationReason;
+            private set => SetProperty(ref _calibrationReason, value);
+        }
+
+        public string CalibrationLag
+        {
+            get => _calibrationLag;
+            private set => SetProperty(ref _calibrationLag, value);
+        }
+
+        public string CalibrationQuality
+        {
+            get => _calibrationQuality;
+            private set => SetProperty(ref _calibrationQuality, value);
+        }
+
+        public string CalibrationCreated
+        {
+            get => _calibrationCreated;
+            private set => SetProperty(ref _calibrationCreated, value);
+        }
+
+        public string CaptureSamples
+        {
+            get => _captureSamples;
+            private set => SetProperty(ref _captureSamples, value);
+        }
+
+        public string CaptureValidity
+        {
+            get => _captureValidity;
+            private set => SetProperty(ref _captureValidity, value);
+        }
+
+        public string CaptureMotion
+        {
+            get => _captureMotion;
+            private set => SetProperty(ref _captureMotion, value);
+        }
+
+        public double RotationProgress
+        {
+            get => _rotationProgress;
+            private set => SetProperty(ref _rotationProgress, value);
+        }
+
+        public string RotationProgressStatus
+        {
+            get => _rotationProgressStatus;
+            private set => SetProperty(ref _rotationProgressStatus, value);
+        }
+
+        public double PositionProgress
+        {
+            get => _positionProgress;
+            private set => SetProperty(ref _positionProgress, value);
+        }
+
+        public string PositionProgressStatus
+        {
+            get => _positionProgressStatus;
+            private set => SetProperty(ref _positionProgressStatus, value);
+        }
+
+        internal void Update(InternalDriverHandSnapshot snapshot)
+        {
+            ArgumentNullException.ThrowIfNull(snapshot);
+            TrackerSerial = snapshot.TrackerSerial ?? "Not assigned";
+            TrackerStatus = snapshot.TrackerConnected
+                ? snapshot.TrackerTracked ? "Tracked" : "Connected / not tracked"
+                : "Disconnected";
+            PoseStatus = snapshot.TrackerTracked ? "Tracked" : "Unavailable";
+            PoseAge = FormatAge(snapshot.PoseAge);
+            InputStatus = snapshot.MetaInputsValid
+                ? $"Ready ({snapshot.MetaReadiness})"
+                : $"Unavailable ({snapshot.MetaReadiness})";
+            ProfileStatus = snapshot.ProfileReadiness.ToString();
+            PublishingStatus = snapshot.IsPublishing ? "Publishing" : "Neutral";
+            NeutralReason = SplitPascalCase(snapshot.NeutralReason.ToString());
+            Diagnostic = snapshot.Diagnostic;
+            UpdateCalibration(snapshot.Calibration);
+            UpdateCapture(snapshot.Capture);
+        }
+
+        private void UpdateCalibration(InternalDriverCalibrationEvidence? calibration)
+        {
+            if (calibration is null)
+            {
+                CalibrationMode = "Unavailable";
+                CalibrationReason = "Unavailable";
+                CalibrationLag = "Unavailable";
+                CalibrationQuality = "Unavailable";
+                CalibrationCreated = "Unavailable";
+                return;
+            }
+
+            var quality = calibration.Quality;
+            var positionRms = quality.PositionRmsMillimeters is { } position
+                ? position.ToString("F2", CultureInfo.InvariantCulture) + " mm"
+                : "unavailable";
+            var translationCondition = quality.TranslationConditionNumber is { } condition
+                ? condition.ToString("F2", CultureInfo.InvariantCulture)
+                : "unavailable";
+            CalibrationMode = FormatCalibrationMode(calibration.SelectedMode);
+            CalibrationReason = calibration.SelectionReason;
+            CalibrationLag = calibration.EstimatedLagMilliseconds.ToString(
+                "F1",
+                CultureInfo.InvariantCulture) + " ms";
+            CalibrationQuality = string.Create(
+                CultureInfo.InvariantCulture,
+                $"rotation RMS {quality.RotationRmsDegrees:F2} deg; " +
+                $"position RMS {positionRms}; translation condition {translationCondition}; " +
+                $"inliers {FormatPercent(quality.InlierRatio)}");
+            CalibrationCreated = FormatCreated(calibration.CreatedUtc);
+        }
+
+        private void UpdateCapture(InternalDriverCaptureEvidence? capture)
+        {
+            if (capture is null)
+            {
+                CaptureSamples = "Unavailable";
+                CaptureValidity = "Unavailable";
+                CaptureMotion = "Unavailable";
+                RotationProgress = 0d;
+                RotationProgressStatus = "Unavailable";
+                PositionProgress = 0d;
+                PositionProgressStatus = "Unavailable";
+                return;
+            }
+
+            CaptureSamples = capture.SampleCount.ToString(CultureInfo.InvariantCulture);
+            CaptureValidity = $"tracking {FormatPercent(capture.TrackingValidityFraction)}; " +
+                $"orientation {FormatPercent(capture.OrientationValidityFraction)}; " +
+                $"position {FormatPercent(capture.PositionValidityFraction)}";
+            CaptureMotion = string.Create(
+                CultureInfo.InvariantCulture,
+                $"axis coverage {FormatPercent(capture.MotionAxisCoverage)}; " +
+                $"total rotation {capture.TotalRotationDegrees:F1} deg");
+            RotationProgress = capture.RotationProgress;
+            RotationProgressStatus = FormatCaptureProgress(
+                capture.RotationProgress,
+                capture.RotationReady);
+            PositionProgress = capture.PositionProgress;
+            PositionProgressStatus = FormatPositionAvailability(
+                capture.PositionProgress,
+                capture.PositionReady);
+        }
+
+        private static string FormatCaptureProgress(double progress, bool ready) =>
+            $"{FormatPercent(progress)} - {(ready ? "ready" : "collecting")}";
+
+        private static string FormatPositionAvailability(double progress, bool available) =>
+            available
+                ? $"{FormatPercent(progress)} observed - available for optional translation evaluation"
+                : $"{FormatPercent(progress)} observed - optional; rotation-only remains normal";
+    }
+}
+
+public enum GuiEvidenceOrigin
+{
+    LiveRuntime = 0,
+    ScriptedSimulation,
+    OfflineReplay,
+}
