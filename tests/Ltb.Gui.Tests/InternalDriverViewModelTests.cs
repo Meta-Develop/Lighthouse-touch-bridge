@@ -13,6 +13,298 @@ public sealed class InternalDriverViewModelTests
     private const string BuildIdentity = "ltb-driver-test-build";
 
     [Fact]
+    public async Task AutomaticProbeKeepsActionsDisabledUntilACompletedSnapshot()
+    {
+        var probeStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var probeCanceled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new ProbeSessionFactory(
+            [],
+            token => WaitForProbeCancellationAsync(
+                probeStarted,
+                probeCanceled,
+                token));
+        var viewModel = new InternalDriverViewModel(factory, action => action());
+
+        await probeStarted.Task;
+
+        Assert.True(viewModel.IsPreflightProbing);
+        Assert.False(viewModel.CanToggle);
+        Assert.False(viewModel.CanCalibrate);
+        Assert.False(viewModel.ActionCommand.CanExecute(null));
+        Assert.False(viewModel.CalibrationCommand.CanExecute(null));
+        Assert.Equal(5, viewModel.SetupSteps.Count);
+        Assert.Contains("first prerequisite probe", viewModel.StartGateReason, StringComparison.Ordinal);
+
+        await viewModel.StartAsync();
+        await viewModel.CalibrateAsync();
+        Assert.Equal(0, factory.CreateCount);
+
+        await viewModel.CloseAsync();
+        await probeCanceled.Task;
+        Assert.False(viewModel.IsPreflightProbing);
+    }
+
+    [Fact]
+    public async Task ProductionFactorySchedulesAutomaticProbeOffCallerAndSyncProbeClearsBusyState()
+    {
+        var probe = new BlockingSynchronousProbe();
+        var factory = new Ltb.Gui.InternalDriverSessionFactory(() => probe);
+
+        var viewModel = new InternalDriverViewModel(factory, action => action());
+        await probe.Started;
+
+        Assert.True(viewModel.IsPreflightProbing);
+        probe.AllowCompletion();
+        await probe.Completed;
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsPreflightProbing,
+            TimeSpan.FromSeconds(2)));
+
+        Assert.False(viewModel.IsPreflightProbing);
+        Assert.True(viewModel.CanToggle);
+        Assert.True(viewModel.CanCalibrate);
+        await viewModel.CloseAsync();
+
+        var synchronousFactory = new ProbeSessionFactory(
+            [],
+            _ => ValueTask.FromResult(ReadyPrerequisites()));
+        var synchronous = new InternalDriverViewModel(
+            synchronousFactory,
+            action => action());
+        await synchronousFactory.LastProbe;
+
+        Assert.False(synchronous.IsPreflightProbing);
+        Assert.True(synchronous.CanToggle);
+        await synchronous.CloseAsync();
+    }
+
+    [Fact]
+    public async Task SuccessfulProbeExposesOrderedSetupContractAndDeferredStartCopy()
+    {
+        var factory = new ProbeSessionFactory(
+            [],
+            _ => ValueTask.FromResult(ReadyPrerequisites(
+                driverStatus: InternalDriverPrerequisiteStatus.DeferredUntilStart)));
+        var viewModel = new InternalDriverViewModel(factory, action => action());
+        await factory.LastProbe;
+
+        Assert.Equal(
+            [
+                "Meta Link + Quest Link",
+                "Both controllers awake",
+                "SteamVR + sole Lighthouse HMD",
+                "Two valid physical trackers",
+                "Start",
+            ],
+            viewModel.SetupSteps.Select(step => step.Title));
+        Assert.Equal("Ready", viewModel.SetupSteps[0].Status);
+        Assert.Equal("Ready", viewModel.SetupSteps[1].Status);
+        Assert.Equal("Ready", viewModel.SetupSteps[2].Status);
+        Assert.Equal("Ready", viewModel.SetupSteps[3].Status);
+        Assert.Equal("Deferred until Start", viewModel.SetupSteps[4].Status);
+        Assert.True(viewModel.CanToggle);
+        Assert.True(viewModel.CanCalibrate);
+        Assert.Contains("Driver probe diagnostic.", viewModel.StartGateReason, StringComparison.Ordinal);
+        Assert.Contains("Profile probe diagnostic.", viewModel.StartGateReason, StringComparison.Ordinal);
+        Assert.Contains("Driver probe diagnostic.", viewModel.SetupSteps[4].Detail, StringComparison.Ordinal);
+        await viewModel.CloseAsync();
+    }
+
+    [Theory]
+    [InlineData("platform", "Platform probe diagnostic.")]
+    [InlineData("driver", "Driver probe diagnostic.")]
+    public async Task ProbeFailureReasonAndRemediationAreVisibleOnStartStep(
+        string blockedKey,
+        string expectedDiagnostic)
+    {
+        var factory = new ProbeSessionFactory(
+            [],
+            _ => ValueTask.FromResult(BlockedPrerequisites(blockedKey)));
+        var viewModel = new InternalDriverViewModel(factory, action => action());
+        await factory.LastProbe;
+
+        Assert.False(viewModel.CanToggle);
+        Assert.False(viewModel.CanCalibrate);
+        Assert.Contains(expectedDiagnostic, viewModel.StartGateReason, StringComparison.Ordinal);
+        Assert.Contains("Probe remediation.", viewModel.StartGateReason, StringComparison.Ordinal);
+        Assert.Contains(expectedDiagnostic, viewModel.SetupSteps[4].Detail, StringComparison.Ordinal);
+        Assert.Equal("Action required", viewModel.SetupSteps[4].Status);
+        await viewModel.StartAsync();
+        await viewModel.CalibrateAsync();
+        Assert.Equal(0, factory.CreateCount);
+        await viewModel.CloseAsync();
+    }
+
+    [Fact]
+    public async Task RefreshCancelsPriorProbeAndPublishesOnlyNewestSnapshot()
+    {
+        var firstStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCanceled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new ProbeSessionFactory(
+            [],
+            token => WaitForProbeCancellationAsync(firstStarted, firstCanceled, token),
+            _ => ValueTask.FromResult(ReadyPrerequisites()));
+        var viewModel = new InternalDriverViewModel(factory, action => action());
+        await firstStarted.Task;
+
+        await viewModel.RefreshPrerequisitesAsync();
+        await firstCanceled.Task;
+
+        Assert.Equal(2, factory.ProbeCount);
+        Assert.False(viewModel.IsPreflightProbing);
+        Assert.True(viewModel.CanToggle);
+        Assert.Equal("Ready", viewModel.SetupSteps[0].Status);
+        await viewModel.CloseAsync();
+    }
+
+    [Fact]
+    public async Task CompletedBlockedRefreshClosesGateBeforeQueuedPresentation()
+    {
+        var dispatcher = new QueuedDispatcher();
+        var session = new ControlledSession(Snapshot(
+            InternalDriverSessionState.DependencyCheck,
+            allReady: false));
+        var factory = new ProbeSessionFactory(
+            [session],
+            _ => ValueTask.FromResult(ReadyPrerequisites()),
+            _ => ValueTask.FromResult(BlockedPrerequisites("driver")));
+        var viewModel = new InternalDriverViewModel(factory, dispatcher.Post);
+        await factory.LastProbe;
+        dispatcher.Drain();
+        Assert.True(viewModel.CanToggle);
+
+        await viewModel.RefreshPrerequisitesAsync();
+
+        Assert.False(viewModel.CanToggle);
+        Assert.False(viewModel.CanCalibrate);
+        await viewModel.StartAsync();
+        await viewModel.CalibrateAsync();
+        Assert.Equal(0, factory.CreateCount);
+        Assert.DoesNotContain(
+            "Driver probe diagnostic.",
+            viewModel.StartGateReason,
+            StringComparison.Ordinal);
+
+        dispatcher.Drain();
+        Assert.Contains(
+            "Driver probe diagnostic.",
+            viewModel.StartGateReason,
+            StringComparison.Ordinal);
+        await viewModel.CloseAsync();
+        dispatcher.Drain();
+    }
+
+    [Fact]
+    public async Task StopRemainsAvailableAfterSessionReadinessLoss()
+    {
+        var session = new ControlledSession(Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready));
+        var factory = new ProbeSessionFactory(
+            [session],
+            _ => ValueTask.FromResult(ReadyPrerequisites()));
+        await using var viewModel = new InternalDriverViewModel(factory, action => action());
+        await factory.LastProbe;
+
+        var run = viewModel.StartAsync();
+        await session.Started;
+        session.Publish(Snapshot(
+            InternalDriverSessionState.WaitingForMetaLink,
+            allReady: false));
+
+        Assert.True(viewModel.CanToggle);
+        Assert.True(viewModel.ActionCommand.CanExecute(null));
+        Assert.False(viewModel.CanCalibrate);
+        Assert.Equal("Stop", viewModel.ActionButtonText);
+
+        session.AllowStop();
+        await viewModel.StopAsync();
+        await run;
+    }
+
+    [Fact]
+    public async Task RemovalCancelsProbeAndCloseWaitsForRemovalCompletion()
+    {
+        var probeStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var probeCanceled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new ProbeSessionFactory(
+            [],
+            token => WaitForProbeCancellationAsync(probeStarted, probeCanceled, token));
+        var remover = new BlockingRemover();
+        var viewModel = new InternalDriverViewModel(
+            factory,
+            action => action(),
+            () => remover);
+        await probeStarted.Task;
+
+        var removal = viewModel.RemoveDriverAsync();
+        await probeCanceled.Task;
+        await remover.Entered;
+        var close = viewModel.CloseAsync();
+
+        Assert.False(close.IsCompleted);
+        Assert.Equal(1, remover.RemoveCount);
+        Assert.Equal(0, factory.CreateCount);
+        remover.Complete(new InternalDriverRemovalResult(
+            Changed: false,
+            RestartRequired: false,
+            "No owned registration remained."));
+        await Task.WhenAll(removal, close);
+
+        Assert.True(remover.Disposed);
+        Assert.False(viewModel.CanToggle);
+        Assert.False(viewModel.CanCalibrate);
+    }
+
+    [Fact]
+    public async Task RefreshSerializesProbesAndRemovalWaitsForTheEntireProbeChain()
+    {
+        var firstStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowFirst = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstFinished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new ProbeSessionFactory(
+            [],
+            _ => WaitForNonCancellableProbeReleaseAsync(
+                firstStarted,
+                allowFirst,
+                firstFinished),
+            _ => ValueTask.FromResult(ReadyPrerequisites()));
+        var remover = new BlockingRemover();
+        var viewModel = new InternalDriverViewModel(
+            factory,
+            action => action(),
+            () => remover);
+        await firstStarted.Task;
+
+        var refresh = viewModel.RefreshPrerequisitesAsync();
+        Assert.Equal(1, factory.ProbeCount);
+        var removal = viewModel.RemoveDriverAsync();
+        Assert.False(remover.Entered.IsCompleted);
+
+        allowFirst.TrySetResult();
+        await firstFinished.Task;
+        await remover.Entered;
+        Assert.Equal(1, factory.ProbeCount);
+
+        remover.Complete(new InternalDriverRemovalResult(
+            Changed: false,
+            RestartRequired: false,
+            "No owned registration remained."));
+        await Task.WhenAll(refresh, removal);
+        await viewModel.CloseAsync();
+    }
+
+    [Fact]
     public async Task TypedSnapshotRendersExactDriverHmdCalibrationCaptureAndFeedEvidence()
     {
         var initial = Snapshot(
@@ -1049,6 +1341,86 @@ public sealed class InternalDriverViewModelTests
         return count;
     }
 
+    private static InternalDriverPrerequisiteSnapshot ReadyPrerequisites(
+        InternalDriverPrerequisiteStatus driverStatus =
+            InternalDriverPrerequisiteStatus.Ready) => new(
+        probeCompleted: true,
+        Prerequisite("platform", InternalDriverPrerequisiteStatus.Ready, "Platform"),
+        Prerequisite("meta-link", InternalDriverPrerequisiteStatus.Ready, "Meta Link"),
+        Prerequisite("controllers", InternalDriverPrerequisiteStatus.Ready, "Controller"),
+        Prerequisite("steamvr", InternalDriverPrerequisiteStatus.Ready, "SteamVR"),
+        Prerequisite("trackers", InternalDriverPrerequisiteStatus.Ready, "Tracker"),
+        Prerequisite("driver", driverStatus, "Driver"),
+        Prerequisite(
+            "profiles",
+            InternalDriverPrerequisiteStatus.DeferredUntilStart,
+            "Profile"),
+        Prerequisite(
+            "feed",
+            InternalDriverPrerequisiteStatus.DeferredUntilStart,
+            "Feed"));
+
+    private static InternalDriverPrerequisiteSnapshot BlockedPrerequisites(
+        string blockedKey)
+    {
+        var ready = ReadyPrerequisites();
+        InternalDriverPrerequisite WithStatus(InternalDriverPrerequisite prerequisite) =>
+            string.Equals(prerequisite.Key, blockedKey, StringComparison.Ordinal)
+                ? Prerequisite(
+                    prerequisite.Key,
+                    InternalDriverPrerequisiteStatus.ActionRequired,
+                    prerequisite.Key == "platform" ? "Platform" : "Driver")
+                : prerequisite;
+        return new InternalDriverPrerequisiteSnapshot(
+            probeCompleted: true,
+            WithStatus(ready.Platform),
+            WithStatus(ready.MetaLink),
+            WithStatus(ready.Controllers),
+            WithStatus(ready.SteamVr),
+            WithStatus(ready.Trackers),
+            WithStatus(ready.Driver),
+            WithStatus(ready.Profiles),
+            WithStatus(ready.Feed));
+    }
+
+    private static InternalDriverPrerequisite Prerequisite(
+        string key,
+        InternalDriverPrerequisiteStatus status,
+        string label) => new(
+        key,
+        status,
+        $"{label} probe diagnostic.",
+        status == InternalDriverPrerequisiteStatus.Ready
+            ? "No remediation is required."
+            : status == InternalDriverPrerequisiteStatus.DeferredUntilStart
+                ? "This check is explicitly deferred until Start."
+                : "Probe remediation.");
+
+    private static async ValueTask<InternalDriverPrerequisiteSnapshot>
+        WaitForProbeCancellationAsync(
+            TaskCompletionSource started,
+            TaskCompletionSource canceled,
+            CancellationToken cancellationToken)
+    {
+        using var registration = cancellationToken.Register(
+            () => canceled.TrySetResult());
+        started.TrySetResult();
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        return ReadyPrerequisites();
+    }
+
+    private static async ValueTask<InternalDriverPrerequisiteSnapshot>
+        WaitForNonCancellableProbeReleaseAsync(
+            TaskCompletionSource started,
+            TaskCompletionSource release,
+            TaskCompletionSource finished)
+    {
+        started.TrySetResult();
+        await release.Task;
+        finished.TrySetResult();
+        return ReadyPrerequisites();
+    }
+
     private static InternalDriverSessionSnapshot Snapshot(
         InternalDriverSessionState state,
         bool allReady,
@@ -1152,6 +1524,139 @@ public sealed class InternalDriverViewModelTests
             CreateCount++;
             _intents.Add(intent);
             return _sessions.Dequeue();
+        }
+    }
+
+    private sealed class ProbeSessionFactory : IInternalDriverSessionFactory
+    {
+        private readonly Queue<IInternalDriverSession> _sessions;
+        private readonly Queue<Func<
+            CancellationToken,
+            ValueTask<InternalDriverPrerequisiteSnapshot>>> _probes;
+        private readonly TaskCompletionSource _probeInvoked =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly object _sync = new();
+        private Task _lastProbe = Task.CompletedTask;
+
+        public ProbeSessionFactory(
+            IEnumerable<IInternalDriverSession> sessions,
+            params Func<
+                CancellationToken,
+                ValueTask<InternalDriverPrerequisiteSnapshot>>[] probes)
+        {
+            _sessions = new Queue<IInternalDriverSession>(sessions);
+            _probes = new Queue<Func<
+                CancellationToken,
+                ValueTask<InternalDriverPrerequisiteSnapshot>>>(probes);
+        }
+
+        public int CreateCount { get; private set; }
+
+        public int ProbeCount { get; private set; }
+
+        public bool SupportsPrerequisiteProbing => true;
+
+        public Task LastProbe => WaitForLastProbeAsync();
+
+        public IInternalDriverSession Create(InternalDriverSessionIntent intent)
+        {
+            CreateCount++;
+            return _sessions.Dequeue();
+        }
+
+        public ValueTask<InternalDriverPrerequisiteSnapshot> ProbePrerequisitesAsync(
+            CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, ValueTask<InternalDriverPrerequisiteSnapshot>> probe;
+            lock (_sync)
+            {
+                ProbeCount++;
+                probe = _probes.Dequeue();
+                _lastProbe = probe(cancellationToken).AsTask();
+                _probeInvoked.TrySetResult();
+                return new ValueTask<InternalDriverPrerequisiteSnapshot>(
+                    AwaitProbeAsync(_lastProbe));
+            }
+        }
+
+        private async Task WaitForLastProbeAsync()
+        {
+            await _probeInvoked.Task;
+            Task probe;
+            lock (_sync)
+            {
+                probe = _lastProbe;
+            }
+
+            await probe;
+        }
+
+        private static async Task<InternalDriverPrerequisiteSnapshot> AwaitProbeAsync(
+            Task task)
+        {
+            await task;
+            return ((Task<InternalDriverPrerequisiteSnapshot>)task).Result;
+        }
+    }
+
+    private sealed class BlockingRemover : IInternalDriverRemover
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<InternalDriverRemovalResult> _result =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        public int RemoveCount { get; private set; }
+
+        public bool Disposed { get; private set; }
+
+        public ValueTask<InternalDriverRemovalResult> RemoveAsync(
+            CancellationToken cancellationToken = default)
+        {
+            RemoveCount++;
+            _entered.TrySetResult();
+            return new ValueTask<InternalDriverRemovalResult>(_result.Task);
+        }
+
+        public void Complete(InternalDriverRemovalResult result) =>
+            _result.TrySetResult(result);
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class BlockingSynchronousProbe : IInternalDriverPrerequisiteProbe
+    {
+        private readonly ManualResetEventSlim _allowCompletion = new();
+        private readonly TaskCompletionSource _started =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _completed =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Started => _started.Task;
+
+        public Task Completed => _completed.Task;
+
+        public ValueTask<InternalDriverPrerequisiteSnapshot> ProbeAsync(
+            CancellationToken cancellationToken = default)
+        {
+            _started.TrySetResult();
+            _allowCompletion.Wait(cancellationToken);
+            _completed.TrySetResult();
+            return ValueTask.FromResult(ReadyPrerequisites());
+        }
+
+        public void AllowCompletion() => _allowCompletion.Set();
+
+        public ValueTask DisposeAsync()
+        {
+            _allowCompletion.Dispose();
+            return ValueTask.CompletedTask;
         }
     }
 
