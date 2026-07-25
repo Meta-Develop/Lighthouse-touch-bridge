@@ -27,3 +27,12 @@ jobs:
 
       - name: Test managed solution
         run: dotnet test -c Release --no-build
+
+      - name: Configure native driver core
+        run: cmake -S native/driver_ltb -B build/native-linux -DLTB_BUILD_OPENVR_DRIVER=OFF -DLTB_BUILD_TESTS=ON
+
+      - name: Build native driver core
+        run: cmake --build build/native-linux
+
+      - name: Test native driver core
+        run: ctest --test-dir build/native-linux --output-on-failure
