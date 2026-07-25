@@ -13,6 +13,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private readonly IInternalDriverSessionFactory _sessionFactory;
     private readonly Action<Action> _dispatch;
     private readonly Func<IInternalDriverRemover> _removerFactory;
+    private readonly bool _supportsPrerequisiteProbing;
     private readonly IGuiTimeSource _timeSource;
     private readonly SnapshotPresentationCoalescer _snapshotCoalescer;
     private readonly object _lifecycleSync = new();
@@ -20,17 +21,23 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         new(StringComparer.Ordinal);
     private readonly ObservableCollection<ReadinessRowViewModel> _readinessRows = [];
     private readonly ObservableCollection<ReadinessGroupViewModel> _readinessGroups = [];
+    private readonly ObservableCollection<ReadinessRowViewModel> _setupSteps = [];
     private long _nextRunGeneration;
     private long _presentedRunGeneration;
     private long _nextSnapshotSequence;
     private long _presentedSnapshotSequence;
     private bool _runActive;
     private bool _removeDriverActive;
+    private bool _preflightActive;
     private bool _closing;
     private IInternalDriverSession? _session;
     private CancellationTokenSource? _runCancellation;
     private TaskCompletionSource? _runCompletion;
     private Task? _stopOperation;
+    private CancellationTokenSource? _preflightCancellation;
+    private Task? _preflightOperation;
+    private TaskCompletionSource? _removeDriverCompletion;
+    private long _preflightGeneration;
     private long _activeRunGeneration;
     private InternalDriverSessionState _currentPhase = InternalDriverSessionState.Stopped;
     private string _phaseText = "Stopped";
@@ -53,6 +60,13 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private string _feedError = "None";
     private bool _reduceMotion;
     private bool _isDebugEnabled;
+    private bool _isPreflightProbing;
+    private string _startGateReason =
+        InternalDriverPrerequisiteSnapshot.Unprobed.StartGateReason;
+    private string _calibrationGateReason =
+        InternalDriverPrerequisiteSnapshot.Unprobed.CalibrationGateReason;
+    private InternalDriverPrerequisiteSnapshot _preflightSnapshot =
+        InternalDriverPrerequisiteSnapshot.Unprobed;
     private InternalDriverSessionSnapshot? _latestPresentedSnapshot;
 
     public InternalDriverViewModel(
@@ -64,6 +78,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime)
     {
         _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
+        _supportsPrerequisiteProbing = sessionFactory.SupportsPrerequisiteProbing;
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
         _removerFactory = removerFactory ?? (static () => InternalDriverRemoval.Create());
         _timeSource = timeSource ?? SystemGuiTimeSource.Instance;
@@ -73,6 +88,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             QueueTrailingSnapshot);
         ReadinessRows = new ReadOnlyObservableCollection<ReadinessRowViewModel>(_readinessRows);
         ReadinessGroups = new ReadOnlyObservableCollection<ReadinessGroupViewModel>(_readinessGroups);
+        SetupSteps = new ReadOnlyObservableCollection<ReadinessRowViewModel>(_setupSteps);
         CalibrationGuide = new CalibrationGuideViewModel(_timeSource);
         DebugDiagnostics = new DebugDiagnosticsViewModel(_timeSource);
         (EvidenceOriginLabel, EvidenceOriginDetail) = EvidenceOrigin(evidenceOrigin);
@@ -87,6 +103,9 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         RemoveDriverCommand = new RelayCommand(
             () => _ = RemoveDriverAsync(),
             () => CanRemoveDriver);
+        RefreshPrerequisitesCommand = new RelayCommand(
+            () => _ = RefreshPrerequisitesAsync(),
+            () => CanRefreshPrerequisites);
 
         var rows = new[]
         {
@@ -110,6 +129,14 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             NewGroup("Touch inputs and trackers", rows[4], rows[5], rows[6], rows[8], rows[9]),
             NewGroup("Calibration profiles", rows[10]),
         };
+        var setupSteps = new[]
+        {
+            new ReadinessRowViewModel("setup-meta-link", "Meta Link + Quest Link"),
+            new ReadinessRowViewModel("setup-controllers", "Both controllers awake"),
+            new ReadinessRowViewModel("setup-steamvr", "SteamVR + sole Lighthouse HMD"),
+            new ReadinessRowViewModel("setup-trackers", "Two valid physical trackers"),
+            new ReadinessRowViewModel("setup-start", "Start"),
+        };
         _dispatch(() =>
         {
             foreach (var row in rows)
@@ -121,12 +148,20 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             {
                 _readinessGroups.Add(group);
             }
+
+            foreach (var step in setupSteps)
+            {
+                _setupSteps.Add(step);
+            }
         });
+        _ = RefreshPrerequisitesAsync();
     }
 
     public ReadOnlyObservableCollection<ReadinessRowViewModel> ReadinessRows { get; }
 
     public ReadOnlyObservableCollection<ReadinessGroupViewModel> ReadinessGroups { get; }
+
+    public ReadOnlyObservableCollection<ReadinessRowViewModel> SetupSteps { get; }
 
     public CalibrationGuideViewModel CalibrationGuide { get; }
 
@@ -194,7 +229,9 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_lifecycleSync)
             {
-                return !_closing && !_removeDriverActive;
+                return !_closing &&
+                    !_removeDriverActive &&
+                    (_runActive || (!_preflightActive && _preflightSnapshot.CanStart));
             }
         }
     }
@@ -223,7 +260,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_lifecycleSync)
             {
-                return !_closing && !_runActive && !_removeDriverActive;
+                return !_closing &&
+                    !_runActive &&
+                    !_removeDriverActive &&
+                    !_preflightActive &&
+                    _preflightSnapshot.CanCalibrate;
             }
         }
     }
@@ -234,9 +275,41 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_lifecycleSync)
             {
+                return !_closing &&
+                    !_runActive &&
+                    !_removeDriverActive &&
+                    !_preflightActive;
+            }
+        }
+    }
+
+    public bool CanRefreshPrerequisites
+    {
+        get
+        {
+            lock (_lifecycleSync)
+            {
                 return !_closing && !_runActive && !_removeDriverActive;
             }
         }
+    }
+
+    public bool IsPreflightProbing
+    {
+        get => _isPreflightProbing;
+        private set => SetProperty(ref _isPreflightProbing, value);
+    }
+
+    public string StartGateReason
+    {
+        get => _startGateReason;
+        private set => SetProperty(ref _startGateReason, value);
+    }
+
+    public string CalibrationGateReason
+    {
+        get => _calibrationGateReason;
+        private set => SetProperty(ref _calibrationGateReason, value);
     }
 
     public string FeedState
@@ -311,6 +384,118 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public RelayCommand RemoveDriverCommand { get; }
 
+    public RelayCommand RefreshPrerequisitesCommand { get; }
+
+    public Task RefreshPrerequisitesAsync()
+    {
+        CancellationTokenSource cancellation;
+        Task priorOperation;
+        long generation;
+        lock (_lifecycleSync)
+        {
+            if (_closing || _runActive || _removeDriverActive)
+            {
+                return Task.CompletedTask;
+            }
+
+            _preflightCancellation?.Cancel();
+            priorOperation = _preflightOperation ?? Task.CompletedTask;
+            cancellation = new CancellationTokenSource();
+            _preflightCancellation = cancellation;
+            _preflightActive = true;
+            generation = ++_preflightGeneration;
+        }
+
+        _dispatch(() =>
+        {
+            IsPreflightProbing = true;
+            PresentLifecycleAvailability();
+        });
+        var operation = ProbePrerequisitesAsync(
+            generation,
+            cancellation,
+            priorOperation);
+        lock (_lifecycleSync)
+        {
+            if (generation == _preflightGeneration && _preflightActive)
+            {
+                _preflightOperation = operation;
+            }
+        }
+
+        return operation;
+    }
+
+    private async Task ProbePrerequisitesAsync(
+        long generation,
+        CancellationTokenSource cancellation,
+        Task priorOperation)
+    {
+        InternalDriverPrerequisiteSnapshot? snapshot = null;
+        try
+        {
+            await priorOperation.ConfigureAwait(false);
+            cancellation.Token.ThrowIfCancellationRequested();
+            snapshot = await _sessionFactory.ProbePrerequisitesAsync(cancellation.Token)
+                .ConfigureAwait(false);
+            if (snapshot is null)
+            {
+                throw new InvalidOperationException(
+                    "The prerequisite probe returned no snapshot.");
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // A newer refresh, Start/Calibrate, removal, or close owns cancellation.
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            snapshot = InternalDriverPrerequisiteSnapshot.ProbeFailure(
+                $"Prerequisite probing failed: {exception.Message}");
+        }
+        finally
+        {
+            var present = false;
+            lock (_lifecycleSync)
+            {
+                if (generation == _preflightGeneration &&
+                    ReferenceEquals(_preflightCancellation, cancellation))
+                {
+                    present =
+                        !_closing &&
+                        !_runActive &&
+                        !_removeDriverActive &&
+                        snapshot is not null;
+                    if (present)
+                    {
+                        _preflightSnapshot = snapshot!;
+                    }
+
+                    _preflightCancellation = null;
+                    _preflightOperation = null;
+                    _preflightActive = false;
+                }
+            }
+
+            cancellation.Dispose();
+            _dispatch(() =>
+            {
+                if (generation != Volatile.Read(ref _preflightGeneration))
+                {
+                    return;
+                }
+
+                IsPreflightProbing = false;
+                if (present && snapshot is not null)
+                {
+                    ApplyPrerequisiteSnapshot(snapshot);
+                }
+
+                PresentLifecycleAvailability();
+            });
+        }
+    }
+
     /// <summary>
     /// Secondary maintenance action: transactionally removes the driver_ltb
     /// registration through the restart-safe App removal boundary. It never
@@ -318,6 +503,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     /// </summary>
     public async Task RemoveDriverAsync()
     {
+        Task? preflightOperation;
+        TaskCompletionSource completion;
         lock (_lifecycleSync)
         {
             if (_closing || _runActive || _removeDriverActive)
@@ -326,6 +513,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             }
 
             _removeDriverActive = true;
+            _preflightCancellation?.Cancel();
+            preflightOperation = _preflightOperation;
+            completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _removeDriverCompletion = completion;
         }
 
         _dispatch(() =>
@@ -337,6 +529,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         string status;
         try
         {
+            if (preflightOperation is not null)
+            {
+                await preflightOperation.ConfigureAwait(false);
+            }
+
             await using var remover = _removerFactory() ?? throw new InvalidOperationException(
                 "The internal-driver remover factory returned null.");
             var result = await remover.RemoveAsync(CancellationToken.None).ConfigureAwait(false);
@@ -351,14 +548,31 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             lock (_lifecycleSync)
             {
                 _removeDriverActive = false;
+                if (_supportsPrerequisiteProbing)
+                {
+                    _preflightSnapshot = InternalDriverPrerequisiteSnapshot.Unprobed;
+                }
+                if (ReferenceEquals(_removeDriverCompletion, completion))
+                {
+                    _removeDriverCompletion = null;
+                }
             }
+            completion.TrySetResult();
         }
 
         _dispatch(() =>
         {
             RemoveDriverStatus = status;
+            if (_supportsPrerequisiteProbing)
+            {
+                ApplyPrerequisiteSnapshot(InternalDriverPrerequisiteSnapshot.Unprobed);
+            }
             PresentLifecycleAvailability();
         });
+        if (_supportsPrerequisiteProbing)
+        {
+            _ = RefreshPrerequisitesAsync();
+        }
     }
 
     private void PresentLifecycleAvailability()
@@ -369,6 +583,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         CalibrationCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(nameof(CanRemoveDriver));
         RemoveDriverCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(CanRefreshPrerequisites));
+        RefreshPrerequisitesCommand.RaiseCanExecuteChanged();
     }
 
     public Task ToggleAsync()
@@ -393,7 +609,14 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_lifecycleSync)
             {
-                if (_closing || _runActive || _removeDriverActive)
+                var gateAllowsIntent = intent == InternalDriverSessionIntent.Calibrate
+                    ? _preflightSnapshot.CanCalibrate
+                    : _preflightSnapshot.CanStart;
+                if (_closing ||
+                    _runActive ||
+                    _removeDriverActive ||
+                    _preflightActive ||
+                    !gateAllowsIntent)
                 {
                     return;
                 }
@@ -474,6 +697,10 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                     _runCancellation = null;
                     _runCompletion = null;
                     _activeRunGeneration = 0;
+                    if (_supportsPrerequisiteProbing)
+                    {
+                        _preflightSnapshot = InternalDriverPrerequisiteSnapshot.Unprobed;
+                    }
                     _runActive = false;
                 }
             }
@@ -500,6 +727,10 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 PresentLifecycleAvailability();
             });
             completion.TrySetResult();
+            if (_supportsPrerequisiteProbing)
+            {
+                _ = RefreshPrerequisitesAsync();
+            }
         }
     }
 
@@ -564,9 +795,14 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public async Task CloseAsync()
     {
+        Task? preflightOperation;
+        Task? removalOperation;
         lock (_lifecycleSync)
         {
             _closing = true;
+            _preflightCancellation?.Cancel();
+            preflightOperation = _preflightOperation;
+            removalOperation = _removeDriverCompletion?.Task;
         }
         _snapshotCoalescer.Dispose();
 
@@ -574,6 +810,16 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         {
             PresentLifecycleAvailability();
         });
+        if (preflightOperation is not null)
+        {
+            await preflightOperation.ConfigureAwait(false);
+        }
+
+        if (removalOperation is not null)
+        {
+            await removalOperation.ConfigureAwait(false);
+        }
+
         await StopAsync().ConfigureAwait(false);
     }
 
@@ -660,6 +906,62 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         CalibrationGuide.Update(snapshot);
         _ = DebugDiagnostics.TrySample(snapshot);
     }
+
+    private void ApplyPrerequisiteSnapshot(InternalDriverPrerequisiteSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        StartGateReason = snapshot.StartGateReason;
+        CalibrationGateReason = snapshot.CalibrationGateReason;
+
+        ApplyPrerequisite(_setupSteps[0], snapshot.MetaLink);
+        ApplyPrerequisite(_setupSteps[1], snapshot.Controllers);
+        ApplyPrerequisite(_setupSteps[2], snapshot.SteamVr);
+        ApplyPrerequisite(_setupSteps[3], snapshot.Trackers);
+        var deferred = snapshot.Steps.Any(step =>
+            step.Status == InternalDriverPrerequisiteStatus.DeferredUntilStart);
+        _setupSteps[4].Update(
+            snapshot.CanStart && !deferred,
+            snapshot.StartGateReason,
+            snapshot.CanStart
+                ? deferred ? "Deferred until Start" : "Ready"
+                : snapshot.Steps.Any(step =>
+                    step.Status == InternalDriverPrerequisiteStatus.ActionRequired)
+                    ? "Action required"
+                    : "Waiting");
+
+        ApplyPrerequisite(Row("platform"), snapshot.Platform);
+        ApplyPrerequisite(Row("steamvr"), snapshot.SteamVr);
+        ApplyPrerequisite(Row("driver-registration"), snapshot.Driver);
+        ApplyPrerequisite(Row("loaded-driver"), snapshot.Driver);
+        ApplyPrerequisite(Row("meta-link"), snapshot.MetaLink);
+        ApplyPrerequisite(Row("left-input"), snapshot.Controllers);
+        ApplyPrerequisite(Row("right-input"), snapshot.Controllers);
+        ApplyPrerequisite(Row("lighthouse-hmd"), snapshot.SteamVr);
+        ApplyPrerequisite(Row("left-tracker"), snapshot.Trackers);
+        ApplyPrerequisite(Row("right-tracker"), snapshot.Trackers);
+        ApplyPrerequisite(Row("profiles"), snapshot.Profiles);
+        ApplyPrerequisite(Row("feed"), snapshot.Feed);
+    }
+
+    private static void ApplyPrerequisite(
+        ReadinessRowViewModel row,
+        InternalDriverPrerequisite prerequisite)
+    {
+        row.Update(
+            prerequisite.Status == InternalDriverPrerequisiteStatus.Ready,
+            $"{prerequisite.Diagnostic} {prerequisite.Remediation}",
+            PrerequisiteStatusText(prerequisite.Status));
+    }
+
+    private static string PrerequisiteStatusText(
+        InternalDriverPrerequisiteStatus status) => status switch
+    {
+        InternalDriverPrerequisiteStatus.Waiting => "Waiting",
+        InternalDriverPrerequisiteStatus.Ready => "Ready",
+        InternalDriverPrerequisiteStatus.ActionRequired => "Action required",
+        InternalDriverPrerequisiteStatus.DeferredUntilStart => "Deferred until Start",
+        _ => throw new ArgumentOutOfRangeException(nameof(status)),
+    };
 
     private void UpdateRows(InternalDriverSessionSnapshot snapshot)
     {
