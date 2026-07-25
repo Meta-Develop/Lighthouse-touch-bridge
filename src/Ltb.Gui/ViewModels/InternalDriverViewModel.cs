@@ -10,10 +10,14 @@ namespace Ltb.Gui.ViewModels;
 /// </summary>
 public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 {
+    private static readonly TimeSpan DefaultPrerequisiteProbeTimeout =
+        TimeSpan.FromSeconds(15);
+
     private readonly IInternalDriverSessionFactory _sessionFactory;
     private readonly Action<Action> _dispatch;
     private readonly Func<IInternalDriverRemover> _removerFactory;
     private readonly bool _supportsPrerequisiteProbing;
+    private readonly TimeSpan _prerequisiteProbeTimeout;
     private readonly IGuiTimeSource _timeSource;
     private readonly SnapshotPresentationCoalescer _snapshotCoalescer;
     private readonly object _lifecycleSync = new();
@@ -75,12 +79,23 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         Func<IInternalDriverRemover>? removerFactory = null,
         IGuiTimeSource? timeSource = null,
         IGuiDelayScheduler? delayScheduler = null,
-        GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime)
+        GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime,
+        TimeSpan? prerequisiteProbeTimeout = null)
     {
         _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
         _supportsPrerequisiteProbing = sessionFactory.SupportsPrerequisiteProbing;
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
         _removerFactory = removerFactory ?? (static () => InternalDriverRemoval.Create());
+        _prerequisiteProbeTimeout =
+            prerequisiteProbeTimeout ?? DefaultPrerequisiteProbeTimeout;
+        if (_prerequisiteProbeTimeout <= TimeSpan.Zero ||
+            _prerequisiteProbeTimeout == Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(prerequisiteProbeTimeout),
+                "The prerequisite probe timeout must be finite and positive.");
+        }
+
         _timeSource = timeSource ?? SystemGuiTimeSource.Instance;
         _snapshotCoalescer = new SnapshotPresentationCoalescer(
             _timeSource,
@@ -434,14 +449,25 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         InternalDriverPrerequisiteSnapshot? snapshot = null;
         try
         {
-            await priorOperation.ConfigureAwait(false);
-            cancellation.Token.ThrowIfCancellationRequested();
-            snapshot = await _sessionFactory.ProbePrerequisitesAsync(cancellation.Token)
-                .ConfigureAwait(false);
-            if (snapshot is null)
+            var probeOperation = RunPrerequisiteProbeAsync(
+                priorOperation,
+                cancellation.Token);
+            var timeoutOperation = Task.Delay(_prerequisiteProbeTimeout);
+            var completedOperation = await Task.WhenAny(
+                probeOperation,
+                timeoutOperation).ConfigureAwait(false);
+            if (!ReferenceEquals(completedOperation, probeOperation))
             {
-                throw new InvalidOperationException(
-                    "The prerequisite probe returned no snapshot.");
+                cancellation.Cancel();
+                _ = ObserveOrphanedProbeAsync(probeOperation);
+                snapshot = InternalDriverPrerequisiteSnapshot.ProbeFailure(
+                    $"Prerequisite probing timed out after " +
+                    $"{_prerequisiteProbeTimeout.TotalSeconds:G} seconds. " +
+                    "The native probe was canceled and may still be exiting.");
+            }
+            else
+            {
+                snapshot = await probeOperation.ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -486,13 +512,47 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 IsPreflightProbing = false;
-                if (present && snapshot is not null)
+                var canPresent = false;
+                lock (_lifecycleSync)
                 {
-                    ApplyPrerequisiteSnapshot(snapshot);
+                    canPresent =
+                        present &&
+                        !_closing &&
+                        !_runActive &&
+                        !_removeDriverActive;
+                }
+
+                if (canPresent && snapshot is not null)
+                {
+                    ApplyPrerequisiteSnapshotSafely(generation, snapshot);
                 }
 
                 PresentLifecycleAvailability();
             });
+        }
+    }
+
+    private async Task<InternalDriverPrerequisiteSnapshot> RunPrerequisiteProbeAsync(
+        Task priorOperation,
+        CancellationToken cancellationToken)
+    {
+        await priorOperation.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var snapshot = await _sessionFactory.ProbePrerequisitesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return snapshot ?? throw new InvalidOperationException(
+            "The prerequisite probe returned no snapshot.");
+    }
+
+    private static async Task ObserveOrphanedProbeAsync(Task probeOperation)
+    {
+        try
+        {
+            await probeOperation.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // The bounded owner already published timeout/cancellation state.
         }
     }
 
@@ -503,18 +563,15 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     /// </summary>
     public async Task RemoveDriverAsync()
     {
-        Task? preflightOperation;
         TaskCompletionSource completion;
         lock (_lifecycleSync)
         {
-            if (_closing || _runActive || _removeDriverActive)
+            if (_closing || _runActive || _removeDriverActive || _preflightActive)
             {
                 return;
             }
 
             _removeDriverActive = true;
-            _preflightCancellation?.Cancel();
-            preflightOperation = _preflightOperation;
             completion = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _removeDriverCompletion = completion;
@@ -529,11 +586,6 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         string status;
         try
         {
-            if (preflightOperation is not null)
-            {
-                await preflightOperation.ConfigureAwait(false);
-            }
-
             await using var remover = _removerFactory() ?? throw new InvalidOperationException(
                 "The internal-driver remover factory returned null.");
             var result = await remover.RemoveAsync(CancellationToken.None).ConfigureAwait(false);
@@ -802,17 +854,22 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             _closing = true;
             _preflightCancellation?.Cancel();
             preflightOperation = _preflightOperation;
+            _preflightCancellation = null;
+            _preflightOperation = null;
+            _preflightActive = false;
+            _preflightGeneration++;
             removalOperation = _removeDriverCompletion?.Task;
         }
         _snapshotCoalescer.Dispose();
 
         _dispatch(() =>
         {
+            IsPreflightProbing = false;
             PresentLifecycleAvailability();
         });
         if (preflightOperation is not null)
         {
-            await preflightOperation.ConfigureAwait(false);
+            await WaitForPreflightShutdownAsync(preflightOperation).ConfigureAwait(false);
         }
 
         if (removalOperation is not null)
@@ -821,6 +878,20 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         }
 
         await StopAsync().ConfigureAwait(false);
+    }
+
+    private async Task WaitForPreflightShutdownAsync(Task preflightOperation)
+    {
+        var completedOperation = await Task.WhenAny(
+            preflightOperation,
+            Task.Delay(_prerequisiteProbeTimeout)).ConfigureAwait(false);
+        if (ReferenceEquals(completedOperation, preflightOperation))
+        {
+            await preflightOperation.ConfigureAwait(false);
+            return;
+        }
+
+        _ = ObserveOrphanedProbeAsync(preflightOperation);
     }
 
     public ValueTask DisposeAsync() => new(CloseAsync());
@@ -941,6 +1012,48 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         ApplyPrerequisite(Row("right-tracker"), snapshot.Trackers);
         ApplyPrerequisite(Row("profiles"), snapshot.Profiles);
         ApplyPrerequisite(Row("feed"), snapshot.Feed);
+    }
+
+    private void ApplyPrerequisiteSnapshotSafely(
+        long generation,
+        InternalDriverPrerequisiteSnapshot snapshot)
+    {
+        try
+        {
+            ApplyPrerequisiteSnapshot(snapshot);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            var diagnostic =
+                $"Prerequisite presentation failed: {exception.Message}";
+            var failure = InternalDriverPrerequisiteSnapshot.ProbeFailure(diagnostic);
+            lock (_lifecycleSync)
+            {
+                if (generation != _preflightGeneration ||
+                    _closing ||
+                    _runActive ||
+                    _removeDriverActive)
+                {
+                    return;
+                }
+
+                _preflightSnapshot = failure;
+            }
+
+            try
+            {
+                LastError = diagnostic;
+                OverallStatus = "Action required";
+                StartGateReason = failure.StartGateReason;
+                CalibrationGateReason = failure.CalibrationGateReason;
+            }
+            catch (Exception presentationException)
+                when (presentationException is not OutOfMemoryException)
+            {
+                // The internal gate remains failed closed even if a binding
+                // observer rejects the fallback presentation.
+            }
+        }
     }
 
     private static void ApplyPrerequisite(
