@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using Ltb.App;
 using Ltb.Gui.ViewModels;
 
@@ -5,6 +6,117 @@ namespace Ltb.Gui.Tests;
 
 public sealed class GuiModeAndValidationTests
 {
+    [Fact]
+    public void MainWindowXamlDeclaresTabbedWorkflowAndSharedSetupContract()
+    {
+        var document = XDocument.Load(
+            LocateRepositoryFile("src", "Ltb.Gui", "MainWindow.axaml"));
+        XNamespace avalonia = "https://github.com/avaloniaui";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var name = x + "Name";
+
+        var tabs = NamedElement(document, avalonia, name, "TabControl", "MainTabs");
+        var tabItems = tabs.Elements(avalonia + "TabItem").ToArray();
+        Assert.Equal(
+            ["Setup", "Status", "Calibration", "Diagnostics (Debug)"],
+            tabItems.Select(tab => (string?)tab.Attribute("Header")));
+
+        var header = NamedElement(document, avalonia, name, "Border", "PersistentHeader");
+        Assert.Same(tabs.Parent, header.Parent);
+        Assert.True(
+            tabs.Parent!.Elements().ToList().IndexOf(header) <
+            tabs.Parent.Elements().ToList().IndexOf(tabs));
+        AssertBinding(
+            NamedElement(document, avalonia, name, "TextBlock", "PhaseText"),
+            "Text",
+            "PhaseText");
+        AssertBinding(
+            NamedElement(document, avalonia, name, "TextBlock", "OverallStatusText"),
+            "Text",
+            "OverallStatus");
+        Assert.NotNull(
+            NamedElement(document, avalonia, name, "Border", "EvidenceOriginBadge"));
+
+        Assert.Equal(4, document.Descendants(avalonia + "ScrollViewer").Count());
+        Assert.Equal(
+            [
+                "SetupScrollViewer",
+                "StatusScrollViewer",
+                "CalibrationScrollViewer",
+                "DiagnosticsScrollViewer",
+            ],
+            tabItems.Select(
+                tab => (string?)Assert.Single(tab.Elements(avalonia + "ScrollViewer"))
+                    .Attribute(name)));
+        Assert.All(
+            tabItems.Select(tab => Assert.Single(tab.Elements(avalonia + "ScrollViewer"))),
+            scroll =>
+            {
+                Assert.Equal("Disabled", (string?)scroll.Attribute("HorizontalScrollBarVisibility"));
+                Assert.Equal("Auto", (string?)scroll.Attribute("VerticalScrollBarVisibility"));
+            });
+
+        var setupSteps =
+            NamedElement(document, avalonia, name, "ItemsControl", "SetupStepsList");
+        AssertBinding(setupSteps, "ItemsSource", "SetupSteps");
+        AssertBinding(
+            NamedElement(document, avalonia, name, "ProgressBar", "PreflightProgress"),
+            "IsVisible",
+            "IsPreflightProbing");
+        AssertBinding(
+            NamedElement(document, avalonia, name, "Button", "RefreshPrerequisitesButton"),
+            "Command",
+            "RefreshPrerequisitesCommand");
+        AssertBinding(
+            NamedElement(document, avalonia, name, "TextBlock", "StartGateReasonText"),
+            "Text",
+            "StartGateReason");
+        AssertBinding(
+            NamedElement(document, avalonia, name, "TextBlock", "CalibrationGateReasonText"),
+            "Text",
+            "CalibrationGateReason");
+
+        var actionPanel =
+            NamedElement(document, avalonia, name, "WrapPanel", "SetupActionsPanel");
+        var actionButtons = actionPanel.Elements(avalonia + "Button").ToArray();
+        Assert.Equal(
+            ["ActionButton", "CalibrationButton"],
+            actionButtons.Select(button => (string?)button.Attribute(name)));
+        Assert.Equal("primary", (string?)actionButtons[0].Attribute("Classes"));
+        Assert.Equal("secondary", (string?)actionButtons[1].Attribute("Classes"));
+        AssertBinding(actionButtons[0], "Command", "ActionCommand");
+        AssertBinding(actionButtons[1], "Command", "CalibrationCommand");
+
+        var maintenance =
+            NamedElement(document, avalonia, name, "Expander", "MaintenanceExpander");
+        Assert.Equal("False", (string?)maintenance.Attribute("IsExpanded"));
+        Assert.Contains("Advanced", (string?)maintenance.Attribute("Header"));
+        Assert.NotNull(
+            maintenance.Descendants(avalonia + "Button")
+                .Single(button => (string?)button.Attribute(name) == "RemoveDriverButton"));
+        Assert.NotNull(
+            maintenance.Descendants(avalonia + "TextBlock")
+                .Single(text => (string?)text.Attribute(name) == "LegacyNotice"));
+
+        AssertBinding(
+            NamedElement(document, avalonia, name, "ToggleSwitch", "DebugToggle"),
+            "IsChecked",
+            "IsDebugEnabled");
+        AssertBinding(
+            NamedElement(document, avalonia, name, "Border", "DebugDrawer"),
+            "IsVisible",
+            "IsDebugEnabled");
+        var diagnosticsText = string.Join(
+            " ",
+            tabItems[3]
+                .Descendants(avalonia + "TextBlock")
+                .Select(text => (string?)text.Attribute("Text") ?? string.Empty));
+        Assert.Contains("10 Hz maximum", diagnosticsText, StringComparison.Ordinal);
+        Assert.Contains("fixed 600-sample ring", diagnosticsText, StringComparison.Ordinal);
+        Assert.Contains("Software lower bound only", diagnosticsText, StringComparison.Ordinal);
+        Assert.Contains("motion-to-photon latency", diagnosticsText, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void CommandLineSelectsProductionAndPreservesConsoleOptionNames()
     {
@@ -153,5 +265,47 @@ public sealed class GuiModeAndValidationTests
                 [CalibrationWizardState.Ready],
                 Array.Empty<CalibrationWizardProfileView>(),
                 "synthetic completed session"));
+    }
+
+    private static XElement NamedElement(
+        XDocument document,
+        XNamespace avalonia,
+        XName nameAttribute,
+        string elementName,
+        string controlName) =>
+        document
+            .Descendants(avalonia + elementName)
+            .Single(element => (string?)element.Attribute(nameAttribute) == controlName);
+
+    private static void AssertBinding(
+        XElement element,
+        string attributeName,
+        string propertyName) =>
+        Assert.Equal(
+            $"{{Binding {propertyName}}}",
+            (string?)element.Attribute(attributeName));
+
+    private static string LocateRepositoryFile(params string[] relativeParts)
+    {
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            var directory = new DirectoryInfo(start);
+            while (directory is not null)
+            {
+                var candidateParts = new string[relativeParts.Length + 1];
+                candidateParts[0] = directory.FullName;
+                Array.Copy(relativeParts, 0, candidateParts, 1, relativeParts.Length);
+                var candidate = Path.Combine(candidateParts);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+
+                directory = directory.Parent;
+            }
+        }
+
+        throw new FileNotFoundException(
+            $"Unable to locate repository file '{Path.Combine(relativeParts)}'.");
     }
 }
