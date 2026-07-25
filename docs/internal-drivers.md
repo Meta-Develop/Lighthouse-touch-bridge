@@ -284,6 +284,44 @@ landing in that small window is overwritten by the commit; and directory-entry
 durability after the rename depends on filesystem journaling, the same
 limitation as `AtomicFileWriter`.
 
+### Physical tracker role neutralization
+
+The physical-tracker role transaction has one narrow settings responsibility:
+in `steamvr.vrsettings`, set the two selected controller-source trackers'
+entries in the top-level `trackers` object to `TrackerRole_None`. Valve's
+[OpenVR driver documentation](https://github.com/ValveSoftware/openvr/blob/master/docs/Driver_API_Documentation.md#trackers-full-body-tracking)
+defines that object and requires each key to be the full registered device path
+`/devices/<driver_name>/<device_serial_number>`. The caller must therefore pass
+the two exact registered device paths discovered from the running OpenVR
+runtime. LTB accepts exactly two distinct paths and never constructs or guesses
+a device path from a tracker serial or driver name.
+
+Valve's documented tracker-role list does not include `TrackerRole_None`. The
+neutral value is supported here by observed deployed-configuration evidence:
+Antilatency's
+[published OpenVR driver configuration](https://developers.antilatency.com/Software/OpenVR_Driver_en.html#override)
+shows full device-path entries in `trackers` set to `TrackerRole_None`. That is
+deployment evidence, not an explicit normative Valve guarantee about the
+value.
+
+The transaction snapshots the `trackers` object's prior presence plus each
+target's exact prior presence and JSON value, writes and verifies both neutral
+entries together, and restores that exact state during cleanup: any prior JSON
+value is restored verbatim, including `null` or an object, while a previously
+absent entry is removed. An object created solely for the transaction is also
+removed when it was originally absent. The operation preserves unrelated
+tracker entries and all unrelated settings and uses the existing settings
+lock, sibling backup, same-directory temporary write, read-back verification,
+compare-before-commit guard, rollback, and `FindRecoveryBackups` recovery
+boundary.
+
+This transaction does not configure, create, remove, or repair ALVR, VMT, or
+SteamVR `TrackingOverrides`; those remain unsupported legacy integration
+material. It changes no tracker-role entry other than the two caller-supplied
+physical tracker paths. Automated coverage of the file transaction is not
+Windows SteamVR runtime evidence, so the live Windows checklist remains
+required.
+
 ### Package import boundary
 
 Windows driver packages statically link their compiler runtimes. The package
