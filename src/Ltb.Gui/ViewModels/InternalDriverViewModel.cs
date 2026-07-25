@@ -461,9 +461,10 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 cancellation.Cancel();
                 _ = ObserveOrphanedProbeAsync(probeOperation);
                 snapshot = InternalDriverPrerequisiteSnapshot.ProbeFailure(
-                    $"Prerequisite probing timed out after " +
+                    $"Prerequisite check timed out after " +
                     $"{_prerequisiteProbeTimeout.TotalSeconds:G} seconds. " +
-                    "The native probe was canceled and may still be exiting.");
+                    "SteamVR/OpenVR may be unresponsive. " +
+                    "Retry, or restart SteamVR.");
             }
             else
             {

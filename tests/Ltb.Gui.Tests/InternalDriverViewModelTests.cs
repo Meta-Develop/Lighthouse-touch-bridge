@@ -78,6 +78,14 @@ public sealed class InternalDriverViewModelTests
         Assert.False(viewModel.CanToggle);
         Assert.False(viewModel.CanCalibrate);
         Assert.Contains("timed out", viewModel.StartGateReason, StringComparison.Ordinal);
+        Assert.Contains(
+            "SteamVR/OpenVR may be unresponsive",
+            viewModel.StartGateReason,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Retry, or restart SteamVR.",
+            viewModel.StartGateReason,
+            StringComparison.Ordinal);
         Assert.Equal("Action required", viewModel.SetupSteps[4].Status);
         await viewModel.CloseAsync().WaitAsync(TimeSpan.FromSeconds(2));
     }
@@ -141,12 +149,14 @@ public sealed class InternalDriverViewModelTests
 
         await viewModel.RefreshPrerequisitesAsync();
         Assert.True(viewModel.CanToggle);
+        Assert.True(viewModel.CanCalibrate);
         Assert.Equal("Ready", viewModel.SetupSteps[0].Status);
 
         firstCompletion.TrySetResult(BlockedPrerequisites("driver"));
         await Task.Delay(25);
 
         Assert.True(viewModel.CanToggle);
+        Assert.True(viewModel.CanCalibrate);
         Assert.Equal("Ready", viewModel.SetupSteps[0].Status);
         Assert.DoesNotContain(
             "Driver probe diagnostic.",
