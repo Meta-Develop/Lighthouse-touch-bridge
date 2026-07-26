@@ -46,11 +46,13 @@ ALVR/VMT/`TrackingOverrides` wizard.
 
 The stopped/pre-session panel reads every SteamVR `config` root from the
 current user's `openvrpaths.vrpath`, enumerates only `generic_tracker` records
-from each exact case-sensitive `Lighthouse` paired-device directory, and shows
+from each exact lowercase `lighthouse` paired-device directory, and shows
 typed missing, unreadable, malformed, duplicate, or empty diagnostics without
-throwing through the GUI. The owner can select and save one complete distinct
-left/right pair or explicitly choose **Use automatic association**. Stored and
-reported serials are uppercase canonical values; comparisons are ordinal
+throwing through the GUI. A config-array entry without that directory does not
+veto another applicable root; missing is reported only when no configured root
+contains it. The owner can select and save one complete distinct left/right
+pair or explicitly choose **Use automatic association**. Stored and reported
+serials are uppercase canonical values; comparisons are ordinal
 case-insensitive. The manual pair and lifecycle policy are application
 settings in `internal-driver.json`, never calibration-profile fields.
 
@@ -77,9 +79,10 @@ A manual binding currently cannot pass the next preflight stage. Paired
 `config.json` proves the selected uppercase serial and model, but it does not
 prove the live registered-device path/key SteamVR uses in its tracker-role
 settings. LTB reports this typed unresolved state and performs no
-`steamvr.vrsettings` write. It does not synthesize
-`/devices/lighthouse/<serial>`, use the lowercase `lighthouse` directory, or
-invent a serial/path cache. The required Windows evidence is described in the
+`steamvr.vrsettings` write. The exact lowercase `lighthouse` directory is
+paired-device enumeration evidence only; LTB does not treat it as
+registered-path evidence, synthesize `/devices/lighthouse/<serial>`, or invent
+a serial/path cache. The required Windows evidence is described in the
 verification checklist.
 
 Once both LTB controllers are ready, the physical left Touch Menu button opens
@@ -371,9 +374,10 @@ For a saved manual binding, this transaction is a pre-session operation. Both
 registered paths only after each uppercase bound serial's serial-to-live-path
 relationship is proven by an authoritative live descriptor or equally strong
 stored evidence with explicit provenance and defensible freshness. Paired
-Lighthouse `config.json` alone is insufficient. The current application has no
-such offline authority, so it fails closed before any tracker-role write. It
-never constructs a path from a serial or driver name and has no unproven cache.
+`lighthouse/*/config.json` alone is insufficient. The current application has
+no such offline authority, so it fails closed before any tracker-role write.
+It never constructs a path from a serial or driver name and has no unproven
+cache.
 
 Valve's documented tracker-role list does not include `TrackerRole_None`. The
 neutral value is supported here by observed deployed-configuration evidence:

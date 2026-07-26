@@ -56,9 +56,11 @@ the real serial/model-to-live-path relationship across restart and device-index
 churn. It has no trusted path cache.
 
 If paired discovery itself fails, use its typed missing, unreadable, malformed,
-duplicate, or empty diagnostic. The directory name is the exact
-case-sensitive `Lighthouse`; a lowercase `lighthouse` directory is not the
-supported pairing source. Save only a complete distinct left/right pair.
+duplicate, or empty diagnostic. The paired-device directory name is exactly
+lowercase `lighthouse`; an uppercase-only `Lighthouse` directory does not
+satisfy that contract on a case-sensitive filesystem. A config-array entry
+without `lighthouse` does not veto another applicable root; missing means no
+configured root contains it. Save only a complete distinct left/right pair.
 
 ### Stop or exit removed registration unexpectedly
 

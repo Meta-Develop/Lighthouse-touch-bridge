@@ -127,10 +127,12 @@ still does not replace the connected-hardware gates.
 
 - [ ] With the LTB session stopped, exercise every `config` root listed in
   `openvrpaths.vrpath` and confirm **Refresh** enumerates only
-  `device_class = generic_tracker` records from the exact case-sensitive
-  `Lighthouse` directories. Force missing, unreadable, malformed, duplicate-
-  serial, and empty cases and retain each typed GUI diagnostic; none may escape
-  as an unhandled exception.
+  `device_class = generic_tracker` records from exact lowercase `lighthouse`
+  directories. Confirm an uppercase-only `Lighthouse` directory does not
+  satisfy the contract on a case-sensitive filesystem and that a listed root
+  without the directory does not veto another applicable root. Force missing,
+  unreadable, malformed, duplicate-serial, and empty cases and retain each
+  typed GUI diagnostic; none may escape as an unhandled exception.
 - [ ] Save one complete distinct manual left/right binding from mixed-case
   source serials and confirm `internal-driver.json` stores both serials in
   uppercase canonical form, ordinal case-insensitive matching rejects the same
@@ -157,8 +159,9 @@ still does not replace the connected-hardware gates.
   serial-derived guess.
 - [ ] Before that relationship is available to LTB, press **Start** with a
   manual pair and confirm the typed registered-path-unresolved diagnostic,
-  zero `steamvr.vrsettings` writes, no lowercase pairing-directory fallback,
-  no `/devices/lighthouse/<serial>` synthesis, and no invented path cache.
+  zero `steamvr.vrsettings` writes, no treatment of the exact lowercase
+  `lighthouse` pairing directory as path-key evidence, no
+  `/devices/lighthouse/<serial>` synthesis, and no invented path cache.
 - [ ] After authoritative serial-to-live-path evidence is integrated, confirm
   preflight writes exactly the two bound registered paths in one transactional
   operation, preserves every unrelated tracker role/setting, and retains the

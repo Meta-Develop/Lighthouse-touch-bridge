@@ -285,9 +285,11 @@ separate-inlier fields.
 
 The owner may choose one complete left/right tracker pair while the desktop is
 stopped. Paired candidates come from `generic_tracker` records in each exact
-case-sensitive `Lighthouse` directory under the SteamVR `config` roots listed
-by `openvrpaths.vrpath`. Discovery reports typed missing, unreadable,
-malformed, duplicate, and empty results without throwing through the GUI.
+lowercase `lighthouse` directory under the SteamVR `config` roots listed by
+`openvrpaths.vrpath`. A listed root without that directory does not veto
+another applicable root; discovery reports missing only when no configured
+root contains it. Unreadable, malformed, duplicate, and empty results remain
+typed and do not throw through the GUI.
 
 The binding belongs to `internal-driver.json`, not to either hand's
 calibration profile. Stored and reported serials are uppercase canonical
@@ -461,12 +463,12 @@ wins over concurrent Stop/cancellation.
 
 The portable pipeline does not perform optional joint nonlinear refinement.
 The stopped manual-binding preflight can establish the selected uppercase
-serials and models from paired Lighthouse configuration, but those files do
-not establish either live registered-device path/key. The current pre-session
-path therefore blocks before tracker-role neutralization rather than
-synthesizing `/devices/lighthouse/<serial>` or inventing a path cache. Windows
-evidence across restart and device-index churn is required before a
-serial-to-live-path provenance boundary can be added.
+serials and models from `config.json` below the paired-device `lighthouse`
+directory, but those files do not establish either live registered-device
+path/key. The current pre-session path therefore blocks before tracker-role
+neutralization rather than synthesizing `/devices/lighthouse/<serial>` or
+inventing a path cache. Windows evidence across restart and device-index churn
+is required before a serial-to-live-path provenance boundary can be added.
 
 `TrackerRole_None` remains an unverified target-runtime behavior. No portable
 calibration, settings, or GUI test proves that an application ignores a

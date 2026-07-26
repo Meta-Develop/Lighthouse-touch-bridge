@@ -98,8 +98,11 @@ Live adjustment edits change the effective mount immediately but retain
 visible dirty state and do not write the profile store.
 
 The stopped/pre-session presentation enumerates paired `generic_tracker`
-records from the exact case-sensitive `Lighthouse` directory beneath every
-SteamVR config root. Typed discovery failures do not escape into GUI callbacks.
+records from the exact lowercase `lighthouse` directory beneath each
+applicable SteamVR config root. A config-array entry without that directory
+does not veto another applicable root; when no configured root contains it,
+discovery reports the typed missing-directory diagnostic. Typed discovery
+failures do not escape into GUI callbacks.
 The owner may save one complete distinct left/right binding, with uppercase
 canonical serial storage and ordinal case-insensitive comparison, or retain
 automatic association. The manual binding and default-true

@@ -426,11 +426,13 @@ may be added later by solving the left/right correlation assignment matrix.
 
 The stopped/pre-session desktop flow shall also enumerate paired physical
 trackers from every SteamVR `config` root recorded in the current user's
-`openvrpaths.vrpath`. It shall inspect only the exact case-sensitive
-`Lighthouse` paired-device directory and include only `config.json` records
-whose `device_class` is exactly `generic_tracker`. Missing, unreadable,
-malformed, duplicate-serial, and empty-enumeration cases shall produce typed,
-actionable diagnostics without escaping into GUI callbacks.
+`openvrpaths.vrpath`. It shall inspect only the exact lowercase `lighthouse`
+paired-device directory and include only `config.json` records whose
+`device_class` is exactly `generic_tracker`. A config-array entry without that
+directory shall not veto another applicable root; the missing-directory
+diagnostic applies when no configured root contains it. Unreadable, malformed,
+duplicate-serial, and empty-enumeration cases shall produce typed, actionable
+diagnostics without escaping into GUI callbacks.
 
 An owner-selected binding is one complete left/right pair persisted in
 `internal-driver.json`, never in a calibration profile. Stored and reported
@@ -857,8 +859,8 @@ stopped and refuse without writing if either is running. It shall neutralize
 exactly the two bound trackers only after an authoritative live descriptor, or
 equally strong stored evidence with explicit provenance and defensible
 freshness, proves each selected uppercase serial's exact registered-device
-path/key. A paired Lighthouse `config.json` proves a serial and model only. It
-does not prove that relationship, shall not authorize a settings write, and
+path/key. A paired `lighthouse/*/config.json` proves a serial and model only.
+It does not prove that relationship, shall not authorize a settings write, and
 shall never be converted into a synthesized
 `/devices/lighthouse/<serial>` path or an unproven cache.
 

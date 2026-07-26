@@ -22,7 +22,7 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
         Assert.Equal(PairedLighthouseDeviceDiagnosticCode.None, result.DiagnosticCode);
         Assert.Null(result.FailurePath);
         Assert.EndsWith(
-            "Lighthouse",
+            "lighthouse",
             fixture.LighthouseDirectory,
             StringComparison.Ordinal);
         Assert.Collection(
@@ -42,7 +42,7 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
     }
 
     [Fact]
-    public async Task EnumeratesAllConfiguredRootsUsingOnlyExactUppercasePairingDirectory()
+    public async Task EnumeratesAllApplicableConfiguredRootsUsingExactLowercasePairingDirectory()
     {
         using var paths = new SteamVrLifecycleFixture();
         var secondConfigRoot = Path.Combine(paths.Root, "second-config");
@@ -78,6 +78,83 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
         Assert.Equal(
             ["LHR-FIRST", "LHR-SECOND"],
             result.Devices.Select(device => device.Serial));
+    }
+
+    [Fact]
+    public async Task MissingDirectoryInAnotherConfiguredRootDoesNotVetoApplicableRoot()
+    {
+        using var paths = new SteamVrLifecycleFixture();
+        var configRootWithoutPairedDevices =
+            Path.Combine(paths.Root, "config-without-paired-devices");
+        paths.FileSystem.Write(
+            paths.OpenVrPathsFile,
+            JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["config"] = [configRootWithoutPairedDevices, paths.ConfigRoot],
+            }));
+        var pairedFileSystem = new MemoryPairedLighthouseDeviceFileSystem();
+        AddTracker(
+            pairedFileSystem,
+            paths.ConfigRoot,
+            "paired-device",
+            "lhr-selected");
+        var discovery = new PairedLighthouseDeviceDiscovery(
+            new SteamVrPathDiscovery(
+                new FakeSteamVrHostEnvironment
+                {
+                    LocalApplicationDataPath = paths.LocalApplicationData,
+                },
+                paths.FileSystem),
+            pairedFileSystem);
+
+        var result = await discovery.DiscoverAsync();
+
+        Assert.True(result.IsSuccess, result.Diagnostic);
+        var device = Assert.Single(result.Devices);
+        Assert.Equal("LHR-SELECTED", device.Serial);
+    }
+
+    [Fact]
+    public async Task MalformedConfigInAnotherApplicableRootStillFailsClosed()
+    {
+        using var paths = new SteamVrLifecycleFixture();
+        var secondConfigRoot = Path.Combine(paths.Root, "second-config");
+        paths.FileSystem.Write(
+            paths.OpenVrPathsFile,
+            JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["config"] = [secondConfigRoot, paths.ConfigRoot],
+            }));
+        var pairedFileSystem = new MemoryPairedLighthouseDeviceFileSystem();
+        AddTracker(
+            pairedFileSystem,
+            paths.ConfigRoot,
+            "valid-device",
+            "lhr-valid");
+        var secondLighthouseDirectory = pairedFileSystem.GetCanonicalPath(
+            Path.Combine(secondConfigRoot, "lighthouse"));
+        var malformedDeviceDirectory = pairedFileSystem.GetCanonicalPath(
+            Path.Combine(secondLighthouseDirectory, "malformed-device"));
+        pairedFileSystem.AddDirectory(secondLighthouseDirectory);
+        pairedFileSystem.AddDirectory(malformedDeviceDirectory);
+        pairedFileSystem.AddFile(
+            Path.Combine(malformedDeviceDirectory, "config.json"),
+            """{"device_class":"generic_tracker" """);
+        var discovery = new PairedLighthouseDeviceDiscovery(
+            new SteamVrPathDiscovery(
+                new FakeSteamVrHostEnvironment
+                {
+                    LocalApplicationDataPath = paths.LocalApplicationData,
+                },
+                paths.FileSystem),
+            pairedFileSystem);
+
+        var result = await discovery.DiscoverAsync();
+
+        AssertFailure(
+            result,
+            PairedLighthouseDeviceDiagnosticCode.DeviceConfigMalformed);
+        Assert.Contains("JSON is malformed", result.Diagnostic, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -133,6 +210,27 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
             result,
             PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryMissing);
         Assert.Equal(fixture.LighthouseDirectory, result.FailurePath);
+    }
+
+    [Fact]
+    public async Task UppercaseOnlyDirectoryDoesNotSatisfyExactLowercaseContract()
+    {
+        using var fixture = new PairedDiscoveryFixture(createLighthouseDirectory: false);
+        var uppercaseDirectory = fixture.FileSystem.GetCanonicalPath(
+            Path.Combine(
+                Path.GetDirectoryName(fixture.LighthouseDirectory)!,
+                "Lighthouse"));
+        fixture.FileSystem.AddDirectory(uppercaseDirectory);
+
+        var result = await fixture.Discovery.DiscoverAsync();
+
+        AssertFailure(
+            result,
+            PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryMissing);
+        Assert.EndsWith(
+            Path.Combine("config", "lighthouse"),
+            result.FailurePath,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -392,7 +490,7 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
         public PairedDiscoveryFixture(bool createLighthouseDirectory = true)
         {
             LighthouseDirectory = FileSystem.GetCanonicalPath(
-                Path.Combine(_paths.ConfigRoot, "Lighthouse"));
+                Path.Combine(_paths.ConfigRoot, "lighthouse"));
             if (createLighthouseDirectory)
             {
                 FileSystem.AddDirectory(LighthouseDirectory);
@@ -445,7 +543,7 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
         string serial)
     {
         var lighthouseDirectory = fileSystem.GetCanonicalPath(
-            Path.Combine(configRoot, "Lighthouse"));
+            Path.Combine(configRoot, "lighthouse"));
         var deviceDirectory = fileSystem.GetCanonicalPath(
             Path.Combine(lighthouseDirectory, directoryName));
         fileSystem.AddDirectory(lighthouseDirectory);

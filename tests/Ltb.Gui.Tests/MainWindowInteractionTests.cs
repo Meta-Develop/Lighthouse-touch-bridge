@@ -46,19 +46,16 @@ public sealed class MainWindowInteractionTests
                 window.FindControl<TextBlock>("PhaseText")!.Text);
 
             Click(window, button);
-            var stopTask = viewModel.StopAsync();
-            var completed = await Task.WhenAny(
-                stopTask,
-                Task.Delay(InteractionTimeout));
-            Assert.True(
-                ReferenceEquals(completed, stopTask),
+            await AssertUiConditionAsync(
+                () => session.StopCallCount == 1 &&
+                    session.DisposeCallCount == 1 &&
+                    viewModel.ActionButtonText == "Start",
                 $"The second click did not complete bounded stop and disposal. " +
                 $"Stop calls: {session.StopCallCount}; dispose calls: " +
                 $"{session.DisposeCallCount}; action: {viewModel.ActionButtonText}; " +
                 $"phase: {viewModel.CurrentPhase}; binding busy: " +
                 $"{viewModel.TrackerBinding.IsBusy}; binding state: " +
                 $"{viewModel.TrackerBinding.StatusText}.");
-            await stopTask;
             await FlushUiDispatchAsync();
 
             Assert.Equal(1, session.StopCallCount);
@@ -153,17 +150,14 @@ public sealed class MainWindowInteractionTests
             Assert.Equal("Stop", actionButton.Content);
 
             Click(window, actionButton);
-            var stopTask = viewModel.StopAsync();
-            var completed = await Task.WhenAny(
-                stopTask,
-                Task.Delay(InteractionTimeout));
-            Assert.True(
-                ReferenceEquals(completed, stopTask),
+            await AssertUiConditionAsync(
+                () => session.StopCallCount == 1 &&
+                    session.DisposeCallCount == 1 &&
+                    viewModel.ActionButtonText == "Start",
                 $"Stop did not complete the explicit calibration session. " +
                 $"Stop calls: {session.StopCallCount}; dispose calls: " +
                 $"{session.DisposeCallCount}; action: {viewModel.ActionButtonText}; " +
                 $"phase: {viewModel.CurrentPhase}.");
-            await stopTask;
             await FlushUiDispatchAsync();
 
             Assert.True(viewModel.CalibrationCommand.CanExecute(null));
@@ -355,18 +349,15 @@ public sealed class MainWindowInteractionTests
             Assert.False(both.IsEffectivelyEnabled);
 
             Click(window, action);
-            var stopTask = viewModel.StopAsync();
-            var completed = await Task.WhenAny(
-                stopTask,
-                Task.Delay(InteractionTimeout));
-            Assert.True(
-                ReferenceEquals(completed, stopTask),
+            await AssertUiConditionAsync(
+                () => session.StopCallCount == 1 &&
+                    session.DisposeCallCount == 1 &&
+                    viewModel.ActionButtonText == "Start",
                 $"The controlled session did not stop. Stop calls: " +
                 $"{session.StopCallCount}; dispose calls: {session.DisposeCallCount}; " +
                 $"action: {viewModel.ActionButtonText}; phase: " +
                 $"{viewModel.CurrentPhase}; binding busy: " +
                 $"{viewModel.TrackerBinding.IsBusy}.");
-            await stopTask;
             await FlushUiDispatchAsync();
 
             Assert.Equal(1, session.DisposeCallCount);
@@ -488,6 +479,23 @@ public sealed class MainWindowInteractionTests
 
     private static async Task FlushUiDispatchAsync() =>
         await Dispatcher.UIThread.InvokeAsync(static () => { });
+
+    private static async Task AssertUiConditionAsync(
+        Func<bool> condition,
+        string message)
+    {
+        var deadline = DateTime.UtcNow + InteractionTimeout;
+        while (!condition())
+        {
+            await FlushUiDispatchAsync();
+            if (DateTime.UtcNow >= deadline)
+            {
+                Assert.Fail(message);
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10));
+        }
+    }
 
     private static void Click(MainWindow window, Button button)
     {

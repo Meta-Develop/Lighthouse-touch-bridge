@@ -127,6 +127,10 @@ in this document are examples only and must not be used as live hardware
 identities. Confirm the physical pose source is a connected generic tracker
 and the intended Touch controller has the correct hand role.
 
+This is the legacy profile contract. The stopped first-party internal-driver
+binding uses a separate ordinal case-insensitive contract with uppercase
+canonical storage and reporting.
+
 For a generalized combination, also confirm the physical source's path is not
 a VMT virtual-device path and the Meta Touch controller has a recognized family
 and compatible reported input-profile path. SteamVR remains responsible for

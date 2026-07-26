@@ -6,7 +6,7 @@ namespace Ltb.Driver;
 public sealed class PairedLighthouseDeviceDiscovery
 {
     private const string GenericTrackerDeviceClass = "generic_tracker";
-    private const string LighthousePairingDirectoryName = "Lighthouse";
+    private const string LighthousePairingDirectoryName = "lighthouse";
 
     private readonly SteamVrPathDiscovery _pathDiscovery;
     private readonly IPairedLighthouseDeviceFileSystem _fileSystem;
@@ -46,6 +46,8 @@ public sealed class PairedLighthouseDeviceDiscovery
 
         var devices = new List<PairedLighthouseDevice>();
         var serials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? firstMissingLighthouseDirectory = null;
+        var applicableConfigRootCount = 0;
         foreach (var configRoot in configRoots.ConfigRoots)
         {
             string lighthouseDirectory;
@@ -55,12 +57,11 @@ public sealed class PairedLighthouseDeviceDiscovery
                     Path.Combine(configRoot, LighthousePairingDirectoryName));
                 if (!_fileSystem.DirectoryExists(lighthouseDirectory))
                 {
-                    return Failure(
-                        PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryMissing,
-                        $"The SteamVR config root has no exact '{LighthousePairingDirectoryName}' " +
-                        $"paired-device directory: '{lighthouseDirectory}'.",
-                        lighthouseDirectory);
+                    firstMissingLighthouseDirectory ??= lighthouseDirectory;
+                    continue;
                 }
+
+                applicableConfigRootCount++;
             }
             catch (Exception exception) when (IsFileAccessFailure(exception))
             {
@@ -84,8 +85,8 @@ public sealed class PairedLighthouseDeviceDiscovery
             {
                 return Failure(
                     PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryUnreadable,
-                    $"The Lighthouse paired-device directory could not be enumerated: " +
-                    $"'{lighthouseDirectory}'.",
+                    $"The exact '{LighthousePairingDirectoryName}' paired-device directory " +
+                    $"could not be enumerated: '{lighthouseDirectory}'.",
                     lighthouseDirectory);
             }
 
@@ -101,8 +102,9 @@ public sealed class PairedLighthouseDeviceDiscovery
                     {
                         return Failure(
                             PairedLighthouseDeviceDiagnosticCode.DeviceConfigMissing,
-                            $"A Lighthouse device directory has no config.json: " +
-                            $"'{deviceDirectory}'.",
+                            $"A device directory under the exact " +
+                            $"'{LighthousePairingDirectoryName}' paired-device directory " +
+                            $"has no config.json: '{deviceDirectory}'.",
                             configFile);
                     }
                 }
@@ -153,6 +155,15 @@ public sealed class PairedLighthouseDeviceDiscovery
 
                 devices.Add(parsed.Device);
             }
+        }
+
+        if (applicableConfigRootCount == 0)
+        {
+            return Failure(
+                PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryMissing,
+                $"No configured SteamVR config root contains the exact " +
+                $"'{LighthousePairingDirectoryName}' paired-device directory.",
+                firstMissingLighthouseDirectory ?? configRoots.OpenVrPathsFile);
         }
 
         if (devices.Count == 0)
