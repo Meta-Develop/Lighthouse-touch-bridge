@@ -17,6 +17,7 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
         var store = new DriverRegistrationReceiptStore(StorePath);
 
         Assert.Null(store.TryLoad(@"C:\ltb\driver_ltb"));
+        Assert.Empty(store.LoadAll());
     }
 
     [Fact]
@@ -63,6 +64,18 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
 
         Assert.Null(store.TryLoad(@"C:\ltb\driver_ltb"));
         Assert.Equal(unrelated, store.TryLoad(@"C:\drivers\unrelated"));
+    }
+
+    [Fact]
+    public void LoadAllReturnsEveryReceiptInDeterministicRootOrder()
+    {
+        var store = new DriverRegistrationReceiptStore(StorePath);
+        var second = Record(@"C:\ltb\second", Guid.NewGuid());
+        var first = Record(@"C:\ltb\first", Guid.NewGuid());
+        store.Save(second);
+        store.Save(first);
+
+        Assert.Equal([first, second], store.LoadAll());
     }
 
     [Fact]

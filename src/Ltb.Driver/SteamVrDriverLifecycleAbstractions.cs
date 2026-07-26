@@ -43,6 +43,13 @@ public interface ISteamVrDriverLifecycle : IDisposable
         string stagedDriverRoot,
         CancellationToken cancellationToken = default);
 
+    ValueTask<SteamVrDriverStartupInspection> InspectStartupAsync(
+        string stagedDriverRoot,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.FromException<SteamVrDriverStartupInspection>(
+            new NotSupportedException(
+                "This lifecycle implementation does not provide next-start inspection."));
+
     ValueTask<SteamVrDriverLifecycleResult> RegisterAsync(
         string stagedDriverRoot,
         CancellationToken cancellationToken = default);
