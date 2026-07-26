@@ -83,6 +83,43 @@ public sealed class OpenVrDevicePathTests
         Assert.Equal(expectedDriver, driver);
     }
 
+    [Fact]
+    public void OfflinePairedLighthouseRecordRequiresLiveRegisteredPathEvidence()
+    {
+        var result = OfflineOpenVrDevicePath.FromPairedLighthouseRecord(
+            "LHR-ABCDEF12",
+            "VIVE Tracker Pro MV");
+
+        Assert.Equal(
+            OfflineOpenVrDevicePathStatus.LiveRegisteredDevicePathRequired,
+            result.Status);
+        Assert.Equal("LHR-ABCDEF12", result.StableSerial);
+        Assert.Equal("VIVE Tracker Pro MV", result.Model);
+        Assert.Equal("lighthouse", result.DriverId);
+        Assert.Null(result.CanonicalDevicePath);
+        Assert.False(result.IsResolved);
+        Assert.Contains("matching live OpenVR registered device path", result.Diagnostic);
+        Assert.Contains("lowercase configuration-directory name", result.Diagnostic);
+        Assert.DoesNotContain("/devices/lighthouse/LHR-ABCDEF12", result.Diagnostic);
+    }
+
+    [Theory]
+    [InlineData(null, "VIVE Tracker Pro MV")]
+    [InlineData("", "VIVE Tracker Pro MV")]
+    [InlineData(" ", "VIVE Tracker Pro MV")]
+    [InlineData("LHR-ABCDEF12", null)]
+    [InlineData("LHR-ABCDEF12", "")]
+    [InlineData("LHR-ABCDEF12", " ")]
+    public void OfflinePairedLighthouseRecordRequiresSerialAndModel(
+        string? stableSerial,
+        string? model)
+    {
+        Assert.ThrowsAny<ArgumentException>(() =>
+            OfflineOpenVrDevicePath.FromPairedLighthouseRecord(
+                stableSerial!,
+                model!));
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

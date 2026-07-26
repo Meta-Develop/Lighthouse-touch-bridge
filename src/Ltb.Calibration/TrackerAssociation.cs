@@ -199,12 +199,127 @@ public sealed record TrackerAssociationResult(
 }
 
 /// <summary>
+/// User-selected left/right tracker serials. Verification accepts only a
+/// complete pair whose serials are distinct when compared case-insensitively.
+/// </summary>
+public sealed record ManualTrackerBinding(
+    string? LeftTrackerSerial,
+    string? RightTrackerSerial);
+
+/// <summary>Outcome of checking an authoritative manual binding against motion correlation.</summary>
+public enum ManualTrackerBindingVerificationStatus
+{
+    Agreement,
+    MismatchCorrectionCandidate,
+    CorrelationFailed,
+    IncompleteBinding,
+    NonDistinctBinding,
+}
+
+/// <summary>
+/// Manual-binding verification with the authoritative output, any
+/// correlation-derived correction candidate, and the complete underlying
+/// association result.
+/// </summary>
+public sealed record ManualTrackerBindingVerificationResult(
+    ManualTrackerBindingVerificationStatus Status,
+    string Reason,
+    ManualTrackerBinding? AuthoritativeBinding,
+    ManualTrackerBinding? CorrectionCandidate,
+    TrackerAssociationResult? CorrelationResult)
+{
+    public bool ManualBindingAccepted => AuthoritativeBinding is not null;
+
+    public bool CorrelationAgrees =>
+        Status is ManualTrackerBindingVerificationStatus.Agreement;
+}
+
+/// <summary>
 /// Selects a unique left/right tracker pair from two or more candidates using
 /// angular-speed magnitude correlation. It never compares world-space
 /// directions or assumes runtime device order.
 /// </summary>
 public static class TrackerHandAssociator
 {
+    /// <summary>
+    /// Checks motion correlation against a complete manual binding without
+    /// allowing correlation to replace that binding.
+    /// </summary>
+    public static ManualTrackerBindingVerificationResult VerifyManualBinding(
+        HandMotionCapture leftCapture,
+        HandMotionCapture rightCapture,
+        ManualTrackerBinding? manualBinding,
+        TrackerAssociationOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(leftCapture);
+        ArgumentNullException.ThrowIfNull(rightCapture);
+
+        if (manualBinding is null ||
+            string.IsNullOrWhiteSpace(manualBinding.LeftTrackerSerial) ||
+            string.IsNullOrWhiteSpace(manualBinding.RightTrackerSerial))
+        {
+            return new ManualTrackerBindingVerificationResult(
+                ManualTrackerBindingVerificationStatus.IncompleteBinding,
+                "Manual tracker binding requires non-empty left and right tracker serials.",
+                null,
+                null,
+                null);
+        }
+
+        if (string.Equals(
+                manualBinding.LeftTrackerSerial,
+                manualBinding.RightTrackerSerial,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return new ManualTrackerBindingVerificationResult(
+                ManualTrackerBindingVerificationStatus.NonDistinctBinding,
+                "Manual left and right tracker serials must identify distinct trackers when compared case-insensitively.",
+                null,
+                null,
+                null);
+        }
+
+        var correlationResult = Associate(leftCapture, rightCapture, options);
+        if (!correlationResult.Success)
+        {
+            return new ManualTrackerBindingVerificationResult(
+                ManualTrackerBindingVerificationStatus.CorrelationFailed,
+                $"Manual binding remains authoritative because correlation could not verify it: {correlationResult.Reason}",
+                manualBinding,
+                null,
+                correlationResult);
+        }
+
+        var correctionCandidate = new ManualTrackerBinding(
+            correlationResult.Left!.TrackerSerial,
+            correlationResult.Right!.TrackerSerial);
+        var agrees =
+            string.Equals(
+                manualBinding.LeftTrackerSerial,
+                correctionCandidate.LeftTrackerSerial,
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(
+                manualBinding.RightTrackerSerial,
+                correctionCandidate.RightTrackerSerial,
+                StringComparison.OrdinalIgnoreCase);
+        if (agrees)
+        {
+            return new ManualTrackerBindingVerificationResult(
+                ManualTrackerBindingVerificationStatus.Agreement,
+                "Motion correlation agrees with the authoritative manual tracker binding.",
+                manualBinding,
+                null,
+                correlationResult);
+        }
+
+        return new ManualTrackerBindingVerificationResult(
+            ManualTrackerBindingVerificationStatus.MismatchCorrectionCandidate,
+            $"Manual binding remains authoritative; motion correlation suggests left {correctionCandidate.LeftTrackerSerial} and right {correctionCandidate.RightTrackerSerial} as an explicit correction candidate.",
+            manualBinding,
+            correctionCandidate,
+            correlationResult);
+    }
+
     public static TrackerAssociationResult Associate(
         HandMotionCapture leftCapture,
         HandMotionCapture rightCapture,

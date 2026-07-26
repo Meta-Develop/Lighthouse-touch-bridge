@@ -14,6 +14,183 @@ public sealed class TrackerAssociationTests
     private const string RightFootSerial = "LHR-FBT-RIGHT-FOOT";
 
     [Fact]
+    public void ManualBindingAgreementIsCaseInsensitiveAndRemainsAuthoritative()
+    {
+        var (leftCapture, rightCapture) = CorrelatableCaptures();
+        var manualBinding = new ManualTrackerBinding(
+            LeftSerial.ToLowerInvariant(),
+            RightSerial.ToLowerInvariant());
+
+        var result = TrackerHandAssociator.VerifyManualBinding(
+            leftCapture,
+            rightCapture,
+            manualBinding);
+
+        Assert.Equal(
+            ManualTrackerBindingVerificationStatus.Agreement,
+            result.Status);
+        Assert.True(result.ManualBindingAccepted);
+        Assert.True(result.CorrelationAgrees);
+        Assert.Same(manualBinding, result.AuthoritativeBinding);
+        Assert.Null(result.CorrectionCandidate);
+        Assert.NotNull(result.CorrelationResult);
+        Assert.True(result.CorrelationResult.Success, result.CorrelationResult.Reason);
+        Assert.Equal(LeftSerial, result.CorrelationResult.Left!.TrackerSerial);
+        Assert.Equal(RightSerial, result.CorrelationResult.Right!.TrackerSerial);
+        Assert.Equal(4, result.CorrelationResult.Scores.Count);
+    }
+
+    [Fact]
+    public void ManualBindingMismatchReportsCorrectionCandidateWithoutReassignment()
+    {
+        var (leftCapture, rightCapture) = CorrelatableCaptures();
+        var manualBinding = new ManualTrackerBinding(RightSerial, LeftSerial);
+
+        var result = TrackerHandAssociator.VerifyManualBinding(
+            leftCapture,
+            rightCapture,
+            manualBinding);
+
+        Assert.Equal(
+            ManualTrackerBindingVerificationStatus.MismatchCorrectionCandidate,
+            result.Status);
+        Assert.True(result.ManualBindingAccepted);
+        Assert.False(result.CorrelationAgrees);
+        Assert.Same(manualBinding, result.AuthoritativeBinding);
+        Assert.Equal(RightSerial, result.AuthoritativeBinding!.LeftTrackerSerial);
+        Assert.Equal(LeftSerial, result.AuthoritativeBinding.RightTrackerSerial);
+        Assert.Equal(
+            new ManualTrackerBinding(LeftSerial, RightSerial),
+            result.CorrectionCandidate);
+        Assert.NotNull(result.CorrelationResult);
+        Assert.True(result.CorrelationResult.Success, result.CorrelationResult.Reason);
+        Assert.Contains("remains authoritative", result.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("correction candidate", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(null, RightSerial)]
+    [InlineData(LeftSerial, null)]
+    [InlineData("", RightSerial)]
+    [InlineData(LeftSerial, " ")]
+    public void IncompleteManualBindingFailsClosedWithoutCorrelation(
+        string? leftSerial,
+        string? rightSerial)
+    {
+        var (leftCapture, rightCapture) = CorrelatableCaptures();
+
+        var result = TrackerHandAssociator.VerifyManualBinding(
+            leftCapture,
+            rightCapture,
+            new ManualTrackerBinding(leftSerial, rightSerial));
+
+        Assert.Equal(
+            ManualTrackerBindingVerificationStatus.IncompleteBinding,
+            result.Status);
+        Assert.False(result.ManualBindingAccepted);
+        Assert.False(result.CorrelationAgrees);
+        Assert.Null(result.AuthoritativeBinding);
+        Assert.Null(result.CorrectionCandidate);
+        Assert.Null(result.CorrelationResult);
+        Assert.Contains("requires", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MissingManualBindingFailsClosedWithoutCorrelation()
+    {
+        var (leftCapture, rightCapture) = CorrelatableCaptures();
+
+        var result = TrackerHandAssociator.VerifyManualBinding(
+            leftCapture,
+            rightCapture,
+            manualBinding: null);
+
+        Assert.Equal(
+            ManualTrackerBindingVerificationStatus.IncompleteBinding,
+            result.Status);
+        Assert.False(result.ManualBindingAccepted);
+        Assert.Null(result.CorrelationResult);
+    }
+
+    [Fact]
+    public void CaseInsensitiveDuplicateManualSerialFailsClosedWithoutCorrelation()
+    {
+        var (leftCapture, rightCapture) = CorrelatableCaptures();
+
+        var result = TrackerHandAssociator.VerifyManualBinding(
+            leftCapture,
+            rightCapture,
+            new ManualTrackerBinding(LeftSerial, LeftSerial.ToLowerInvariant()));
+
+        Assert.Equal(
+            ManualTrackerBindingVerificationStatus.NonDistinctBinding,
+            result.Status);
+        Assert.False(result.ManualBindingAccepted);
+        Assert.Null(result.AuthoritativeBinding);
+        Assert.Null(result.CorrectionCandidate);
+        Assert.Null(result.CorrelationResult);
+        Assert.Contains("distinct", result.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("case-insensitively", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CorrelationFailureRetainsCompleteResultAndManualAuthority()
+    {
+        var leftData = Dataset(seed: 1011, lagMilliseconds: 12d);
+        var rightData = Dataset(seed: 2012, lagMilliseconds: 14d);
+        var leftCapture = Capture(
+            CalibrationHand.Left,
+            leftData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftSerial, Static(leftData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(RightSerial, Static(leftData.RawTrackerSamples)));
+        var rightCapture = Capture(
+            CalibrationHand.Right,
+            rightData.RawControllerSamples,
+            new TrackerAssociationCandidate(LeftSerial, Static(rightData.RawTrackerSamples)),
+            new TrackerAssociationCandidate(RightSerial, Static(rightData.RawTrackerSamples)));
+        var manualBinding = new ManualTrackerBinding(LeftSerial, RightSerial);
+
+        var result = TrackerHandAssociator.VerifyManualBinding(
+            leftCapture,
+            rightCapture,
+            manualBinding);
+
+        Assert.Equal(
+            ManualTrackerBindingVerificationStatus.CorrelationFailed,
+            result.Status);
+        Assert.True(result.ManualBindingAccepted);
+        Assert.False(result.CorrelationAgrees);
+        Assert.Same(manualBinding, result.AuthoritativeBinding);
+        Assert.Null(result.CorrectionCandidate);
+        Assert.NotNull(result.CorrelationResult);
+        Assert.False(result.CorrelationResult.Success);
+        Assert.Equal(TrackerAssociationStatus.InvalidCandidate, result.CorrelationResult.Status);
+        Assert.Equal(4, result.CorrelationResult.Scores.Count);
+        Assert.All(
+            result.CorrelationResult.Scores,
+            score => Assert.Equal(
+                TrackerAssociationCandidateRejection.InsufficientMotion,
+                score.Rejection));
+        Assert.Contains("remains authoritative", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void VerificationRetainsUnchangedAutomaticAssociationResult()
+    {
+        var (leftCapture, rightCapture) = CorrelatableCaptures();
+
+        var automatic = TrackerHandAssociator.Associate(leftCapture, rightCapture);
+        var verification = TrackerHandAssociator.VerifyManualBinding(
+            leftCapture,
+            rightCapture,
+            new ManualTrackerBinding(LeftSerial, RightSerial));
+
+        Assert.NotNull(verification.CorrelationResult);
+        var retained = verification.CorrelationResult;
+        Assert.Equivalent(automatic, retained, strict: true);
+    }
+
+    [Fact]
     public void SerialAssignmentIgnoresReversedCandidateOrderAndReportsSwap()
     {
         var leftData = Dataset(seed: 1101, lagMilliseconds: 12d);
@@ -483,6 +660,27 @@ public sealed class TrackerAssociationTests
                 KnownLagMilliseconds = lagMilliseconds,
                 SampleCount = 240,
             });
+
+    private static (HandMotionCapture Left, HandMotionCapture Right) CorrelatableCaptures()
+    {
+        var leftData = Dataset(seed: 1001, lagMilliseconds: 12d);
+        var rightData = Dataset(seed: 2002, lagMilliseconds: 14d);
+        return (
+            Capture(
+                CalibrationHand.Left,
+                leftData.RawControllerSamples,
+                new TrackerAssociationCandidate(LeftSerial, leftData.RawTrackerSamples),
+                new TrackerAssociationCandidate(
+                    RightSerial,
+                    Static(leftData.RawTrackerSamples))),
+            Capture(
+                CalibrationHand.Right,
+                rightData.RawControllerSamples,
+                new TrackerAssociationCandidate(
+                    LeftSerial,
+                    Static(rightData.RawTrackerSamples)),
+                new TrackerAssociationCandidate(RightSerial, rightData.RawTrackerSamples)));
+    }
 
     private static LagEstimate Lag(double correlation) =>
         new(
