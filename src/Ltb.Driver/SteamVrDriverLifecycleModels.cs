@@ -98,6 +98,19 @@ public sealed record SteamVrDriverLifecycleResult(
     SteamVrDriverRegistrationReceipt Receipt);
 
 /// <summary>
+/// Result of one exact-root cleanup transaction. Every root was independently
+/// authorized before mutation and all unrelated registrations retained their
+/// original order.
+/// </summary>
+public sealed record SteamVrDriverCleanupResult(
+    bool Changed,
+    bool RestartRequired,
+    SteamVrDriverReadiness Readiness,
+    string Diagnostic,
+    SteamVrPaths Paths,
+    IReadOnlyList<string> CanonicalDriverRoots);
+
+/// <summary>
 /// Durable authority for LTB-issued registration receipts. A lifecycle saves
 /// the receipt of every registration it owns and deletes it after a completed
 /// removal, so removal stays possible after an application restart. Receipts
@@ -115,7 +128,25 @@ public interface ISteamVrDriverReceiptStore
 
     void Save(SteamVrDriverRegistrationReceipt receipt);
 
+    void SaveAll(IReadOnlyList<SteamVrDriverRegistrationReceipt> receipts)
+    {
+        ArgumentNullException.ThrowIfNull(receipts);
+        foreach (var receipt in receipts)
+        {
+            Save(receipt);
+        }
+    }
+
     void Delete(string canonicalDriverRoot);
+
+    void DeleteAll(IReadOnlyList<string> canonicalDriverRoots)
+    {
+        ArgumentNullException.ThrowIfNull(canonicalDriverRoots);
+        foreach (var canonicalDriverRoot in canonicalDriverRoots)
+        {
+            Delete(canonicalDriverRoot);
+        }
+    }
 }
 
 /// <summary>
@@ -134,7 +165,15 @@ public sealed class NullSteamVrDriverReceiptStore : ISteamVrDriverReceiptStore
     {
     }
 
+    public void SaveAll(IReadOnlyList<SteamVrDriverRegistrationReceipt> receipts)
+    {
+    }
+
     public void Delete(string canonicalDriverRoot)
+    {
+    }
+
+    public void DeleteAll(IReadOnlyList<string> canonicalDriverRoots)
     {
     }
 }

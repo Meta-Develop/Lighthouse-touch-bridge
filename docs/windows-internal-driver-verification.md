@@ -13,8 +13,8 @@ cannot satisfy any item here.
 
 ## Repository-visible evidence boundary
 
-This tracked checklist contains 72 live acceptance items: the 72 lines below
-that begin with `- [ ]`. All 72 remain unchecked. The repository does not
+This tracked checklist contains 91 live acceptance items: the 91 lines below
+that begin with `- [ ]`. All 91 remain unchecked. The repository does not
 assign these items to additional evidence categories, so no category subtotals
 are claimed here. Existing automated and Linux evidence does not satisfy the
 Windows runtime and connected-hardware gates in specification sections 23.3
@@ -123,6 +123,51 @@ still does not replace the connected-hardware gates.
 - [ ] Confirm the raw tracker observations use the intended uncalibrated/raw
   tracking universe and stable serial identities through device-index churn.
 
+## Stopped tracker binding and neutralization authority
+
+- [ ] With the LTB session stopped, exercise every `config` root listed in
+  `openvrpaths.vrpath` and confirm **Refresh** enumerates only
+  `device_class = generic_tracker` records from the exact case-sensitive
+  `Lighthouse` directories. Force missing, unreadable, malformed, duplicate-
+  serial, and empty cases and retain each typed GUI diagnostic; none may escape
+  as an unhandled exception.
+- [ ] Save one complete distinct manual left/right binding from mixed-case
+  source serials and confirm `internal-driver.json` stores both serials in
+  uppercase canonical form, ordinal case-insensitive matching rejects the same
+  serial on both sides, and no calibration profile field or byte changes.
+- [ ] With a manual pair, capture separate left/right motion-correlation
+  agreement and mismatch. Confirm agreement is verification only; a mismatch
+  presents a complete correction candidate and changes the pair only after an
+  explicit **Accept correction** decision, while **Retain manual pair** keeps
+  the saved binding.
+- [ ] Clear the manual binding and confirm the existing automatic association
+  behavior, ambiguity rejection, and saved-profile selection remain unchanged.
+- [ ] With a manual binding present, run `vrserver` alone and then `vrmonitor`
+  alone. In each case press **Start** and confirm preflight refuses before
+  session creation, names the running process, and leaves
+  `steamvr.vrsettings` byte-for-byte unchanged.
+- [ ] In SteamVR **Manage Trackers**, set one physical tracker to
+  **Disabled** and capture exactly which file, object, key, and JSON value
+  SteamVR writes, including the before/after bytes and behavior after restart.
+  Do not assume the value is `TrackerRole_None`.
+- [ ] Establish the real relationship from each paired `config.json`
+  `device_serial_number` and `model_number` to the live OpenVR registered-
+  device path/key. Repeat across SteamVR restart and transient device-index
+  churn and retain provenance strong enough to distinguish observation from a
+  serial-derived guess.
+- [ ] Before that relationship is available to LTB, press **Start** with a
+  manual pair and confirm the typed registered-path-unresolved diagnostic,
+  zero `steamvr.vrsettings` writes, no lowercase pairing-directory fallback,
+  no `/devices/lighthouse/<serial>` synthesis, and no invented path cache.
+- [ ] After authoritative serial-to-live-path evidence is integrated, confirm
+  preflight writes exactly the two bound registered paths in one transactional
+  operation, preserves every unrelated tracker role/setting, and retains the
+  existing backup, receipt, rollback, and crash-recovery authority.
+- [ ] With the exact two physical trackers intentionally neutralized, prove in
+  VRChat and at least one other representative application that neither
+  tracker is consumed while both LTB controllers remain current. Record this
+  as runtime evidence; do not infer it from the settings value alone.
+
 ## Driver staging, registration, and loaded identity
 
 - [ ] Record the exact nonblank build identity in the staged
@@ -161,6 +206,41 @@ still does not replace the connected-hardware gates.
   supplies the removal authority; record exit code `0` for removed or nothing
   to remove, `2` for refused or failed with completed rollback, and `4` for an
   incomplete rollback in forced-failure tests.
+- [ ] Load compatible old `internal-driver.json` data with no
+  `unregister_on_exit` member and confirm the GUI defaults the policy to
+  enabled. Save both enabled and disabled values and confirm deterministic
+  round-trip without changing manual binding, paths, or calibration profiles.
+- [ ] With unregister-on-exit enabled, complete a controlled **Stop** and a
+  controlled window exit in separate runs. Confirm each awaits session
+  fail-safe cleanup, removes only independently authorized LTB registration
+  roots, and reports that the next **Start** re-registers `driver_ltb` and may
+  require one SteamVR restart.
+- [ ] Disable and save unregister-on-exit, then repeat controlled **Stop** and
+  window exit. Confirm the `driver_ltb` registration and its receipt remain
+  intact while normal session cleanup still completes.
+- [ ] Remove while SteamVR is running and confirm the GUI says removal takes
+  effect only after restart, does not claim either already-loaded LTB device
+  disappeared live, and the post-restart external-driver/device state matches
+  the completed transaction.
+- [ ] Terminate LTB after it has persisted a registration receipt but before a
+  normal controlled cleanup. On the next launch, confirm the stopped panel
+  inspects and surfaces the exact receipt-only, registered-only, or
+  receipt/registration-mismatch state before another Start proceeds.
+- [ ] Create multiple `driver_ltb` registrations whose every canonical root is
+  independently receipt-owned or complete-artifact-proven. Confirm next Start
+  removes all and only those roots transactionally, preserves unrelated
+  registration order and settings, and requires the documented restart.
+- [ ] Repeat duplicate registration with one unproven root, a stale receipt
+  mismatch, and a non-canonical equivalent path. Confirm each case fails closed
+  with actionable ownership diagnostics and performs no partial cleanup.
+- [ ] Keep unrelated external drivers named `01spacecalibrator`,
+  `bigscreenbeyond`, `vmt`, and `alvr_server` registered through default
+  cleanup, duplicate cleanup, rollback, and next-start re-registration.
+  Confirm their exact paths, order, and unrelated settings remain unchanged.
+- [ ] After default Stop/exit cleanup, press **Start** with SteamVR stopped,
+  confirm `driver_ltb` is re-registered from the exact staged root, restart
+  SteamVR once when requested, and verify the exact two staged-build
+  controller identities before readiness passes.
 
 ## Per-hand association and calibration evidence
 

@@ -281,6 +281,33 @@ profile reuse therefore reports only persisted schema fields and never copies
 RMS or the one persisted inlier ratio into missing percentile or
 separate-inlier fields.
 
+### Manual binding and correlation verification
+
+The owner may choose one complete left/right tracker pair while the desktop is
+stopped. Paired candidates come from `generic_tracker` records in each exact
+case-sensitive `Lighthouse` directory under the SteamVR `config` roots listed
+by `openvrpaths.vrpath`. Discovery reports typed missing, unreadable,
+malformed, duplicate, and empty results without throwing through the GUI.
+
+The binding belongs to `internal-driver.json`, not to either hand's
+calibration profile. Stored and reported serials are uppercase canonical
+values. Matching, agreement, and distinctness use ordinal case-insensitive
+comparison; a blank side or equal left/right serial fails closed.
+
+When a manual pair exists, the motion-correlation result does not become a new
+assignment automatically:
+
+- agreement verifies the saved pair;
+- disagreement reports a complete correction candidate while the saved pair
+  remains authoritative;
+- the owner explicitly accepts that correction or explicitly retains the
+  manual pair; and
+- failed correlation leaves a valid manual pair unchanged and reports that it
+  could not be verified.
+
+With no manual binding, `TrackerHandAssociator` retains the existing automatic
+one-to-one association and ambiguity gates.
+
 ### Profile schema 3 and compatibility
 
 Profile schema 3 retains the calibrated `tracker_to_controller` transform and
@@ -433,6 +460,18 @@ wins over concurrent Stop/cancellation.
 ## Current limitations
 
 The portable pipeline does not perform optional joint nonlinear refinement.
+The stopped manual-binding preflight can establish the selected uppercase
+serials and models from paired Lighthouse configuration, but those files do
+not establish either live registered-device path/key. The current pre-session
+path therefore blocks before tracker-role neutralization rather than
+synthesizing `/devices/lighthouse/<serial>` or inventing a path cache. Windows
+evidence across restart and device-index churn is required before a
+serial-to-live-path provenance boundary can be added.
+
+`TrackerRole_None` remains an unverified target-runtime behavior. No portable
+calibration, settings, or GUI test proves that an application ignores a
+neutralized physical tracker.
+
 The `wizard-demo` command remains the deterministic fake demonstration path;
 it proves orchestration, association, selection, reporting, persistence, and
 reload on Linux without a live SteamVR runtime. The production `wizard` command

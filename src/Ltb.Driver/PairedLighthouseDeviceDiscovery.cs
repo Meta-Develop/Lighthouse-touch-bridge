@@ -6,6 +6,7 @@ namespace Ltb.Driver;
 public sealed class PairedLighthouseDeviceDiscovery
 {
     private const string GenericTrackerDeviceClass = "generic_tracker";
+    private const string LighthousePairingDirectoryName = "Lighthouse";
 
     private readonly SteamVrPathDiscovery _pathDiscovery;
     private readonly IPairedLighthouseDeviceFileSystem _fileSystem;
@@ -32,108 +33,135 @@ public sealed class PairedLighthouseDeviceDiscovery
     public async ValueTask<PairedLighthouseDeviceDiscoveryResult> DiscoverAsync(
         CancellationToken cancellationToken = default)
     {
-        var configRoot = await _pathDiscovery
-            .DiscoverConfigRootAsync(cancellationToken)
+        var configRoots = await _pathDiscovery
+            .DiscoverConfigRootsAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (!configRoot.IsSuccess)
+        if (!configRoots.IsSuccess)
         {
             return Failure(
-                configRoot.DiagnosticCode,
-                configRoot.Diagnostic,
-                configRoot.OpenVrPathsFile);
-        }
-
-        var lighthouseDirectory = _fileSystem.GetCanonicalPath(
-            Path.Combine(configRoot.ConfigRoot!, "lighthouse"));
-        if (!_fileSystem.DirectoryExists(lighthouseDirectory))
-        {
-            return Failure(
-                PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryMissing,
-                $"The SteamVR config root has no Lighthouse device directory: " +
-                $"'{lighthouseDirectory}'.",
-                lighthouseDirectory);
-        }
-
-        IReadOnlyList<string> deviceDirectories;
-        try
-        {
-            deviceDirectories = _fileSystem
-                .EnumerateDirectories(lighthouseDirectory)
-                .Select(_fileSystem.GetCanonicalPath)
-                .OrderBy(path => path, StringComparer.Ordinal)
-                .ToArray();
-        }
-        catch (Exception exception) when (IsFileAccessFailure(exception))
-        {
-            return Failure(
-                PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryUnreadable,
-                $"The Lighthouse device directory could not be enumerated: " +
-                $"'{lighthouseDirectory}'.",
-                lighthouseDirectory);
+                configRoots.DiagnosticCode,
+                configRoots.Diagnostic,
+                configRoots.OpenVrPathsFile);
         }
 
         var devices = new List<PairedLighthouseDevice>();
         var serials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var deviceDirectory in deviceDirectories)
+        foreach (var configRoot in configRoots.ConfigRoots)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var configFile = _fileSystem.GetCanonicalPath(
-                Path.Combine(deviceDirectory, "config.json"));
-            if (!_fileSystem.FileExists(configFile))
-            {
-                return Failure(
-                    PairedLighthouseDeviceDiagnosticCode.DeviceConfigMissing,
-                    $"A Lighthouse device directory has no config.json: " +
-                    $"'{deviceDirectory}'.",
-                    configFile);
-            }
-
-            string json;
+            string lighthouseDirectory;
             try
             {
-                json = await _fileSystem
-                    .ReadAllTextAsync(configFile, cancellationToken)
-                    .ConfigureAwait(false);
+                lighthouseDirectory = _fileSystem.GetCanonicalPath(
+                    Path.Combine(configRoot, LighthousePairingDirectoryName));
+                if (!_fileSystem.DirectoryExists(lighthouseDirectory))
+                {
+                    return Failure(
+                        PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryMissing,
+                        $"The SteamVR config root has no exact '{LighthousePairingDirectoryName}' " +
+                        $"paired-device directory: '{lighthouseDirectory}'.",
+                        lighthouseDirectory);
+                }
             }
             catch (Exception exception) when (IsFileAccessFailure(exception))
             {
                 return Failure(
-                    PairedLighthouseDeviceDiagnosticCode.DeviceConfigUnreadable,
-                    $"The Lighthouse device config could not be read: " +
-                    $"'{configFile}'.",
-                    configFile);
+                    PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryUnreadable,
+                    $"The exact '{LighthousePairingDirectoryName}' paired-device directory " +
+                    $"could not be inspected for config root '{configRoot}'.",
+                    configRoot);
             }
 
-            var parsed = ParseConfig(json, configFile);
-            if (parsed.Failure is not null)
+            IReadOnlyList<string> deviceDirectories;
+            try
             {
-                return parsed.Failure;
+                deviceDirectories = _fileSystem
+                    .EnumerateDirectories(lighthouseDirectory)
+                    .Select(_fileSystem.GetCanonicalPath)
+                    .OrderBy(path => path, StringComparer.Ordinal)
+                    .ToArray();
             }
-
-            if (parsed.Device is null)
-            {
-                continue;
-            }
-
-            if (!serials.Add(parsed.Device.Serial))
+            catch (Exception exception) when (IsFileAccessFailure(exception))
             {
                 return Failure(
-                    PairedLighthouseDeviceDiagnosticCode.DuplicateTrackerSerial,
-                    $"Multiple Lighthouse device configs declare tracker serial " +
-                    $"'{parsed.Device.Serial}'.",
-                    configFile);
+                    PairedLighthouseDeviceDiagnosticCode.LighthouseDirectoryUnreadable,
+                    $"The Lighthouse paired-device directory could not be enumerated: " +
+                    $"'{lighthouseDirectory}'.",
+                    lighthouseDirectory);
             }
 
-            devices.Add(parsed.Device);
+            foreach (var deviceDirectory in deviceDirectories)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string configFile;
+                try
+                {
+                    configFile = _fileSystem.GetCanonicalPath(
+                        Path.Combine(deviceDirectory, "config.json"));
+                    if (!_fileSystem.FileExists(configFile))
+                    {
+                        return Failure(
+                            PairedLighthouseDeviceDiagnosticCode.DeviceConfigMissing,
+                            $"A Lighthouse device directory has no config.json: " +
+                            $"'{deviceDirectory}'.",
+                            configFile);
+                    }
+                }
+                catch (Exception exception) when (IsFileAccessFailure(exception))
+                {
+                    return Failure(
+                        PairedLighthouseDeviceDiagnosticCode.DeviceConfigUnreadable,
+                        $"A Lighthouse device config could not be inspected under " +
+                        $"'{deviceDirectory}'.",
+                        deviceDirectory);
+                }
+
+                string json;
+                try
+                {
+                    json = await _fileSystem
+                        .ReadAllTextAsync(configFile, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsFileAccessFailure(exception))
+                {
+                    return Failure(
+                        PairedLighthouseDeviceDiagnosticCode.DeviceConfigUnreadable,
+                        $"The Lighthouse device config could not be read: " +
+                        $"'{configFile}'.",
+                        configFile);
+                }
+
+                var parsed = ParseConfig(json, configFile);
+                if (parsed.Failure is not null)
+                {
+                    return parsed.Failure;
+                }
+
+                if (parsed.Device is null)
+                {
+                    continue;
+                }
+
+                if (!serials.Add(parsed.Device.Serial))
+                {
+                    return Failure(
+                        PairedLighthouseDeviceDiagnosticCode.DuplicateTrackerSerial,
+                        $"Multiple Lighthouse device configs declare tracker serial " +
+                        $"'{parsed.Device.Serial}'.",
+                        configFile);
+                }
+
+                devices.Add(parsed.Device);
+            }
         }
 
         if (devices.Count == 0)
         {
             return Failure(
                 PairedLighthouseDeviceDiagnosticCode.TrackerEnumerationEmpty,
-                $"No paired generic Lighthouse trackers were found under " +
-                $"'{lighthouseDirectory}'.",
-                lighthouseDirectory);
+                $"No paired generic Lighthouse trackers were found in the exact " +
+                $"'{LighthousePairingDirectoryName}' directories under the configured roots.",
+                configRoots.OpenVrPathsFile);
         }
 
         var orderedDevices = devices
@@ -235,5 +263,9 @@ public sealed class PairedLighthouseDeviceDiscovery
         new(code, diagnostic, Array.Empty<PairedLighthouseDevice>(), path);
 
     private static bool IsFileAccessFailure(Exception exception) =>
-        exception is IOException or UnauthorizedAccessException or SecurityException;
+        exception is IOException or
+            UnauthorizedAccessException or
+            SecurityException or
+            ArgumentException or
+            NotSupportedException;
 }

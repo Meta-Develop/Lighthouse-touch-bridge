@@ -87,6 +87,36 @@ public sealed class InternalDriverRemovalTests
         Assert.Equal([receipt], lifecycle.RemovedReceipts);
     }
 
+    [Fact]
+    public async Task ProvenDuplicateRootsAreCleanedInOneAuthorizedBatch()
+    {
+        var receipt = Receipt();
+        var relocatedRoot = @"C:\ltb\old-package\driver_ltb";
+        var store = new MemoryReceiptStore();
+        store.Save(receipt);
+        var lifecycle = new FakeLifecycle(StartupInspection(
+            SteamVrDriverStartupState.DuplicateRegistrations,
+            canonicalLtbDriverRoots: [StagedDriverRoot, relocatedRoot],
+            receipts: [receipt],
+            canRemoveAutomatically: true));
+        await using var removal = new InternalDriverRemoval(
+            lifecycle,
+            store,
+            StagedDriverRoot);
+
+        var result = await removal.RemoveAsync();
+
+        var batch = Assert.Single(lifecycle.RemovedBatches);
+        Assert.Equal(2, batch.Count);
+        Assert.Equal(receipt, batch[0]);
+        var adopted = batch[1];
+        Assert.Equal(relocatedRoot, adopted.CanonicalDriverRoot);
+        Assert.False(adopted.ActivateMultipleDriversChanged);
+        Assert.Equal(adopted, store.TryLoad(relocatedRoot));
+        Assert.True(result.Changed);
+        Assert.True(result.RestartRequired);
+    }
+
     [Theory]
     [InlineData(SteamVrDriverStartupState.StaleReceiptRegistrationMismatch)]
     [InlineData(SteamVrDriverStartupState.DuplicateRegistrations)]
@@ -262,6 +292,43 @@ public sealed class InternalDriverRemovalTests
         }
     }
 
+    [Fact]
+    public void ConfigurationReceiptStoreAdapterSavesAndDeletesBatchAtomically()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ltb-receipt-adapter-tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var adapter = new ConfigurationSteamVrDriverReceiptStore(
+                Path.Combine(root, "registration-receipts.json"));
+            var first = Receipt();
+            var second = first with
+            {
+                CanonicalDriverRoot = @"C:\ltb\old-package\driver_ltb",
+                ActivateMultipleDriversChanged = false,
+                PriorActivateMultipleDrivers =
+                    SteamVrActivateMultipleDriversState.Enabled,
+                OwnershipToken = Guid.NewGuid(),
+            };
+
+            adapter.SaveAll([first, second]);
+            Assert.Equal([first, second], adapter.LoadAll());
+
+            adapter.DeleteAll(
+                [first.CanonicalDriverRoot, second.CanonicalDriverRoot]);
+            Assert.Empty(adapter.LoadAll());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static SteamVrDriverRegistrationReceipt Receipt() => new(
         StagedDriverRoot,
         SteamVrActivateMultipleDriversState.Disabled,
@@ -332,6 +399,8 @@ public sealed class InternalDriverRemovalTests
 
         public List<SteamVrDriverRegistrationReceipt> RemovedReceipts { get; } = [];
 
+        public List<IReadOnlyList<SteamVrDriverRegistrationReceipt>> RemovedBatches { get; } = [];
+
         public ValueTask<SteamVrPaths> DiscoverAsync(
             CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(_inspection.Paths);
@@ -376,6 +445,21 @@ public sealed class InternalDriverRemovalTests
                 "removal diagnostic",
                 _inspection.Paths,
                 receipt));
+        }
+
+        public ValueTask<SteamVrDriverCleanupResult> RemoveOwnedAsync(
+            IReadOnlyList<SteamVrDriverRegistrationReceipt> receipts,
+            CancellationToken cancellationToken = default)
+        {
+            RemovedBatches.Add(receipts.ToArray());
+            RemovedReceipts.AddRange(receipts);
+            return ValueTask.FromResult(new SteamVrDriverCleanupResult(
+                Changed: true,
+                RestartRequired: true,
+                SteamVrDriverReadiness.RestartRequired,
+                "removal diagnostic",
+                _inspection.Paths,
+                receipts.Select(receipt => receipt.CanonicalDriverRoot).ToArray()));
         }
 
         public void Dispose()

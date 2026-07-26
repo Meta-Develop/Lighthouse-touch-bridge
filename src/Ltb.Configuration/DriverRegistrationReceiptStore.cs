@@ -103,20 +103,47 @@ public sealed class DriverRegistrationReceiptStore
     public void Save(DriverRegistrationReceiptRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
+        SaveAll([record]);
+    }
+
+    /// <summary>
+    /// Upserts a complete receipt set with one atomic store replacement.
+    /// </summary>
+    public void SaveAll(IReadOnlyList<DriverRegistrationReceiptRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        var replacements = records.ToDictionary(
+            record => record.CanonicalDriverRoot,
+            StringComparer.OrdinalIgnoreCase);
         var retained = Load()
-            .Where(existing => !RootsEqual(
-                existing.CanonicalDriverRoot,
-                record.CanonicalDriverRoot))
-            .Append(record);
+            .Where(existing => !replacements.ContainsKey(existing.CanonicalDriverRoot))
+            .Concat(replacements.Values);
         Write(retained);
     }
 
     public void Delete(string canonicalDriverRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(canonicalDriverRoot);
+        DeleteAll([canonicalDriverRoot]);
+    }
+
+    /// <summary>
+    /// Deletes a complete exact-root set with one atomic store replacement.
+    /// </summary>
+    public void DeleteAll(IReadOnlyList<string> canonicalDriverRoots)
+    {
+        ArgumentNullException.ThrowIfNull(canonicalDriverRoots);
+        var roots = canonicalDriverRoots.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (roots.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException(
+                "Canonical driver roots must not contain a blank value.",
+                nameof(canonicalDriverRoots));
+        }
+
         var loaded = Load();
         var retained = loaded
-            .Where(existing => !RootsEqual(existing.CanonicalDriverRoot, canonicalDriverRoot))
+            .Where(existing => !roots.Contains(existing.CanonicalDriverRoot))
             .ToArray();
         if (retained.Length != loaded.Count)
         {

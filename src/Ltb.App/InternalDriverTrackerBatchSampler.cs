@@ -32,11 +32,10 @@ internal sealed class InternalDriverTrackerBatchSampler
                 nameof(currentDevices));
         }
 
-        var devices = snapshot
-            .OrderBy(device => device.StableDeviceId, StringComparer.Ordinal)
-            .ToArray();
-        var duplicateSerial = devices
-            .GroupBy(device => device.StableDeviceId, StringComparer.Ordinal)
+        var duplicateSerial = snapshot
+            .GroupBy(
+                device => device.StableDeviceId,
+                StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(group => group.Count() > 1)?.Key;
         if (duplicateSerial is not null)
         {
@@ -44,10 +43,18 @@ internal sealed class InternalDriverTrackerBatchSampler
                 $"SteamVR enumerated duplicate physical tracker serial '{duplicateSerial}'.");
         }
 
+        var devices = snapshot
+            .OrderBy(
+                device => InternalDriverTrackerSerial.Require(
+                    device.StableDeviceId,
+                    nameof(device.StableDeviceId)),
+                StringComparer.Ordinal)
+            .ToArray();
         if (devices.Length == 0)
         {
             Reset();
-            return new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal);
+            return new Dictionary<string, PoseSourceSample>(
+                StringComparer.OrdinalIgnoreCase);
         }
 
         var currentRoster = devices.Select(TrackerBatchRosterEntry.From).ToArray();
@@ -70,7 +77,7 @@ internal sealed class InternalDriverTrackerBatchSampler
 
         var samples = new Dictionary<string, PoseSourceSample>(
             _roster.Length,
-            StringComparer.Ordinal);
+            StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < _roster.Length; index++)
         {
             var actual = TrackerBatchRosterEntry.From(batch[index].Device);
@@ -132,7 +139,9 @@ internal sealed class InternalDriverTrackerBatchSampler
         {
             ArgumentNullException.ThrowIfNull(device);
             return new TrackerBatchRosterEntry(
-                device.StableDeviceId,
+                InternalDriverTrackerSerial.Require(
+                    device.StableDeviceId,
+                    nameof(device.StableDeviceId)),
                 device.Identity.DevicePath,
                 device.TransientDeviceIndex);
         }

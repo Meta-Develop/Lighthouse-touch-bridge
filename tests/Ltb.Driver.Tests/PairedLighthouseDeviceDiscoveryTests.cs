@@ -21,6 +21,10 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
         Assert.True(result.IsSuccess);
         Assert.Equal(PairedLighthouseDeviceDiagnosticCode.None, result.DiagnosticCode);
         Assert.Null(result.FailurePath);
+        Assert.EndsWith(
+            "Lighthouse",
+            fixture.LighthouseDirectory,
+            StringComparison.Ordinal);
         Assert.Collection(
             result.Devices,
             first =>
@@ -35,6 +39,45 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
                 Assert.Equal("VIVE Tracker 3.0", second.Model);
                 Assert.True(second.HasSerial("LhR-Bb02"));
             });
+    }
+
+    [Fact]
+    public async Task EnumeratesAllConfiguredRootsUsingOnlyExactUppercasePairingDirectory()
+    {
+        using var paths = new SteamVrLifecycleFixture();
+        var secondConfigRoot = Path.Combine(paths.Root, "second-config");
+        paths.FileSystem.Write(
+            paths.OpenVrPathsFile,
+            JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["config"] = [secondConfigRoot, paths.ConfigRoot],
+            }));
+        var pairedFileSystem = new MemoryPairedLighthouseDeviceFileSystem();
+        AddTracker(
+            pairedFileSystem,
+            paths.ConfigRoot,
+            "first-device",
+            "lhr-first");
+        AddTracker(
+            pairedFileSystem,
+            secondConfigRoot,
+            "second-device",
+            "LHR-SECOND");
+        var discovery = new PairedLighthouseDeviceDiscovery(
+            new SteamVrPathDiscovery(
+                new FakeSteamVrHostEnvironment
+                {
+                    LocalApplicationDataPath = paths.LocalApplicationData,
+                },
+                paths.FileSystem),
+            pairedFileSystem);
+
+        var result = await discovery.DiscoverAsync();
+
+        Assert.True(result.IsSuccess, result.Diagnostic);
+        Assert.Equal(
+            ["LHR-FIRST", "LHR-SECOND"],
+            result.Devices.Select(device => device.Serial));
     }
 
     [Fact]
@@ -349,7 +392,7 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
         public PairedDiscoveryFixture(bool createLighthouseDirectory = true)
         {
             LighthouseDirectory = FileSystem.GetCanonicalPath(
-                Path.Combine(_paths.ConfigRoot, "lighthouse"));
+                Path.Combine(_paths.ConfigRoot, "Lighthouse"));
             if (createLighthouseDirectory)
             {
                 FileSystem.AddDirectory(LighthouseDirectory);
@@ -393,6 +436,23 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
             _paths.Dispose();
             GC.SuppressFinalize(this);
         }
+    }
+
+    private static void AddTracker(
+        MemoryPairedLighthouseDeviceFileSystem fileSystem,
+        string configRoot,
+        string directoryName,
+        string serial)
+    {
+        var lighthouseDirectory = fileSystem.GetCanonicalPath(
+            Path.Combine(configRoot, "Lighthouse"));
+        var deviceDirectory = fileSystem.GetCanonicalPath(
+            Path.Combine(lighthouseDirectory, directoryName));
+        fileSystem.AddDirectory(lighthouseDirectory);
+        fileSystem.AddDirectory(deviceDirectory);
+        fileSystem.AddFile(
+            Path.Combine(deviceDirectory, "config.json"),
+            DeviceJson("generic_tracker", serial, "Tracker"));
     }
 
     private sealed class MemoryPairedLighthouseDeviceFileSystem :

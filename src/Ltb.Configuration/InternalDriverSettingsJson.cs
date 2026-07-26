@@ -37,6 +37,14 @@ public static class InternalDriverSettingsJson
                 },
                 StagedDriverRoot = settings.StagedDriverRoot,
                 CalibrationProfileStorePath = settings.CalibrationProfileStorePath,
+                ManualTrackerBinding = settings.ManualTrackerBinding is { } binding
+                    ? new TrackerBindingDto
+                    {
+                        LeftTrackerSerial = binding.LeftTrackerSerial,
+                        RightTrackerSerial = binding.RightTrackerSerial,
+                    }
+                    : null,
+                UnregisterOnExit = settings.UnregisterOnExit,
             },
             SerializerOptions) + "\n";
     }
@@ -86,11 +94,20 @@ public static class InternalDriverSettingsJson
                     "'openvrpaths_discovery.mode' must be 'automatic' or 'explicit_file'."),
             };
 
+            var manualTrackerBinding = dto.ManualTrackerBinding is { } bindingDto
+                ? new InternalDriverTrackerBinding(
+                    bindingDto.LeftTrackerSerial,
+                    bindingDto.RightTrackerSerial)
+                : null;
             return new InternalDriverSettings(
                 dto.SchemaVersion,
                 discovery,
                 dto.StagedDriverRoot,
-                dto.CalibrationProfileStorePath);
+                dto.CalibrationProfileStorePath,
+                manualTrackerBinding,
+                dto.HasUnregisterOnExit
+                    ? dto.UnregisterOnExit
+                    : true);
         }
         catch (InternalDriverSettingsFormatException)
         {
@@ -115,6 +132,9 @@ public static class InternalDriverSettingsJson
 
     private sealed class SettingsDto
     {
+        private bool unregisterOnExit;
+        private bool hasUnregisterOnExit;
+
         [JsonPropertyName("schema_version")]
         [JsonPropertyOrder(0)]
         public required int SchemaVersion { get; init; }
@@ -130,6 +150,26 @@ public static class InternalDriverSettingsJson
         [JsonPropertyName("calibration_profile_store_path")]
         [JsonPropertyOrder(3)]
         public required string CalibrationProfileStorePath { get; init; }
+
+        [JsonPropertyName("manual_tracker_binding")]
+        [JsonPropertyOrder(4)]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public TrackerBindingDto? ManualTrackerBinding { get; init; }
+
+        [JsonPropertyName("unregister_on_exit")]
+        [JsonPropertyOrder(5)]
+        public bool UnregisterOnExit
+        {
+            get => unregisterOnExit;
+            init
+            {
+                unregisterOnExit = value;
+                hasUnregisterOnExit = true;
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasUnregisterOnExit => hasUnregisterOnExit;
     }
 
     private sealed class DiscoveryDto
@@ -156,5 +196,16 @@ public static class InternalDriverSettingsJson
 
         [JsonIgnore]
         public bool HasFilePath => hasFilePath;
+    }
+
+    private sealed class TrackerBindingDto
+    {
+        [JsonPropertyName("left_tracker_serial")]
+        [JsonPropertyOrder(0)]
+        public required string LeftTrackerSerial { get; init; }
+
+        [JsonPropertyName("right_tracker_serial")]
+        [JsonPropertyOrder(1)]
+        public required string RightTrackerSerial { get; init; }
     }
 }

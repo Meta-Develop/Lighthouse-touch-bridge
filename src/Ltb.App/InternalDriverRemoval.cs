@@ -59,15 +59,19 @@ public sealed class ConfigurationSteamVrDriverReceiptStore : ISteamVrDriverRecei
     public void Save(SteamVrDriverRegistrationReceipt receipt)
     {
         ArgumentNullException.ThrowIfNull(receipt);
-        _store.Save(new DriverRegistrationReceiptRecord(
-            receipt.CanonicalDriverRoot,
-            ToStoredState(receipt.PriorActivateMultipleDrivers),
-            receipt.ActivateMultipleDriversChanged,
-            receipt.SteamVrSectionWasPresent,
-            receipt.OwnershipToken));
+        SaveAll([receipt]);
+    }
+
+    public void SaveAll(IReadOnlyList<SteamVrDriverRegistrationReceipt> receipts)
+    {
+        ArgumentNullException.ThrowIfNull(receipts);
+        _store.SaveAll(receipts.Select(ToStoredRecord).ToArray());
     }
 
     public void Delete(string canonicalDriverRoot) => _store.Delete(canonicalDriverRoot);
+
+    public void DeleteAll(IReadOnlyList<string> canonicalDriverRoots) =>
+        _store.DeleteAll(canonicalDriverRoots);
 
     private static string ToStoredState(SteamVrActivateMultipleDriversState state) => state switch
     {
@@ -99,6 +103,14 @@ public sealed class ConfigurationSteamVrDriverReceiptStore : ISteamVrDriverRecei
         record.ActivateMultipleDriversChanged,
         record.SteamVrSectionWasPresent,
         record.OwnershipToken);
+
+    private static DriverRegistrationReceiptRecord ToStoredRecord(
+        SteamVrDriverRegistrationReceipt receipt) => new(
+        receipt.CanonicalDriverRoot,
+        ToStoredState(receipt.PriorActivateMultipleDrivers),
+        receipt.ActivateMultipleDriversChanged,
+        receipt.SteamVrSectionWasPresent,
+        receipt.OwnershipToken);
 }
 
 /// <summary>
@@ -144,51 +156,13 @@ public sealed class InternalDriverRemoval : IInternalDriverRegistrationMaintenan
     {
         var inspection = await InspectNextStartAsync(
             cancellationToken).ConfigureAwait(false);
-        SteamVrDriverRegistrationReceipt receipt;
-        switch (inspection.State)
+        if (inspection.State == SteamVrDriverStartupState.NoLtbRegistration)
         {
-            case SteamVrDriverStartupState.NoLtbRegistration:
-                return new InternalDriverRemovalResult(
-                    Changed: false,
-                    RestartRequired: false,
-                    "driver_ltb is not registered and no LTB registration receipt exists; " +
-                    "there is nothing to remove.");
-            case SteamVrDriverStartupState.ReceiptOwnedRegistration:
-                receipt = inspection.MatchingReceipt ?? throw OwnershipLost(
-                    "The owned LTB registration inspection did not return its matching receipt.");
-                break;
-            case SteamVrDriverStartupState.ReceiptOnlyNoRegistration:
-                receipt = inspection.DurableReceipts.Count == 1
-                    ? inspection.DurableReceipts[0]
-                    : throw OwnershipLost(
-                        "Receipt-only recovery requires exactly one canonical LTB receipt.");
-                break;
-            case SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration:
-                if (inspection.CanonicalLtbDriverRoots.Count != 1)
-                {
-                    throw OwnershipLost(
-                        "Receiptless adoption requires exactly one canonical artifact-proven root.");
-                }
-
-                // The registration predates durable receipts. Startup inspection
-                // has proven the manifest identity, binary layout, build identity,
-                // and canonical root. Without a pre-registration snapshot the
-                // activateMultipleDrivers setting is deliberately left unchanged.
-                receipt = new SteamVrDriverRegistrationReceipt(
-                    inspection.CanonicalLtbDriverRoots[0],
-                    inspection.ActivateMultipleDrivers,
-                    ActivateMultipleDriversChanged: false,
-                    SteamVrSectionWasPresent: true,
-                    Guid.NewGuid());
-                _receiptStore.Save(receipt);
-                break;
-            case SteamVrDriverStartupState.StaleReceiptRegistrationMismatch:
-            case SteamVrDriverStartupState.DuplicateRegistrations:
-            case SteamVrDriverStartupState.AmbiguousNonCanonicalRegistration:
-                throw OwnershipLost(inspection.Diagnostic);
-            default:
-                throw new InvalidOperationException(
-                    $"Unknown driver startup state '{inspection.State}'.");
+            return new InternalDriverRemovalResult(
+                Changed: false,
+                RestartRequired: false,
+                "driver_ltb is not registered and no LTB registration receipt exists; " +
+                "there is nothing to remove.");
         }
 
         if (!inspection.CanRemoveAutomatically)
@@ -197,8 +171,45 @@ public sealed class InternalDriverRemoval : IInternalDriverRegistrationMaintenan
                 "The inspected LTB state is not eligible for automatic exact-root removal.");
         }
 
-        var result = await _lifecycle.RemoveAsync(
-            receipt,
+        var receipts = inspection.DurableReceipts.ToList();
+        var adoptedReceipts = new List<SteamVrDriverRegistrationReceipt>();
+        foreach (var canonicalRoot in inspection.CanonicalLtbDriverRoots)
+        {
+            if (receipts.Any(receipt => string.Equals(
+                    receipt.CanonicalDriverRoot,
+                    canonicalRoot,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            // Startup inspection has proven the manifest identity, binary
+            // layout, build identity, and canonical root. Without a
+            // pre-registration snapshot this conservative adoption deliberately
+            // claims no activateMultipleDrivers restoration authority.
+            var adopted = new SteamVrDriverRegistrationReceipt(
+                canonicalRoot,
+                inspection.ActivateMultipleDrivers,
+                ActivateMultipleDriversChanged: false,
+                SteamVrSectionWasPresent: true,
+                Guid.NewGuid());
+            receipts.Add(adopted);
+            adoptedReceipts.Add(adopted);
+        }
+
+        if (receipts.Count == 0)
+        {
+            throw OwnershipLost(
+                "Automatic cleanup did not produce any exact-root LTB removal authority.");
+        }
+
+        if (adoptedReceipts.Count > 0)
+        {
+            _receiptStore.SaveAll(adoptedReceipts);
+        }
+
+        var result = await _lifecycle.RemoveOwnedAsync(
+            receipts,
             cancellationToken).ConfigureAwait(false);
         return new InternalDriverRemovalResult(
             result.Changed,

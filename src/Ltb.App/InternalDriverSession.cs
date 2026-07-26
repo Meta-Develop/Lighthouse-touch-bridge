@@ -818,6 +818,7 @@ internal sealed class InternalDriverSession :
                 LighthouseHmd = LighthouseHmdEvidence(observation),
                 Timing = _timing,
                 TrackerNeutralization = _trackerNeutralization?.Snapshot,
+                ManualBindingVerification = _profiles?.ManualBindingVerification,
             });
 
             await scheduler.WaitForNextAsync(
@@ -1423,6 +1424,9 @@ internal sealed class InternalDriverSession :
             LighthouseHmd = retainRunEvidence ? LighthouseHmdEvidence(observation) : null,
             Timing = retainRunEvidence ? _timing : null,
             TrackerNeutralization = _trackerNeutralization?.Snapshot,
+            ManualBindingVerification = retainRunEvidence
+                ? _profiles?.ManualBindingVerification
+                : null,
         };
     }
 

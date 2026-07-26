@@ -28,6 +28,16 @@ public sealed record SteamVrConfigRootDiscoveryResult(
         DiagnosticCode == PairedLighthouseDeviceDiagnosticCode.None;
 }
 
+public sealed record SteamVrConfigRootsDiscoveryResult(
+    PairedLighthouseDeviceDiagnosticCode DiagnosticCode,
+    string Diagnostic,
+    string? OpenVrPathsFile,
+    IReadOnlyList<string> ConfigRoots)
+{
+    public bool IsSuccess =>
+        DiagnosticCode == PairedLighthouseDeviceDiagnosticCode.None;
+}
+
 public sealed record PairedLighthouseDevice
 {
     public PairedLighthouseDevice(string serial, string model)

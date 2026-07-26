@@ -55,6 +55,42 @@ public sealed class MainWindowSmokeTests
                 viewModel.ReadinessRows.Select(row => row.Title));
             Assert.NotNull(window.FindControl<TextBlock>("DiagnosticText"));
             Assert.NotNull(window.FindControl<TextBlock>("RemediationText"));
+            Assert.NotNull(window.FindControl<Border>("TrackerBindingPanel"));
+            Assert.NotNull(window.FindControl<ComboBox>("LeftTrackerBindingComboBox"));
+            Assert.NotNull(window.FindControl<ComboBox>("RightTrackerBindingComboBox"));
+            Assert.NotNull(window.FindControl<Button>("SaveTrackerBindingButton"));
+            Assert.NotNull(window.FindControl<Button>("ClearTrackerBindingButton"));
+            Assert.NotNull(window.FindControl<Button>("RefreshTrackerBindingButton"));
+            var unregisterOnExit =
+                window.FindControl<ToggleSwitch>("UnregisterOnExitToggle");
+            Assert.NotNull(unregisterOnExit);
+            Assert.True(unregisterOnExit!.IsChecked);
+            Assert.Equal(
+                "Unregister driver_ltb on Stop or exit",
+                unregisterOnExit.Content);
+            var unregisterConsequence =
+                window.FindControl<TextBlock>("UnregisterOnExitConsequenceText");
+            Assert.NotNull(unregisterConsequence);
+            Assert.Contains(
+                "next Start re-registers driver_ltb",
+                unregisterConsequence!.Text,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "may require one SteamVR restart",
+                unregisterConsequence.Text,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "do not disappear live",
+                unregisterConsequence.Text,
+                StringComparison.Ordinal);
+            Assert.NotNull(window.FindControl<Button>("SaveUnregisterOnExitButton"));
+            Assert.NotNull(window.FindControl<Border>("ManualBindingVerificationPanel"));
+            Assert.False(
+                window.FindControl<WrapPanel>("ManualBindingCorrectionActions")!.IsVisible);
+            Assert.NotNull(window.FindControl<Button>("RetainManualBindingButton"));
+            Assert.NotNull(window.FindControl<Button>("AcceptBindingCorrectionButton"));
+            Assert.NotNull(window.FindControl<TextBlock>("NextStartRegistrationStateText"));
+            Assert.NotNull(window.FindControl<TextBlock>("SteamVrProcessGateText"));
             Assert.NotNull(window.FindControl<TextBlock>("LeftTrackerText"));
             Assert.NotNull(window.FindControl<TextBlock>("RightTrackerText"));
             Assert.NotNull(window.FindControl<TextBlock>("LeftPoseText"));
@@ -191,7 +227,9 @@ public sealed class MainWindowSmokeTests
                 }
             }
 
-            Assert.Equal(24, window.GetVisualDescendants().OfType<TextBox>().Count());
+            Assert.Equal(
+                26,
+                window.GetVisualDescendants().OfType<TextBox>().Count());
             Assert.NotNull(window.FindControl<TextBlock>("LeftEffectiveMountTransformText"));
             Assert.NotNull(window.FindControl<TextBlock>("RightEffectiveMountTransformText"));
             Assert.NotNull(window.FindControl<Button>("CalibrateLeftMountButton"));
@@ -297,7 +335,7 @@ public sealed class MainWindowSmokeTests
         {
             window.Show();
 
-            Assert.Equal(24, window.GetVisualDescendants().OfType<TextBox>().Count());
+            Assert.Equal(26, window.GetVisualDescendants().OfType<TextBox>().Count());
             Assert.Null(window.FindControl<TextBox>("LeftSlotTextBox"));
             Assert.Null(window.FindControl<TextBox>("RightSlotTextBox"));
             Assert.Null(window.FindControl<TextBox>("SteamVrSettingsTextBox"));

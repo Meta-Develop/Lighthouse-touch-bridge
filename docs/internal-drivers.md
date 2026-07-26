@@ -44,17 +44,43 @@ raw Lighthouse trackers may remain connected and are ignored after association
 or saved-profile selection. Neither action starts the legacy
 ALVR/VMT/`TrackingOverrides` wizard.
 
+The stopped/pre-session panel reads every SteamVR `config` root from the
+current user's `openvrpaths.vrpath`, enumerates only `generic_tracker` records
+from each exact case-sensitive `Lighthouse` paired-device directory, and shows
+typed missing, unreadable, malformed, duplicate, or empty diagnostics without
+throwing through the GUI. The owner can select and save one complete distinct
+left/right pair or explicitly choose **Use automatic association**. Stored and
+reported serials are uppercase canonical values; comparisons are ordinal
+case-insensitive. The manual pair and lifecycle policy are application
+settings in `internal-driver.json`, never calibration-profile fields.
+
 Before pressing **Start**:
 
-1. Start the official Meta Horizon Link PC application and establish Quest
+1. While the LTB session is stopped, press **Refresh**, review any typed paired-
+   tracker or registration-state diagnostic, and save a complete distinct
+   manual pair or retain automatic association.
+2. If a manual pair is saved, exit SteamVR completely. **Start** refuses before
+   session creation while either `vrserver` or `vrmonitor` is running and
+   writes no SteamVR setting.
+3. Start the official Meta Horizon Link PC application and establish Quest
    Link or Air Link.
-2. Keep the headset and both Touch controllers awake.
-3. Start SteamVR with the intended Lighthouse HMD as the sole HMD.
-4. Power on the two controller-mounted Lighthouse trackers and wait until
+4. Keep the headset and both Touch controllers awake.
+5. For the automatic-association path, start SteamVR with the intended
+   Lighthouse HMD as the sole HMD.
+6. Power on the two controller-mounted Lighthouse trackers and wait until
    their raw poses are valid. Unrelated full-body trackers may remain connected;
    during new association move only the mounted controller requested by each
    prompt so the left/right correlation pair is unambiguous.
-5. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
+7. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
+
+A manual binding currently cannot pass the next preflight stage. Paired
+`config.json` proves the selected uppercase serial and model, but it does not
+prove the live registered-device path/key SteamVR uses in its tracker-role
+settings. LTB reports this typed unresolved state and performs no
+`steamvr.vrsettings` write. It does not synthesize
+`/devices/lighthouse/<serial>`, use the lowercase `lighthouse` directory, or
+invent a serial/path cache. The required Windows evidence is described in the
+verification checklist.
 
 Once both LTB controllers are ready, the physical left Touch Menu button opens
 and closes the SteamVR dashboard through OpenVR's reserved system input. VRChat
@@ -80,6 +106,13 @@ IPC feed. No position or poor translation observability may validly select
 rotation-only; bad rotation coverage or quality is a failure. Existing valid
 schema-2 first-party profiles remain reusable with identity mount adjustments
 without capture or an automatic profile rewrite.
+
+When a manual binding is available to a session after its exact-path preflight,
+motion correlation verifies the owner's choice. Agreement is reported as
+verification. A mismatch presents the correlated pair as an explicit
+correction candidate; the owner must accept that correction or explicitly
+retain the manual pair. Correlation never silently swaps a saved pair. With no
+manual binding, existing automatic association remains unchanged.
 
 Explicit recalibration stages both hand results against a private copy of the
 profile store. Cancellation and canonical commit share one explicit decision
@@ -131,6 +164,25 @@ fields. From a packaged build, the default paths are:
 | Registration receipts | `%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json` |
 | Tracker-role recovery receipt | `%LOCALAPPDATA%\LighthouseTouchBridge\driver\tracker-role-recovery.json` |
 | Structured log | `%LOCALAPPDATA%\LighthouseTouchBridge\logs\internal-driver.jsonl` |
+
+`manual_tracker_binding` and `unregister_on_exit` live only in the settings
+file above. A missing `unregister_on_exit` member in compatible old settings
+loads as `true`; the settings writer then emits the explicit value.
+Calibration profiles continue to contain calibration and mount-adjustment
+evidence only.
+
+```json
+{
+  "manual_tracker_binding": {
+    "left_tracker_serial": "LHR-LEFT",
+    "right_tracker_serial": "LHR-RIGHT"
+  },
+  "unregister_on_exit": true
+}
+```
+
+The binding object is omitted when automatic association is selected. The
+illustrative serials above are placeholders, not hardware evidence.
 
 The log appends JSON records, rotates at its configured bound, and may include
 hardware identities. Redact stable identities and owner-local paths before
@@ -306,15 +358,22 @@ limitation as `AtomicFileWriter`.
 
 ### Physical tracker role neutralization
 
-The physical-tracker role transaction has one narrow settings responsibility:
-in `steamvr.vrsettings`, set the two selected controller-source trackers'
-entries in the top-level `trackers` object to `TrackerRole_None`. Valve's
+The physical-tracker role transaction has one narrow intended settings
+responsibility: in `steamvr.vrsettings`, set exactly the two bound controller-
+source trackers' entries in the top-level `trackers` object to
+`TrackerRole_None`. Valve's
 [OpenVR driver documentation](https://github.com/ValveSoftware/openvr/blob/master/docs/Driver_API_Documentation.md#trackers-full-body-tracking)
 defines that object and requires each key to be the full registered device path
-`/devices/<driver_name>/<device_serial_number>`. The caller must therefore pass
-the two exact registered device paths discovered from the running OpenVR
-runtime. LTB accepts exactly two distinct paths and never constructs or guesses
-a device path from a tracker serial or driver name.
+`/devices/<driver_name>/<device_serial_number>`.
+
+For a saved manual binding, this transaction is a pre-session operation. Both
+`vrserver` and `vrmonitor` must be stopped. LTB accepts exactly two distinct
+registered paths only after each uppercase bound serial's serial-to-live-path
+relationship is proven by an authoritative live descriptor or equally strong
+stored evidence with explicit provenance and defensible freshness. Paired
+Lighthouse `config.json` alone is insufficient. The current application has no
+such offline authority, so it fails closed before any tracker-role write. It
+never constructs a path from a serial or driver name and has no unproven cache.
 
 Valve's documented tracker-role list does not include `TrackerRole_None`. The
 neutral value is supported here by observed deployed-configuration evidence:
@@ -324,16 +383,22 @@ shows full device-path entries in `trackers` set to `TrackerRole_None`. That is
 deployment evidence, not an explicit normative Valve guarantee about the
 value.
 
-The transaction snapshots the `trackers` object's prior presence plus each
-target's exact prior presence and JSON value, writes and verifies both neutral
-entries together, and restores that exact state during cleanup: any prior JSON
-value is restored verbatim, including `null` or an object, while a previously
-absent entry is removed. An object created solely for the transaction is also
-removed when it was originally absent. The operation preserves unrelated
-tracker entries and all unrelated settings and uses the existing settings
-lock, sibling backup, same-directory temporary write, read-back verification,
-compare-before-commit guard, rollback, and `FindRecoveryBackups` recovery
-boundary.
+`TrackerRole_None` remains unverified for this product on the target Windows
+SteamVR runtime. In particular, LTB does not yet claim that VRChat or another
+application ignores a tracker with that value. The checklist separately
+requires capture of exactly what SteamVR writes for **Disabled** in Manage
+Trackers and an application-level ignored-tracker proof.
+
+After exact path authority is established, the transaction snapshots the
+`trackers` object's prior presence plus each target's exact prior presence and
+JSON value, writes and verifies both neutral entries together, and restores
+that exact state during cleanup: any prior JSON value is restored verbatim,
+including `null` or an object, while a previously absent entry is removed. An
+object created solely for the transaction is also removed when it was
+originally absent. The operation preserves unrelated tracker entries and all
+unrelated settings and uses the existing settings lock, sibling backup,
+same-directory temporary write, read-back verification, compare-before-commit
+guard, rollback, and `FindRecoveryBackups` recovery boundary.
 
 The production App persists a separate recovery receipt before the role write.
 The receipt identifies the exact settings file, original hash, expected
@@ -375,14 +440,42 @@ build the actual staged `driver_ltb.dll`, inspect its regular and delay-load
 imports, and pass that exact artifact through the package gate before it can be
 used as import evidence.
 
-Registration runs at session start and does not check whether SteamVR is
-running. SteamVR rewrites `steamvr.vrsettings` and `openvrpaths.vrpath` from
-memory when it exits, so a registration written while SteamVR runs can be
-reverted by SteamVR's own shutdown; the next LTB run re-registers
-idempotently. A first run started while SteamVR is up may therefore need two
-SteamVR restarts before `driver_ltb` loads. To register in one pass, press
-**Start** once while SteamVR is stopped, then start SteamVR; the session
-performs registration first and waits for the runtime afterwards.
+The registration transaction does not stop SteamVR itself. When a manual
+binding exists, the earlier pre-session gate refuses session creation until
+both `vrserver` and `vrmonitor` are stopped. Without a manual binding, existing
+registration behavior remains: a registration written while SteamVR runs may
+be reverted by SteamVR's own shutdown rewrite of `steamvr.vrsettings` or
+`openvrpaths.vrpath`, so the next run re-registers idempotently and an initial
+run may need a second restart. To register in one pass, press **Start** once
+while SteamVR is stopped, then start SteamVR; the session registers first and
+waits for the runtime.
+
+### Registration lifecycle policy and next-start inspection
+
+The desktop setting **Unregister driver_ltb on Stop or exit** is enabled by
+default, including when compatible older settings omit the property. A
+controlled Stop or window exit awaits session fail-safe cleanup, then removes
+only registration roots whose authority comes from a durable LTB receipt or
+complete exact LTB artifact proof. The next **Start** re-registers
+`driver_ltb` and may require one SteamVR restart. The owner may save an
+explicit opt-out to retain registration.
+
+If SteamVR is still running during removal, the GUI says that removal takes
+effect only after SteamVR restarts. It never says the already-loaded
+controllers disappeared live.
+
+Every refresh and next Start inspects the complete external-driver list and
+all durable LTB receipts. A crash can therefore surface a receipt-only root, a
+receipt/registration mismatch, or duplicate registrations before another
+session proceeds. Duplicate roots are removed automatically only when every
+target is independently receipt-owned or exact-artifact-proven and one
+transaction can preserve all unrelated registration entries in their original
+order. A non-canonical alias, stale mismatch, or partially proven duplicate
+fails closed with an actionable diagnostic.
+
+Registration cleanup never modifies unrelated external drivers, including
+`01spacecalibrator`, `bigscreenbeyond`, `vmt`, and `alvr_server`, nor does it
+restore or revive ALVR, VMT, or `TrackingOverrides`.
 
 ### Driver removal
 
@@ -399,14 +492,15 @@ file editing or manual `vrpathreg` use:
 Removal authority is the registration receipt LTB persists at
 `%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json` when
 it registers `driver_ltb`, so removal works after any application restart.
-Removal deletes only the exact canonical LTB driver path, restores the
-`activateMultipleDrivers` presence and value recorded before LTB's
-registration, verifies the result, and rolls back on failure; unrelated
-drivers and user configuration are never modified. A registration made by an
-older build without a receipt is removed only after the staged driver
-artifacts prove the path is LTB's own driver directory, and the
-`activateMultipleDrivers` setting is then deliberately left unchanged. A
-SteamVR restart completes the removal.
+Removal deletes only exact canonical LTB roots authorized before mutation,
+restores the applicable receipt-recorded `activateMultipleDrivers` state,
+verifies the result, and rolls back on failure; unrelated drivers and user
+configuration are never modified. A registration made by an older build
+without a receipt is removed only after its complete staged artifacts prove
+that exact root is LTB's own driver directory; without a pre-registration
+snapshot, `activateMultipleDrivers` is deliberately left unchanged. A SteamVR
+restart completes the removal. If SteamVR was running, no live device
+disappearance is claimed before that restart.
 
 Linux automation and portable C++ tests cover protocol, fake Meta input,
 registration transactions, cross-language decoding, frame/quaternion rules,
@@ -415,8 +509,8 @@ They are not Windows runtime or hardware evidence. Complete and retain the
 [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
 on the target machine.
 
-The tracked checklist contains 72 live acceptance items: the 72 lines that
-begin with `- [ ]`. All 72 remain unchecked, and the repository does not
+The tracked checklist contains 91 live acceptance items: the 91 lines that
+begin with `- [ ]`. All 91 remain unchecked, and the repository does not
 assign them to additional evidence categories. Existing automated and Linux
 evidence does not satisfy the Windows runtime and connected-hardware gates in
 specification sections 23.3 and 23.4 or Definition of Done item 14. The next
@@ -432,9 +526,14 @@ mistaken for unnoticed defects:
   prior `external_drivers` order with the LTB path appended last. A
   `vrpathreg` that reorders entries would make registration fail in the safe
   direction (rollback), not corrupt state.
-- Driver-root path equivalence checks are textual after canonicalization.
-  Symlink or 8.3 short-name aliases of the same directory evade duplicate
-  detection.
+- Non-canonical or equivalent path aliases cannot be assigned safe automatic
+  removal authority and therefore fail closed for manual inspection.
+- Native device publication is unchanged. OpenVR may allow later
+  `TrackedDeviceAdded` calls in principle, but LTB has not verified that path:
+  managed startup currently waits for both activated controller serial/build
+  identities before creating the authenticated pipe peer, while the native
+  provider creates the receiver and both devices during `Init`. OpenVR also
+  offers no atomic two-device add/removal rollback after `Init`.
 - A single non-advancing LibOVR clock observation triggers a full Meta session
   teardown with backoff before reconnection. This is fail-safe but heavy for
   what may be a one-sample stall.

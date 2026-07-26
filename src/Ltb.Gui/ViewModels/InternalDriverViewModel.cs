@@ -62,7 +62,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         IGuiTimeSource? timeSource = null,
         IGuiDelayScheduler? delayScheduler = null,
         GuiEvidenceOrigin evidenceOrigin = GuiEvidenceOrigin.LiveRuntime,
-        IMountAdjustmentPort? mountAdjustmentPort = null)
+        IMountAdjustmentPort? mountAdjustmentPort = null,
+        IInternalDriverPreSessionControl? preSessionControl = null)
     {
         _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
@@ -79,6 +80,9 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         (EvidenceOriginLabel, EvidenceOriginDetail) = EvidenceOrigin(evidenceOrigin);
         LeftHand = new InternalDriverHandViewModel("Left hand");
         RightHand = new InternalDriverHandViewModel("Right hand");
+        TrackerBinding = new TrackerBindingViewModel(
+            preSessionControl ?? new PassthroughInternalDriverPreSessionControl(),
+            _dispatch);
         MountAdjustments = new MountAdjustmentViewModel(
             mountAdjustmentPort ?? UnavailableMountAdjustmentPort.Instance,
             _dispatch,
@@ -155,6 +159,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     public InternalDriverHandViewModel LeftHand { get; }
 
     public InternalDriverHandViewModel RightHand { get; }
+
+    public TrackerBindingViewModel TrackerBinding { get; }
 
     public MountAdjustmentViewModel MountAdjustments { get; }
 
@@ -408,8 +414,35 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     public Task CalibrateAsync() =>
         MountAdjustments.RequestCalibrationAsync(MountAdjustmentCalibrationTarget.Both);
 
+    public Task InitializeAsync() => TrackerBinding.InitializeAsync();
+
     private async Task StartSessionAsync(InternalDriverSessionIntent intent)
     {
+        lock (_lifecycleSync)
+        {
+            if (_closing || _runActive || _removeDriverActive)
+            {
+                return;
+            }
+        }
+
+        if (!await TrackerBinding.PrepareStartAsync().ConfigureAwait(false))
+        {
+            _dispatch(() =>
+            {
+                CurrentPhase = InternalDriverSessionState.Stopped;
+                PhaseText = "Stopped";
+                Diagnostic = TrackerBinding.StatusText;
+                Remediation = TrackerBinding.RemediationText;
+                LastError = TrackerBinding.StatusText;
+                OverallStatus = TrackerBinding.RestartRequired
+                    ? "Restart required"
+                    : "Action required";
+                RestartRequired = TrackerBinding.RestartRequired;
+            });
+            return;
+        }
+
         IInternalDriverSession session;
         CancellationTokenSource cancellation;
         TaskCompletionSource completion;
@@ -490,6 +523,9 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 disposeError = $"Internal-driver disposal failed: {exception.Message}";
             }
 
+            var cleanup = await TrackerBinding
+                .CompleteControlledStopAsync()
+                .ConfigureAwait(false);
             cancellation.Dispose();
             lock (_lifecycleSync)
             {
@@ -519,6 +555,19 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                     LastError = finalError;
                     OverallStatus = "Action required";
                 }
+                else if (cleanup.State == InternalDriverPreSessionState.Faulted)
+                {
+                    LastError = cleanup.Diagnostic;
+                    OverallStatus = "Action required";
+                }
+
+                if (cleanup.RestartRequired)
+                {
+                    RestartRequired = true;
+                    OverallStatus = "Restart required";
+                }
+
+                RemoveDriverStatus = cleanup.Diagnostic;
 
                 IsRunning = false;
                 ActionButtonText = "Start";
@@ -589,9 +638,11 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
     public async Task CloseAsync()
     {
+        bool hadActiveRun;
         lock (_lifecycleSync)
         {
             _closing = true;
+            hadActiveRun = _runActive;
         }
         _snapshotCoalescer.Dispose();
 
@@ -600,7 +651,15 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             PresentLifecycleAvailability();
         });
         await StopAsync().ConfigureAwait(false);
+        if (!hadActiveRun)
+        {
+            _ = await TrackerBinding
+                .CompleteControlledStopAsync()
+                .ConfigureAwait(false);
+        }
+
         MountAdjustments.Dispose();
+        await TrackerBinding.DisposeAsync().ConfigureAwait(false);
     }
 
     public ValueTask DisposeAsync() => new(CloseAsync());
@@ -684,6 +743,10 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         UpdateRows(snapshot);
         UpdateFeed(snapshot);
         CalibrationGuide.Update(snapshot);
+        if (snapshot.ManualBindingVerification is { } verification)
+        {
+            TrackerBinding.ApplyVerification(verification);
+        }
         _ = DebugDiagnostics.TrySample(snapshot);
     }
 

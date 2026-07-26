@@ -81,9 +81,20 @@ public sealed class SteamVrPathDiscovery
     public async ValueTask<SteamVrConfigRootDiscoveryResult> DiscoverConfigRootAsync(
         CancellationToken cancellationToken = default)
     {
+        var result = await DiscoverConfigRootsAsync(cancellationToken).ConfigureAwait(false);
+        return new SteamVrConfigRootDiscoveryResult(
+            result.DiagnosticCode,
+            result.Diagnostic,
+            result.OpenVrPathsFile,
+            result.IsSuccess ? result.ConfigRoots[0] : null);
+    }
+
+    public async ValueTask<SteamVrConfigRootsDiscoveryResult> DiscoverConfigRootsAsync(
+        CancellationToken cancellationToken = default)
+    {
         if (!_environment.IsWindows)
         {
-            return ConfigRootFailure(
+            return ConfigRootsFailure(
                 PairedLighthouseDeviceDiagnosticCode.PlatformUnsupported,
                 "SteamVR config-root discovery requires Windows LocalApplicationData.");
         }
@@ -91,20 +102,30 @@ public sealed class SteamVrPathDiscovery
         var localApplicationData = _environment.GetLocalApplicationDataPath();
         if (string.IsNullOrWhiteSpace(localApplicationData))
         {
-            return ConfigRootFailure(
+            return ConfigRootsFailure(
                 PairedLighthouseDeviceDiagnosticCode.LocalApplicationDataUnavailable,
                 "The current user's Windows LocalApplicationData path is unavailable.");
         }
 
-        var openVrPathsFile = _fileSystem.GetCanonicalPath(
-            Path.Combine(localApplicationData, "openvr", "openvrpaths.vrpath"));
-        if (!_fileSystem.FileExists(openVrPathsFile))
+        string openVrPathsFile;
+        try
         {
-            return ConfigRootFailure(
-                PairedLighthouseDeviceDiagnosticCode.OpenVrPathsMissing,
-                $"The current user's OpenVR path registry does not exist: " +
-                $"'{openVrPathsFile}'.",
-                openVrPathsFile);
+            openVrPathsFile = _fileSystem.GetCanonicalPath(
+                Path.Combine(localApplicationData, "openvr", "openvrpaths.vrpath"));
+            if (!_fileSystem.FileExists(openVrPathsFile))
+            {
+                return ConfigRootsFailure(
+                    PairedLighthouseDeviceDiagnosticCode.OpenVrPathsMissing,
+                    $"The current user's OpenVR path registry does not exist: " +
+                    $"'{openVrPathsFile}'.",
+                    openVrPathsFile);
+            }
+        }
+        catch (Exception exception) when (IsPathOrFileAccessFailure(exception))
+        {
+            return ConfigRootsFailure(
+                PairedLighthouseDeviceDiagnosticCode.OpenVrPathsUnreadable,
+                "The current user's OpenVR path registry location could not be inspected.");
         }
 
         string json;
@@ -115,9 +136,9 @@ public sealed class SteamVrPathDiscovery
                 .ConfigureAwait(false);
         }
         catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or SecurityException)
+            IsPathOrFileAccessFailure(exception))
         {
-            return ConfigRootFailure(
+            return ConfigRootsFailure(
                 PairedLighthouseDeviceDiagnosticCode.OpenVrPathsUnreadable,
                 $"The current user's OpenVR path registry could not be read: " +
                 $"'{openVrPathsFile}'.",
@@ -138,40 +159,44 @@ public sealed class SteamVrPathDiscovery
         }
         catch (JsonException)
         {
-            return ConfigRootFailure(
+            return ConfigRootsFailure(
                 PairedLighthouseDeviceDiagnosticCode.OpenVrPathsMalformed,
                 $"OpenVR path registry '{openVrPathsFile}' is not valid JSON.",
                 openVrPathsFile);
         }
 
-        if (!TryGetFirstPath(root, "config", out var configRoot))
+        if (!TryGetPaths(root, "config", out var configRoots))
         {
-            return ConfigRootFailure(
+            return ConfigRootsFailure(
                 PairedLighthouseDeviceDiagnosticCode.ConfigRootUnavailable,
-                $"OpenVR path registry has no usable 'config' root in " +
+                $"OpenVR path registry has no usable 'config' roots in " +
                 $"'{openVrPathsFile}'.",
                 openVrPathsFile);
         }
 
+        string[] canonicalConfigRoots;
         try
         {
-            configRoot = _fileSystem.GetCanonicalPath(configRoot);
+            canonicalConfigRoots = configRoots
+                .Select(_fileSystem.GetCanonicalPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .ToArray();
         }
-        catch (Exception exception) when (
-            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        catch (Exception exception) when (IsPathOrFileAccessFailure(exception))
         {
-            return ConfigRootFailure(
+            return ConfigRootsFailure(
                 PairedLighthouseDeviceDiagnosticCode.ConfigRootUnavailable,
                 $"OpenVR path registry has an unusable 'config' root in " +
                 $"'{openVrPathsFile}'.",
                 openVrPathsFile);
         }
 
-        return new SteamVrConfigRootDiscoveryResult(
+        return new SteamVrConfigRootsDiscoveryResult(
             PairedLighthouseDeviceDiagnosticCode.None,
-            $"Discovered SteamVR config root '{configRoot}'.",
+            $"Discovered {canonicalConfigRoots.Length} SteamVR config root(s).",
             openVrPathsFile,
-            configRoot);
+            canonicalConfigRoots);
     }
 
     private static JsonElement ParseOpenVrPaths(string json, string sourcePath)
@@ -252,11 +277,51 @@ public sealed class SteamVrPathDiscovery
         return false;
     }
 
+    private static bool TryGetPaths(
+        JsonElement root,
+        string propertyName,
+        out IReadOnlyList<string> values)
+    {
+        if (root.ValueKind == JsonValueKind.Object &&
+            root.TryGetProperty(propertyName, out var paths) &&
+            paths.ValueKind == JsonValueKind.Array)
+        {
+            var usablePaths = paths
+                .EnumerateArray()
+                .Where(path => path.ValueKind == JsonValueKind.String)
+                .Select(path => path.GetString())
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => path!)
+                .ToArray();
+            if (usablePaths.Length > 0)
+            {
+                values = usablePaths;
+                return true;
+            }
+        }
+
+        values = Array.Empty<string>();
+        return false;
+    }
+
     private static SteamVrConfigRootDiscoveryResult ConfigRootFailure(
         PairedLighthouseDeviceDiagnosticCode code,
         string diagnostic,
         string? openVrPathsFile = null) =>
         new(code, diagnostic, openVrPathsFile, null);
+
+    private static SteamVrConfigRootsDiscoveryResult ConfigRootsFailure(
+        PairedLighthouseDeviceDiagnosticCode code,
+        string diagnostic,
+        string? openVrPathsFile = null) =>
+        new(code, diagnostic, openVrPathsFile, Array.Empty<string>());
+
+    private static bool IsPathOrFileAccessFailure(Exception exception) =>
+        exception is IOException or
+            UnauthorizedAccessException or
+            SecurityException or
+            ArgumentException or
+            NotSupportedException;
 
     private static SteamVrDriverLifecycleException Failure(
         SteamVrDriverDiagnosticCode code,

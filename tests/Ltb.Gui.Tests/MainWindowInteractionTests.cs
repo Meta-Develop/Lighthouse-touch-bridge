@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
+using Avalonia.Threading;
 using System.Numerics;
 using Ltb.App;
 using Ltb.Gui.ViewModels;
@@ -14,11 +15,13 @@ public sealed class MainWindowInteractionTests
     private static readonly TimeSpan InteractionTimeout = TimeSpan.FromSeconds(2);
 
     [AvaloniaFact]
-    public void ActionButtonMouseClicksStartAndStopControlledSession()
+    public async Task ActionButtonMouseClicksStartAndStopControlledSession()
     {
         var session = new ControlledSession();
         var factory = new ControlledSessionFactory(session);
-        var viewModel = new InternalDriverViewModel(factory, action => action());
+        var viewModel = new InternalDriverViewModel(
+            factory,
+            action => Dispatcher.UIThread.Post(action));
         var window = new MainWindow
         {
             DataContext = viewModel,
@@ -31,6 +34,7 @@ public sealed class MainWindowInteractionTests
 
             Click(window, button);
             AssertCompletes(session.Started, "The click did not start the controlled session.");
+            await FlushUiDispatchAsync();
 
             Assert.Equal(1, factory.CreateCount);
             Assert.Equal("Stop", button.Content);
@@ -42,13 +46,20 @@ public sealed class MainWindowInteractionTests
                 window.FindControl<TextBlock>("PhaseText")!.Text);
 
             Click(window, button);
+            var stopTask = viewModel.StopAsync();
+            var completed = await Task.WhenAny(
+                stopTask,
+                Task.Delay(InteractionTimeout));
             Assert.True(
-                SpinWait.SpinUntil(
-                    () => session.DisposeCallCount == 1 &&
-                        viewModel.ActionButtonText == "Start" &&
-                        viewModel.CurrentPhase == InternalDriverSessionState.Stopped,
-                    InteractionTimeout),
-                "The second click did not complete bounded stop and disposal.");
+                ReferenceEquals(completed, stopTask),
+                $"The second click did not complete bounded stop and disposal. " +
+                $"Stop calls: {session.StopCallCount}; dispose calls: " +
+                $"{session.DisposeCallCount}; action: {viewModel.ActionButtonText}; " +
+                $"phase: {viewModel.CurrentPhase}; binding busy: " +
+                $"{viewModel.TrackerBinding.IsBusy}; binding state: " +
+                $"{viewModel.TrackerBinding.StatusText}.");
+            await stopTask;
+            await FlushUiDispatchAsync();
 
             Assert.Equal(1, session.StopCallCount);
             Assert.Equal(1, session.DisposeCallCount);
@@ -113,11 +124,13 @@ public sealed class MainWindowInteractionTests
     }
 
     [AvaloniaFact]
-    public void CalibrationButtonMouseClickStartsExplicitCalibrationAndSharesStopFlow()
+    public async Task CalibrationButtonMouseClickStartsExplicitCalibrationAndSharesStopFlow()
     {
         var session = new ControlledSession();
         var factory = new ControlledSessionFactory(session);
-        var viewModel = new InternalDriverViewModel(factory, action => action());
+        var viewModel = new InternalDriverViewModel(
+            factory,
+            action => Dispatcher.UIThread.Post(action));
         var window = new MainWindow
         {
             DataContext = viewModel,
@@ -133,19 +146,25 @@ public sealed class MainWindowInteractionTests
             AssertCompletes(
                 session.Started,
                 "The calibration click did not start the controlled session.");
+            await FlushUiDispatchAsync();
 
             Assert.Equal([InternalDriverSessionIntent.Calibrate], factory.Intents);
             Assert.False(viewModel.CalibrationCommand.CanExecute(null));
             Assert.Equal("Stop", actionButton.Content);
 
             Click(window, actionButton);
+            var stopTask = viewModel.StopAsync();
+            var completed = await Task.WhenAny(
+                stopTask,
+                Task.Delay(InteractionTimeout));
             Assert.True(
-                SpinWait.SpinUntil(
-                    () => session.DisposeCallCount == 1 &&
-                        viewModel.ActionButtonText == "Start" &&
-                        viewModel.CurrentPhase == InternalDriverSessionState.Stopped,
-                    InteractionTimeout),
-                "Stop did not complete the explicit calibration session.");
+                ReferenceEquals(completed, stopTask),
+                $"Stop did not complete the explicit calibration session. " +
+                $"Stop calls: {session.StopCallCount}; dispose calls: " +
+                $"{session.DisposeCallCount}; action: {viewModel.ActionButtonText}; " +
+                $"phase: {viewModel.CurrentPhase}.");
+            await stopTask;
+            await FlushUiDispatchAsync();
 
             Assert.True(viewModel.CalibrationCommand.CanExecute(null));
             Assert.Equal(1, session.StopCallCount);
@@ -298,14 +317,14 @@ public sealed class MainWindowInteractionTests
     }
 
     [AvaloniaFact]
-    public void SelectedCalibrationActionsDispatchOnlyWhileStopped()
+    public async Task SelectedCalibrationActionsDispatchOnlyWhileStopped()
     {
         var session = new ControlledSession();
         var port = new ControlledMountAdjustmentPort(CreateMountSnapshot());
         var factory = new ControlledSessionFactory(session);
         var viewModel = new InternalDriverViewModel(
             factory,
-            action => action(),
+            action => Dispatcher.UIThread.Post(action),
             mountAdjustmentPort: port);
         var window = new MainWindow
         {
@@ -315,6 +334,7 @@ public sealed class MainWindowInteractionTests
         try
         {
             window.Show();
+            await FlushUiDispatchAsync();
             var left = window.FindControl<Button>("CalibrateLeftMountButton")!;
             var right = window.FindControl<Button>("CalibrateRightMountButton")!;
             var both = window.FindControl<Button>("CalibrateBothMountButton")!;
@@ -326,6 +346,7 @@ public sealed class MainWindowInteractionTests
 
             Click(window, left);
             AssertCompletes(session.Started, "The controlled session did not start.");
+            await FlushUiDispatchAsync();
             Assert.Equal(
                 InternalDriverSessionIntent.CalibrateLeft,
                 Assert.Single(factory.Intents));
@@ -334,15 +355,25 @@ public sealed class MainWindowInteractionTests
             Assert.False(both.IsEffectivelyEnabled);
 
             Click(window, action);
+            var stopTask = viewModel.StopAsync();
+            var completed = await Task.WhenAny(
+                stopTask,
+                Task.Delay(InteractionTimeout));
             Assert.True(
-                SpinWait.SpinUntil(
-                    () => session.DisposeCallCount == 1 &&
-                        viewModel.CurrentPhase == InternalDriverSessionState.Stopped &&
-                        viewModel.MountAdjustments.CalibrateLeftCommand.CanExecute(null) &&
-                        viewModel.MountAdjustments.CalibrateRightCommand.CanExecute(null) &&
-                        viewModel.MountAdjustments.CalibrateBothCommand.CanExecute(null),
-                    InteractionTimeout),
-                "The controlled session did not stop.");
+                ReferenceEquals(completed, stopTask),
+                $"The controlled session did not stop. Stop calls: " +
+                $"{session.StopCallCount}; dispose calls: {session.DisposeCallCount}; " +
+                $"action: {viewModel.ActionButtonText}; phase: " +
+                $"{viewModel.CurrentPhase}; binding busy: " +
+                $"{viewModel.TrackerBinding.IsBusy}.");
+            await stopTask;
+            await FlushUiDispatchAsync();
+
+            Assert.Equal(1, session.DisposeCallCount);
+            Assert.Equal(InternalDriverSessionState.Stopped, viewModel.CurrentPhase);
+            Assert.True(viewModel.MountAdjustments.CalibrateLeftCommand.CanExecute(null));
+            Assert.True(viewModel.MountAdjustments.CalibrateRightCommand.CanExecute(null));
+            Assert.True(viewModel.MountAdjustments.CalibrateBothCommand.CanExecute(null));
         }
         finally
         {
@@ -454,6 +485,9 @@ public sealed class MainWindowInteractionTests
 
     private static void AssertCompletes(Task task, string message) =>
         Assert.True(task.Wait(InteractionTimeout), message);
+
+    private static async Task FlushUiDispatchAsync() =>
+        await Dispatcher.UIThread.InvokeAsync(static () => { });
 
     private static void Click(MainWindow window, Button button)
     {

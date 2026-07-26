@@ -59,6 +59,120 @@ public enum InternalDriverProfileReadiness
     Incompatible,
 }
 
+/// <summary>
+/// Typed manual-binding verification presented without allowing correlation
+/// to silently replace the owner-selected pair.
+/// </summary>
+public enum InternalDriverManualBindingVerificationState
+{
+    Agreement = 0,
+    MismatchCorrectionCandidate,
+    CorrelationFailed,
+}
+
+/// <summary>
+/// Authoritative manual pair plus an optional correlation-derived correction
+/// candidate. Every serial uses the stored uppercase canonical form.
+/// </summary>
+public sealed record InternalDriverManualBindingVerificationEvidence
+{
+    public InternalDriverManualBindingVerificationEvidence(
+        InternalDriverManualBindingVerificationState state,
+        string leftTrackerSerial,
+        string rightTrackerSerial,
+        string diagnostic,
+        string? correctionLeftTrackerSerial = null,
+        string? correctionRightTrackerSerial = null)
+    {
+        if (!Enum.IsDefined(state))
+        {
+            throw new ArgumentOutOfRangeException(nameof(state));
+        }
+
+        State = state;
+        LeftTrackerSerial = CanonicalSerial(leftTrackerSerial, nameof(leftTrackerSerial));
+        RightTrackerSerial = CanonicalSerial(rightTrackerSerial, nameof(rightTrackerSerial));
+        RequireDistinct(LeftTrackerSerial, RightTrackerSerial, nameof(rightTrackerSerial));
+        Diagnostic = InternalDriverEvidenceValidation.RequireNonblank(
+            diagnostic,
+            nameof(diagnostic));
+        if ((correctionLeftTrackerSerial is null) !=
+            (correctionRightTrackerSerial is null))
+        {
+            throw new ArgumentException(
+                "A correction candidate must contain both left and right serials.",
+                nameof(correctionRightTrackerSerial));
+        }
+
+        if (correctionLeftTrackerSerial is not null)
+        {
+            CorrectionLeftTrackerSerial = CanonicalSerial(
+                correctionLeftTrackerSerial,
+                nameof(correctionLeftTrackerSerial));
+            CorrectionRightTrackerSerial = CanonicalSerial(
+                correctionRightTrackerSerial!,
+                nameof(correctionRightTrackerSerial));
+            RequireDistinct(
+                CorrectionLeftTrackerSerial,
+                CorrectionRightTrackerSerial,
+                nameof(correctionRightTrackerSerial));
+        }
+
+        if (state == InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate &&
+            CorrectionLeftTrackerSerial is null)
+        {
+            throw new ArgumentException(
+                "A mismatch requires a complete correction candidate.",
+                nameof(correctionLeftTrackerSerial));
+        }
+
+        if (state != InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate &&
+            CorrectionLeftTrackerSerial is not null)
+        {
+            throw new ArgumentException(
+                "Only a mismatch may carry a correction candidate.",
+                nameof(correctionLeftTrackerSerial));
+        }
+    }
+
+    public InternalDriverManualBindingVerificationState State { get; }
+
+    public string LeftTrackerSerial { get; }
+
+    public string RightTrackerSerial { get; }
+
+    public string? CorrectionLeftTrackerSerial { get; }
+
+    public string? CorrectionRightTrackerSerial { get; }
+
+    public string Diagnostic { get; }
+
+    public bool RequiresDecision =>
+        State == InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate;
+
+    private static string CanonicalSerial(string value, string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
+        return value.Trim().ToUpperInvariant();
+    }
+
+    private static void RequireDistinct(string left, string right, string parameterName)
+    {
+        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "Left and right tracker serials must be distinct.",
+                parameterName);
+        }
+    }
+}
+
+public enum InternalDriverManualBindingDecision
+{
+    RetainManualBinding = 0,
+    AcceptCorrectionCandidate,
+}
+
 /// <summary>One loaded first-party controller's stable serial and runtime build marker.</summary>
 public sealed record InternalDriverLoadedControllerEvidence
 {
@@ -659,6 +773,13 @@ public sealed record InternalDriverSessionSnapshot(
     /// </summary>
     public InternalDriverTrackerNeutralizationSnapshot? TrackerNeutralization { get; init; }
 
+    /// <summary>
+    /// Latest motion-correlation verification of an authoritative manual
+    /// binding. A mismatch is an explicit decision surface, never reassignment.
+    /// </summary>
+    public InternalDriverManualBindingVerificationEvidence?
+        ManualBindingVerification { get; init; }
+
     internal static InternalDriverSessionSnapshot Initial { get; } = new(
         InternalDriverSessionState.Stopped,
         InternalDriverSessionReadiness.Empty,
@@ -920,6 +1041,15 @@ internal sealed record InternalDriverRuntimeObservation(
     IReadOnlyList<SteamVrDeviceDescriptor> Devices,
     IReadOnlyDictionary<string, PoseSourceSample> TrackerSamples);
 
+internal static class InternalDriverTrackerSerial
+{
+    internal static string Require(string trackerSerial, string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(trackerSerial, parameterName);
+        return trackerSerial.Trim().ToUpperInvariant();
+    }
+}
+
 internal sealed record InternalDriverHandProfile(
     ProtocolHand Hand,
     string TrackerSerial,
@@ -943,10 +1073,16 @@ internal sealed record InternalDriverProfilePair(
     InternalDriverHandProfile Left,
     InternalDriverHandProfile Right)
 {
+    public InternalDriverManualBindingVerificationEvidence?
+        ManualBindingVerification { get; init; }
+
     public bool IsValid =>
         Left.Hand == ProtocolHand.Left &&
         Right.Hand == ProtocolHand.Right &&
-        !string.Equals(Left.TrackerSerial, Right.TrackerSerial, StringComparison.Ordinal) &&
+        !string.Equals(
+            Left.TrackerSerial,
+            Right.TrackerSerial,
+            StringComparison.OrdinalIgnoreCase) &&
         Left.TrackerFromController.IsValid &&
         Right.TrackerFromController.IsValid;
 }

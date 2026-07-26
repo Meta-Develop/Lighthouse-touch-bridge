@@ -57,4 +57,26 @@ public interface ISteamVrDriverLifecycle : IDisposable
     ValueTask<SteamVrDriverLifecycleResult> RemoveAsync(
         SteamVrDriverRegistrationReceipt receipt,
         CancellationToken cancellationToken = default);
+
+    async ValueTask<SteamVrDriverCleanupResult> RemoveOwnedAsync(
+        IReadOnlyList<SteamVrDriverRegistrationReceipt> receipts,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(receipts);
+        if (receipts.Count != 1)
+        {
+            throw new NotSupportedException(
+                "This lifecycle implementation does not provide transactional " +
+                "multi-root driver cleanup.");
+        }
+
+        var result = await RemoveAsync(receipts[0], cancellationToken).ConfigureAwait(false);
+        return new SteamVrDriverCleanupResult(
+            result.Changed,
+            result.RestartRequired,
+            result.Readiness,
+            result.Diagnostic,
+            result.Paths,
+            [result.Receipt.CanonicalDriverRoot]);
+    }
 }

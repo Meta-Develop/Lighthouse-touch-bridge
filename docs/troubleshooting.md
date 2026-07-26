@@ -1,10 +1,9 @@
-# Legacy ALVR/VMT Troubleshooting Reference
+# Troubleshooting
 
 > [!IMPORTANT]
-> This document preserves legacy ALVR, VMT, and SteamVR `TrackingOverrides`
-> migration diagnostics for paths that run only behind warning-gated
-> `legacy-*` commands. It does not troubleshoot the
-> supported first-party desktop **Start** path. Use
+> The first section covers the supported first-party desktop flow. The
+> remaining legacy ALVR, VMT, and SteamVR `TrackingOverrides` diagnostics apply
+> only to warning-gated `legacy-*` commands. Use
 > [First-party internal driver operations](internal-drivers.md) for current
 > readiness and fail-safe behavior, and keep live results in the
 > [Windows internal-driver checklist](windows-internal-driver-verification.md).
@@ -13,6 +12,67 @@ This guide starts from the state or symptom visible to the operator. Preserve
 the structured event code, application state, and redacted context when a
 problem needs investigation. Do not share raw settings, backups, device
 serials, recordings, or owner-local paths.
+
+## Current first-party internal-driver diagnostics
+
+### A stale or duplicate `driver_ltb` registration is reported
+
+Symptoms include next-start inspection reporting a receipt-only root after a
+crash, a receipt/registration mismatch, duplicate `driver_ltb` roots, an
+ambiguous non-canonical path, or a restart requirement even though the LTB
+session is stopped. Do not delete every external driver or toggle
+`activateMultipleDrivers` by hand.
+
+The conservative diagnosis is that OpenVR registration and LTB's durable
+receipts no longer describe one unambiguous owned root set. Refresh the stopped
+panel and retain the exact typed state. LTB may remove multiple roots
+automatically only when each root is independently authorized by its exact
+receipt or complete LTB artifact identity and one transaction can preserve all
+unrelated entries in their original order. Partial proof, a stale mismatch, or
+a path alias fails closed for manual inspection.
+
+The exact automatic removal scope is the authorized canonical `driver_ltb`
+root set plus only the receipt-owned `activateMultipleDrivers` restoration.
+It does not remove, reorder, repair, or revive unrelated drivers such as
+`01spacecalibrator`, `bigscreenbeyond`, `vmt`, or `alvr_server`, and it does
+not touch ALVR, VMT, or `TrackingOverrides` state.
+
+After removal, restart SteamVR before judging the external-driver or device
+list. If SteamVR was running during cleanup, already-loaded LTB controllers do
+not disappear live; the change takes effect only after restart. A later
+**Start** re-registers `driver_ltb` and may require one additional restart.
+
+### Manual tracker-binding preflight refuses Start
+
+If the diagnostic names `vrserver` or `vrmonitor`, exit SteamVR completely and
+retry only after both processes are stopped. Refusal means no tracker-role
+setting was written.
+
+If the diagnostic says the registered-device path is unresolved, do not enter
+or derive `/devices/lighthouse/<serial>`. Paired `config.json` proves only the
+uppercase serial and model, not the live registered path/key. The current
+pre-session boundary intentionally blocks until Windows evidence establishes
+the real serial/model-to-live-path relationship across restart and device-index
+churn. It has no trusted path cache.
+
+If paired discovery itself fails, use its typed missing, unreadable, malformed,
+duplicate, or empty diagnostic. The directory name is the exact
+case-sensitive `Lighthouse`; a lowercase `lighthouse` directory is not the
+supported pairing source. Save only a complete distinct left/right pair.
+
+### Stop or exit removed registration unexpectedly
+
+**Unregister driver_ltb on Stop or exit** is enabled by default, including for
+compatible settings files that omit `unregister_on_exit`. The next **Start**
+re-registers the driver and may request one SteamVR restart. To retain the
+registration, disable the toggle and save the lifecycle policy while stopped.
+This setting is stored in `internal-driver.json`, not in calibration profiles.
+
+`TrackerRole_None` and application-level ignored-tracker behavior remain
+unverified. A successful portable settings test is not evidence that SteamVR
+or VRChat ignores a neutralized physical tracker.
+
+## Legacy ALVR/VMT troubleshooting reference
 
 ## Package does not start
 

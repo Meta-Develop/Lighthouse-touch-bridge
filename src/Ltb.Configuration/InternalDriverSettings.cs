@@ -40,6 +40,60 @@ public sealed record OpenVrPathsDiscovery
 }
 
 /// <summary>
+/// Complete owner-selected left/right physical tracker binding persisted with
+/// internal-driver settings rather than calibration profiles.
+/// </summary>
+public sealed record InternalDriverTrackerBinding
+{
+    public InternalDriverTrackerBinding(
+        string leftTrackerSerial,
+        string rightTrackerSerial)
+    {
+        LeftTrackerSerial = RequireCanonicalSerial(
+            leftTrackerSerial,
+            nameof(leftTrackerSerial));
+        RightTrackerSerial = RequireCanonicalSerial(
+            rightTrackerSerial,
+            nameof(rightTrackerSerial));
+        if (string.Equals(
+                LeftTrackerSerial,
+                RightTrackerSerial,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "Manual left and right tracker serials must identify distinct trackers.",
+                nameof(rightTrackerSerial));
+        }
+    }
+
+    public string LeftTrackerSerial { get; }
+
+    public string RightTrackerSerial { get; }
+
+    public bool ContainsSerial(string trackerSerial)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(trackerSerial);
+        var candidate = trackerSerial.Trim();
+        return string.Equals(
+                LeftTrackerSerial,
+                candidate,
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(
+                RightTrackerSerial,
+                candidate,
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string RequireCanonicalSerial(
+        string trackerSerial,
+        string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(trackerSerial, parameterName);
+        return trackerSerial.Trim().ToUpperInvariant();
+    }
+}
+
+/// <summary>
 /// Narrow persisted boundary needed to start the internal driver without
 /// interactive path input. It intentionally provides no owner-local defaults.
 /// </summary>
@@ -49,7 +103,9 @@ public sealed record InternalDriverSettings
         int schemaVersion,
         OpenVrPathsDiscovery openVrPathsDiscovery,
         string stagedDriverRoot,
-        string calibrationProfileStorePath)
+        string calibrationProfileStorePath,
+        InternalDriverTrackerBinding? manualTrackerBinding = null,
+        bool unregisterOnExit = true)
     {
         if (schemaVersion != InternalDriverSettingsSchema.CurrentVersion)
         {
@@ -68,6 +124,8 @@ public sealed record InternalDriverSettings
         CalibrationProfileStorePath = SettingsPathValidation.RequireCanonicalAbsoluteFilePath(
             calibrationProfileStorePath,
             nameof(calibrationProfileStorePath));
+        ManualTrackerBinding = manualTrackerBinding;
+        UnregisterOnExit = unregisterOnExit;
     }
 
     public int SchemaVersion { get; }
@@ -77,6 +135,42 @@ public sealed record InternalDriverSettings
     public string StagedDriverRoot { get; }
 
     public string CalibrationProfileStorePath { get; }
+
+    public InternalDriverTrackerBinding? ManualTrackerBinding { get; }
+
+    /// <summary>
+    /// Whether controlled Stop/application exit removes receipt-owned
+    /// <c>driver_ltb</c> registrations. The compatibility default is enabled.
+    /// </summary>
+    public bool UnregisterOnExit { get; }
+
+    public InternalDriverSettings WithStagedDriverRoot(string stagedDriverRoot) =>
+        new(
+            SchemaVersion,
+            OpenVrPathsDiscovery,
+            stagedDriverRoot,
+            CalibrationProfileStorePath,
+            ManualTrackerBinding,
+            UnregisterOnExit);
+
+    public InternalDriverSettings WithManualTrackerBinding(
+        InternalDriverTrackerBinding? manualTrackerBinding) =>
+        new(
+            SchemaVersion,
+            OpenVrPathsDiscovery,
+            StagedDriverRoot,
+            CalibrationProfileStorePath,
+            manualTrackerBinding,
+            UnregisterOnExit);
+
+    public InternalDriverSettings WithUnregisterOnExit(bool unregisterOnExit) =>
+        new(
+            SchemaVersion,
+            OpenVrPathsDiscovery,
+            StagedDriverRoot,
+            CalibrationProfileStorePath,
+            ManualTrackerBinding,
+            unregisterOnExit);
 }
 
 internal static class SettingsPathValidation

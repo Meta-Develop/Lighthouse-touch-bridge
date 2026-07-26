@@ -32,6 +32,8 @@ public sealed class TrackerAssociationTests
         Assert.True(result.ManualBindingAccepted);
         Assert.True(result.CorrelationAgrees);
         Assert.Same(manualBinding, result.AuthoritativeBinding);
+        Assert.Equal(LeftSerial, result.AuthoritativeBinding!.LeftTrackerSerial);
+        Assert.Equal(RightSerial, result.AuthoritativeBinding.RightTrackerSerial);
         Assert.Null(result.CorrectionCandidate);
         Assert.NotNull(result.CorrelationResult);
         Assert.True(result.CorrelationResult.Success, result.CorrelationResult.Reason);
@@ -66,6 +68,12 @@ public sealed class TrackerAssociationTests
         Assert.True(result.CorrelationResult.Success, result.CorrelationResult.Reason);
         Assert.Contains("remains authoritative", result.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("correction candidate", result.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Same(
+            manualBinding,
+            result.SelectBinding(ManualTrackerBindingDecision.RetainManualBinding));
+        Assert.Same(
+            result.CorrectionCandidate,
+            result.SelectBinding(ManualTrackerBindingDecision.AcceptCorrectionCandidate));
     }
 
     [Theory]
@@ -96,7 +104,7 @@ public sealed class TrackerAssociationTests
     }
 
     [Fact]
-    public void MissingManualBindingFailsClosedWithoutCorrelation()
+    public void MissingManualBindingPreservesAutomaticAssociationBehavior()
     {
         var (leftCapture, rightCapture) = CorrelatableCaptures();
 
@@ -106,10 +114,18 @@ public sealed class TrackerAssociationTests
             manualBinding: null);
 
         Assert.Equal(
-            ManualTrackerBindingVerificationStatus.IncompleteBinding,
+            ManualTrackerBindingVerificationStatus.AutomaticAssociation,
             result.Status);
         Assert.False(result.ManualBindingAccepted);
-        Assert.Null(result.CorrelationResult);
+        Assert.True(result.AutomaticAssociationAccepted);
+        Assert.NotNull(result.CorrelationResult);
+        Assert.True(result.CorrelationResult.Success, result.CorrelationResult.Reason);
+        Assert.Equal(LeftSerial, result.CorrelationResult.Left!.TrackerSerial);
+        Assert.Equal(RightSerial, result.CorrelationResult.Right!.TrackerSerial);
+        Assert.Throws<InvalidOperationException>(() =>
+            result.SelectBinding(ManualTrackerBindingDecision.RetainManualBinding));
+        Assert.Throws<InvalidOperationException>(() =>
+            result.SelectBinding(ManualTrackerBindingDecision.AcceptCorrectionCandidate));
     }
 
     [Fact]
@@ -131,6 +147,33 @@ public sealed class TrackerAssociationTests
         Assert.Null(result.CorrelationResult);
         Assert.Contains("distinct", result.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("case-insensitively", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CandidateAndManualSerialsAreReportedInUppercaseCanonicalForm()
+    {
+        var candidate = new TrackerAssociationCandidate(
+            " lhr-mixedCase ",
+            []);
+        var manual = new ManualTrackerBinding(
+            " lhr-left ",
+            "LhR-rIgHt");
+
+        Assert.Equal("LHR-MIXEDCASE", candidate.TrackerSerial);
+        Assert.Equal("LHR-LEFT", manual.LeftTrackerSerial);
+        Assert.Equal("LHR-RIGHT", manual.RightTrackerSerial);
+    }
+
+    [Fact]
+    public void CaseInsensitiveDuplicateCaptureSerialsAreRejected()
+    {
+        Assert.Throws<ArgumentException>(() => new HandMotionCapture(
+            CalibrationHand.Left,
+            [],
+            [
+                new TrackerAssociationCandidate("LHR-SAME", []),
+                new TrackerAssociationCandidate("lhr-same", []),
+            ]));
     }
 
     [Fact]
@@ -161,6 +204,9 @@ public sealed class TrackerAssociationTests
         Assert.True(result.ManualBindingAccepted);
         Assert.False(result.CorrelationAgrees);
         Assert.Same(manualBinding, result.AuthoritativeBinding);
+        Assert.Same(
+            manualBinding,
+            result.SelectBinding(ManualTrackerBindingDecision.RetainManualBinding));
         Assert.Null(result.CorrectionCandidate);
         Assert.NotNull(result.CorrelationResult);
         Assert.False(result.CorrelationResult.Success);

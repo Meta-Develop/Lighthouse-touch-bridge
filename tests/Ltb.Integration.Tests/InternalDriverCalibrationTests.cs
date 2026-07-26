@@ -10,6 +10,7 @@ using Ltb.Core;
 using Ltb.Driver;
 using Ltb.MetaLink;
 using Ltb.OpenVr;
+using Ltb.Protocol;
 using Xunit;
 
 namespace Ltb.Integration.Tests;
@@ -161,6 +162,121 @@ public sealed class InternalDriverCalibrationTests
             Assert.Null(evidence.Quality.TranslationConditionNumber);
             Assert.Equal(0.95d, evidence.Quality.InlierRatio);
             Assert.Equal(originalBytes, File.ReadAllBytes(profilePath));
+        });
+    }
+
+    [Fact]
+    public async Task MixedCaseRuntimeReusesLowercaseProfilesAndReportsUppercaseWithoutDuplicate()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-internal-mixed-case-reuse-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var profilePath = Path.Combine(directory, "profiles.json");
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore(
+                    [
+                        Profile(
+                            hand: ControllerHand.Left,
+                            trackerSerial: "tracker-left"),
+                        Profile(
+                            hand: ControllerHand.Right,
+                            trackerSerial: "tracker-right"),
+                    ]));
+            var paths = new InternalDriverResolvedPaths(
+                Path.Combine(directory, "settings.json"),
+                profilePath,
+                directory,
+                Path.Combine(directory, "events.jsonl"),
+                Path.Combine(directory, "receipts.json"));
+            await using var runtime = new ProductionInternalDriverSessionRuntime(
+                new InternalDriverSessionOptions
+                {
+                    Intent = InternalDriverSessionIntent.NormalStart,
+                },
+                paths,
+                new NoopDriverLifecycle());
+            var observation = new InternalDriverRuntimeObservation(
+                SteamVrRunning: true,
+                "SteamVR runtime is running.",
+                StoppedMeta(),
+                Devices: [],
+                new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal)
+                {
+                    ["TrAcKeR-LeFt"] = TrackerSample(10d, RigidTransform.Identity),
+                    ["tracker-RIGHT"] = TrackerSample(10d, RigidTransform.Identity),
+                });
+
+            var pair = await runtime.ResolveProfilesAsync(
+                observation,
+                (state, diagnostic, remediation, left, right, progressObservation) => { },
+                CancellationToken.None);
+
+            Assert.True(pair.IsValid);
+            Assert.Equal("TRACKER-LEFT", pair.Left.TrackerSerial);
+            Assert.Equal("TRACKER-RIGHT", pair.Right.TrackerSerial);
+            Assert.Equal("tracker-left", pair.Left.SourceProfile?.TrackerSerial);
+            Assert.Equal("tracker-right", pair.Right.SourceProfile?.TrackerSerial);
+            var retained = CalibrationProfileFile.LoadStore(profilePath);
+            Assert.Equal(2, retained.Profiles.Count);
+            Assert.Contains(retained.Profiles, profile =>
+                profile.TrackerSerial == "tracker-left");
+            Assert.Contains(retained.Profiles, profile =>
+                profile.TrackerSerial == "tracker-right");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CaseVariantStoredProfilesAreRejectedAsAmbiguous()
+    {
+        WithTemporaryProfilePath(profilePath =>
+        {
+            CalibrationProfileFile.SaveStore(
+                profilePath,
+                new CalibrationProfileStore(
+                    [
+                        Profile(trackerSerial: "lhr-left"),
+                        Profile(trackerSerial: "LHR-LEFT"),
+                    ]));
+            var calibration = new InternalDriverCalibration(profilePath);
+
+            var error = Assert.Throws<InvalidDataException>(() =>
+                calibration.FindReusableProfile(Context()));
+
+            Assert.Contains("differ only by serial casing", error.Message);
+        });
+    }
+
+    [Fact]
+    public void MixedCaseCalibrationSavesUppercaseCanonicalProfile()
+    {
+        WithTemporaryProfilePath(profilePath =>
+        {
+            var calibration = new InternalDriverCalibration(
+                profilePath,
+                () => CreatedUtc);
+
+            var result = calibration.CalibrateAndSave(
+                new InternalDriverCalibrationContext(
+                    MetaLinkHand.Left,
+                    "LhR-LeFt",
+                    "Quest 2 Touch"),
+                SyntheticCapture(MetaLinkHand.Left, "lhr-left"));
+
+            Assert.True(result.Success, result.Diagnostic);
+            Assert.Equal("LHR-LEFT", result.Context.TrackerSerial);
+            Assert.Equal("LHR-LEFT", result.Profile?.TrackerSerial);
+            Assert.Equal(
+                "LHR-LEFT",
+                Assert.Single(CalibrationProfileFile.LoadStore(profilePath).Profiles)
+                    .TrackerSerial);
         });
     }
 
@@ -446,6 +562,91 @@ public sealed class InternalDriverCalibrationTests
             GuidedCapture(MetaLinkHand.Right, roster));
         Assert.Equal(expected, left.TrackerCandidates.Select(candidate => candidate.TrackerSerial));
         Assert.Equal(expected, right.TrackerCandidates.Select(candidate => candidate.TrackerSerial));
+    }
+
+    [Fact]
+    public void ConnectedRosterCollapsesCaseVariantsAndReturnsUppercase()
+    {
+        var observation = new InternalDriverRuntimeObservation(
+            SteamVrRunning: true,
+            "SteamVR runtime is running.",
+            StoppedMeta(),
+            Devices: [],
+            new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal)
+            {
+                ["lhr-left"] = TrackerSample(10d, RigidTransform.Identity),
+                ["LHR-LEFT"] = TrackerSample(11d, RigidTransform.Identity),
+                ["LhR-RiGhT"] = TrackerSample(10d, RigidTransform.Identity),
+            });
+
+        var roster = ProductionInternalDriverSessionRuntime
+            .SnapshotConnectedTrackerSerials(observation);
+
+        Assert.Equal(["LHR-LEFT", "LHR-RIGHT"], roster);
+    }
+
+    [Fact]
+    public void CaptureSampleLookupCanonicalizesMixedCaseAndRejectsCaseVariants()
+    {
+        var sample = TrackerSample(10d, RigidTransform.Identity);
+        var canonical = ProductionInternalDriverSessionRuntime
+            .CanonicalizeTrackerSamples(
+                new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal)
+                {
+                    ["lhr-left"] = sample,
+                });
+
+        Assert.Equal("LHR-LEFT", Assert.Single(canonical.Keys));
+        Assert.True(canonical.ContainsKey("LHR-LEFT"));
+        Assert.True(canonical.ContainsKey("lhr-left"));
+        Assert.Equal(sample, canonical["LhR-LeFt"]);
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            ProductionInternalDriverSessionRuntime.CanonicalizeTrackerSamples(
+                new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal)
+                {
+                    ["lhr-left"] = sample,
+                    ["LHR-LEFT"] = sample,
+                }));
+        Assert.Contains("case-variant", error.Message);
+    }
+
+    [Fact]
+    public void TrackerBatchSamplerReportsUppercaseAndRejectsCaseVariantDuplicates()
+    {
+        var lower = TrackerDevice("lhr-left", index: 3);
+        var sampler = new InternalDriverTrackerBatchSampler(
+            devices => new StaticTrackedPoseBatchSource(devices));
+
+        var samples = sampler.Read([lower]);
+
+        Assert.Equal("LHR-LEFT", Assert.Single(samples.Keys));
+        Assert.True(samples.ContainsKey("lhr-left"));
+
+        var duplicate = TrackerDevice("LHR-LEFT", index: 4);
+        var error = Assert.Throws<InvalidDataException>(() =>
+            sampler.Read([lower, duplicate]));
+        Assert.Contains("duplicate physical tracker serial", error.Message);
+    }
+
+    [Fact]
+    public void ProfilePairRejectsCaseVariantEqualSerials()
+    {
+        var pair = new InternalDriverProfilePair(
+            new InternalDriverHandProfile(
+                ProtocolHand.Left,
+                "lhr-same",
+                RigidTransform.Identity,
+                InternalDriverProfileReadiness.Reused,
+                "Left."),
+            new InternalDriverHandProfile(
+                ProtocolHand.Right,
+                "LHR-SAME",
+                RigidTransform.Identity,
+                InternalDriverProfileReadiness.Reused,
+                "Right."));
+
+        Assert.False(pair.IsValid);
     }
 
     [Fact]
@@ -1203,6 +1404,30 @@ public sealed class InternalDriverCalibrationTests
             MetaLinkHand.Right,
             MetaLinkReadiness.RuntimeStopped,
             "not used by profile subset resolution"));
+
+    private static SteamVrDeviceDescriptor TrackerDevice(
+        string serial,
+        uint index) => new(
+        new SteamVrDeviceIdentity(
+            serial,
+            $"/devices/lighthouse/{serial}"),
+        index,
+        SteamVrDeviceCategory.GenericTracker,
+        SteamVrControllerRole.None,
+        isConnected: true);
+
+    private sealed class StaticTrackedPoseBatchSource(
+        IReadOnlyList<SteamVrDeviceDescriptor> devices) :
+        TrackedPoseBatchSource
+    {
+        public IReadOnlyList<SteamVrDeviceDescriptor> Devices { get; } =
+            Array.AsReadOnly(devices.ToArray());
+
+        public IReadOnlyList<TrackedPoseBatchSample> ReadPoses() =>
+            Devices
+                .Select(device => new TrackedPoseBatchSample(device, default))
+                .ToArray();
+    }
 
     private sealed class NoopDriverLifecycle : ISteamVrDriverLifecycle
     {

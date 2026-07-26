@@ -38,6 +38,41 @@ public sealed class SteamVrPathDiscoveryTests
     }
 
     [Fact]
+    public async Task ConfigRootsDiscoveryReturnsEveryCanonicalDistinctConfiguredRoot()
+    {
+        var root = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            "ltb-config-roots"));
+        var localApplicationData = Path.Combine(root, "local");
+        var first = Path.Combine(root, "config-a");
+        var second = Path.Combine(root, "config-b");
+        var openVrPathsFile = Path.Combine(
+            localApplicationData,
+            "openvr",
+            "openvrpaths.vrpath");
+        var fileSystem = new MemorySteamVrFileSystem();
+        fileSystem.AddFile(
+            openVrPathsFile,
+            JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["config"] = [second, first, first],
+            }));
+        var discovery = new SteamVrPathDiscovery(
+            new FakeSteamVrHostEnvironment
+            {
+                LocalApplicationDataPath = localApplicationData,
+            },
+            fileSystem);
+
+        var result = await discovery.DiscoverConfigRootsAsync();
+
+        Assert.True(result.IsSuccess, result.Diagnostic);
+        Assert.Equal(
+            [Path.GetFullPath(first), Path.GetFullPath(second)],
+            result.ConfigRoots);
+    }
+
+    [Fact]
     public async Task ConfigRootDiscoveryReportsMissingOpenVrRegistryAsTypedResult()
     {
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ltb-missing-registry"));

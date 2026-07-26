@@ -70,6 +70,37 @@ public sealed class InternalDriverSettingsPreparationTests
     }
 
     [Fact]
+    public void RelocatedPackagePreservesManualBindingAndLifecyclePolicy()
+    {
+        var root = CreateTemporaryRoot();
+        try
+        {
+            var paths = Paths(root, "current-package");
+            InternalDriverSettingsFile.Save(
+                paths.SettingsPath,
+                new InternalDriverSettings(
+                    InternalDriverSettingsSchema.CurrentVersion,
+                    OpenVrPathsDiscovery.Automatic,
+                    Path.Combine(root, "previous-package", "driver_ltb"),
+                    paths.CalibrationProfileStorePath,
+                    new InternalDriverTrackerBinding("lhr-left", "lhr-right"),
+                    unregisterOnExit: false));
+
+            _ = ProductionInternalDriverSessionRuntime.EnsureDefaultSettings(paths);
+
+            var migrated = InternalDriverSettingsFile.Load(paths.SettingsPath);
+            Assert.Equal(paths.StagedDriverRoot, migrated.StagedDriverRoot);
+            Assert.Equal("LHR-LEFT", migrated.ManualTrackerBinding?.LeftTrackerSerial);
+            Assert.Equal("LHR-RIGHT", migrated.ManualTrackerBinding?.RightTrackerSerial);
+            Assert.False(migrated.UnregisterOnExit);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ExplicitOpenVrDiscoveryFailsClosedWithoutChangingSettings()
     {
         var root = CreateTemporaryRoot();

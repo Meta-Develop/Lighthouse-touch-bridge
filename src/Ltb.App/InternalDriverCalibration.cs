@@ -29,7 +29,9 @@ internal sealed record InternalDriverCalibrationContext
         ArgumentException.ThrowIfNullOrWhiteSpace(trackerSerial);
         ArgumentException.ThrowIfNullOrWhiteSpace(controllerModel);
         Hand = hand;
-        TrackerSerial = trackerSerial;
+        TrackerSerial = InternalDriverTrackerSerial.Require(
+            trackerSerial,
+            nameof(trackerSerial));
         ControllerModel = controllerModel;
     }
 
@@ -112,17 +114,37 @@ internal sealed class InternalDriverCalibration
         }
 
         var hand = ToControllerHand(context.Hand);
-        var candidate = store.FindCandidateProfile(context.TrackerSerial, hand);
-        if (candidate is null)
+        var candidates = store.Profiles
+            .Where(profile =>
+                profile.Hand == hand &&
+                string.Equals(
+                    profile.TrackerSerial,
+                    context.TrackerSerial,
+                    StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToArray();
+        if (candidates.Length == 0)
         {
             return CalibrationRequired(
                 context,
-                "no profile matches the exact tracker serial and hand");
+                "no profile matches the tracker serial and hand");
         }
 
+        if (candidates.Length > 1)
+        {
+            throw new InvalidDataException(
+                $"Multiple profiles for {context.Hand} tracker '{context.TrackerSerial}' " +
+                "differ only by serial casing. Resolve the ambiguous stored identities " +
+                "before profile reuse.");
+        }
+
+        var candidate = candidates[0];
         var evaluation = RecalibrationEvaluator.Evaluate(
             candidate,
-            CurrentRecalibrationContext(context));
+            CurrentRecalibrationContext(context) with
+            {
+                TrackerSerial = candidate.TrackerSerial,
+            });
         if (evaluation.IsRequired)
         {
             return new InternalDriverProfileLookup(
@@ -135,14 +157,14 @@ internal sealed class InternalDriverCalibration
                         $"{trigger.Kind}: {trigger.Message}")));
         }
 
-        var exact = store.FindMatchingProfile(
-            context.TrackerSerial,
-            hand,
+        var exact = candidate.MatchesController(
             CalibrationDriverProfiles.LtbTouch,
             ControllerRuntimeIdentities.MetaLinkLibOvr,
             context.ControllerModel,
-            controllerIdentity: null);
-        if (!ReferenceEquals(candidate, exact))
+            controllerIdentity: null)
+                ? candidate
+                : null;
+        if (exact is null)
         {
             return CalibrationRequired(
                 context,
@@ -181,8 +203,10 @@ internal sealed class InternalDriverCalibration
                     profile.DriverProfile,
                     CalibrationDriverProfiles.LtbTouch,
                     StringComparison.Ordinal))
-            .Select(profile => profile.TrackerSerial)
-            .Distinct(StringComparer.Ordinal)
+            .Select(profile => InternalDriverTrackerSerial.Require(
+                profile.TrackerSerial,
+                nameof(profile.TrackerSerial)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(serial => serial, StringComparer.Ordinal)
             .ToArray();
     }
@@ -196,7 +220,10 @@ internal sealed class InternalDriverCalibration
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(capture);
         if (capture.Hand != context.Hand ||
-            !string.Equals(capture.TrackerSerial, context.TrackerSerial, StringComparison.Ordinal))
+            !string.Equals(
+                capture.TrackerSerial,
+                context.TrackerSerial,
+                StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
                 "Calibration capture must match the exact context hand and tracker serial.",
@@ -270,19 +297,25 @@ internal sealed class InternalDriverCalibration
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(replacement);
-        if (replacedTrackerSerial is null)
-        {
-            return store.Upsert(replacement);
-        }
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(replacedTrackerSerial);
+        var activeSerial = InternalDriverTrackerSerial.Require(
+            replacement.TrackerSerial,
+            nameof(replacement));
+        var replacedSerial = replacedTrackerSerial is null
+            ? activeSerial
+            : InternalDriverTrackerSerial.Require(
+                replacedTrackerSerial,
+                nameof(replacedTrackerSerial));
         var withoutReplacedActiveKey = new CalibrationProfileStore(
             store.Profiles.Where(existing =>
                 existing.Hand != replacement.Hand ||
                 !string.Equals(
                     existing.TrackerSerial,
-                    replacedTrackerSerial,
-                    StringComparison.Ordinal)));
+                    replacedSerial,
+                    StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(
+                    existing.TrackerSerial,
+                    activeSerial,
+                    StringComparison.OrdinalIgnoreCase)));
         return withoutReplacedActiveKey.Upsert(replacement);
     }
 
@@ -321,7 +354,9 @@ internal sealed class InternalDriverCalibration
             ControllerRuntimeIdentities.MetaLinkLibOvr,
             context.ControllerModel,
             controllerIdentity: null,
-            context.TrackerSerial,
+            InternalDriverTrackerSerial.Require(
+                context.TrackerSerial,
+                nameof(context.TrackerSerial)),
             CalibrationDriverProfiles.LtbTouch,
             ToProfilePolicy(policy),
             mode,

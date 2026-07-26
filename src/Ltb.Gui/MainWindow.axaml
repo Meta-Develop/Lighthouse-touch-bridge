@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:Ltb.Gui.ViewModels"
+        xmlns:app="using:Ltb.App"
         xmlns:controls="using:Ltb.Gui.Controls"
         x:Class="Ltb.Gui.MainWindow"
         x:DataType="vm:InternalDriverViewModel"
@@ -110,6 +111,151 @@
             <TextBlock x:Name="LastErrorText"
                        Text="{Binding LastError, StringFormat='Last error: {0}'}"
                        TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <Border x:Name="TrackerBindingPanel"
+                Classes="panel">
+          <StackPanel Spacing="9">
+            <Grid ColumnDefinitions="*,Auto"
+                  ColumnSpacing="12">
+              <StackPanel>
+                <TextBlock Classes="section-title"
+                           Text="Stopped tracker binding and driver lifecycle" />
+                <TextBlock x:Name="TrackerBindingStatusText"
+                           Text="{Binding TrackerBinding.StatusText}"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="TrackerBindingRemediationText"
+                           Classes="muted"
+                           Text="{Binding TrackerBinding.RemediationText}"
+                           TextWrapping="Wrap" />
+              </StackPanel>
+              <Button x:Name="RefreshTrackerBindingButton"
+                      Grid.Column="1"
+                      AutomationProperties.Name="Refresh paired Lighthouse trackers"
+                      Content="Refresh"
+                      Command="{Binding TrackerBinding.RefreshCommand}" />
+            </Grid>
+
+            <Grid ColumnDefinitions="*,16,*"
+                  ColumnSpacing="0">
+              <StackPanel Grid.Column="0"
+                          Spacing="4">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Left mounted tracker" />
+                <ComboBox x:Name="LeftTrackerBindingComboBox"
+                          AutomationProperties.Name="Left mounted Lighthouse tracker"
+                          ItemsSource="{Binding TrackerBinding.Trackers}"
+                          SelectedItem="{Binding TrackerBinding.SelectedLeftTracker, Mode=TwoWay}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="app:InternalDriverPairedTrackerOption">
+                      <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <StackPanel Grid.Column="2"
+                          Spacing="4">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Right mounted tracker" />
+                <ComboBox x:Name="RightTrackerBindingComboBox"
+                          AutomationProperties.Name="Right mounted Lighthouse tracker"
+                          ItemsSource="{Binding TrackerBinding.Trackers}"
+                          SelectedItem="{Binding TrackerBinding.SelectedRightTracker, Mode=TwoWay}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="app:InternalDriverPairedTrackerOption">
+                      <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+            </Grid>
+
+            <WrapPanel Orientation="Horizontal">
+              <Button x:Name="SaveTrackerBindingButton"
+                      Classes="primary"
+                      MinWidth="150"
+                      Margin="0,0,8,4"
+                      AutomationProperties.Name="Save distinct left and right tracker binding"
+                      Content="Save binding"
+                      Command="{Binding TrackerBinding.SaveBindingCommand}" />
+              <Button x:Name="ClearTrackerBindingButton"
+                      MinWidth="160"
+                      Margin="0,0,8,4"
+                      AutomationProperties.Name="Use automatic motion association"
+                      Content="Use automatic association"
+                      Command="{Binding TrackerBinding.ClearBindingCommand}" />
+              <TextBlock Classes="muted"
+                         MaxWidth="560"
+                         VerticalAlignment="Center"
+                         Text="A manual pair remains authoritative. Motion correlation verifies agreement or proposes an explicit correction; it never silently swaps the saved hands."
+                         TextWrapping="Wrap" />
+            </WrapPanel>
+
+            <Border x:Name="ManualBindingVerificationPanel"
+                    Classes="raised">
+              <StackPanel Spacing="6">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Manual binding motion verification" />
+                <TextBlock x:Name="ManualBindingVerificationStatusText"
+                           Text="{Binding TrackerBinding.VerificationStatusText}"
+                           TextWrapping="Wrap" />
+                <WrapPanel x:Name="ManualBindingCorrectionActions"
+                           IsVisible="{Binding TrackerBinding.HasCorrectionChoice}"
+                           Orientation="Horizontal">
+                  <Button x:Name="RetainManualBindingButton"
+                          MinWidth="170"
+                          Margin="0,0,8,4"
+                          AutomationProperties.Name="Retain authoritative manual tracker binding"
+                          Content="Retain manual binding"
+                          Command="{Binding TrackerBinding.RetainManualBindingCommand}" />
+                  <Button x:Name="AcceptBindingCorrectionButton"
+                          Classes="primary"
+                          MinWidth="160"
+                          Margin="0,0,8,4"
+                          AutomationProperties.Name="Accept motion-correlation tracker binding correction"
+                          Content="Accept correction"
+                          Command="{Binding TrackerBinding.AcceptCorrectionCommand}" />
+                </WrapPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Classes="raised">
+              <StackPanel Spacing="6">
+                <ToggleSwitch x:Name="UnregisterOnExitToggle"
+                              AutomationProperties.Name="Unregister driver_ltb on Stop or exit"
+                              AutomationProperties.HelpText="Enabled by default. Controlled Stop or exit removes only receipt-owned driver_ltb registration."
+                              Content="Unregister driver_ltb on Stop or exit"
+                              IsChecked="{Binding TrackerBinding.UnregisterOnExit, Mode=TwoWay}" />
+                <TextBlock x:Name="UnregisterOnExitConsequenceText"
+                           Classes="muted"
+                           Text="Enabled by default. The next Start re-registers driver_ltb and may require one SteamVR restart. If SteamVR is still running during removal, already-loaded devices do not disappear live; rely on the change only after restart."
+                           TextWrapping="Wrap" />
+                <Button x:Name="SaveUnregisterOnExitButton"
+                        HorizontalAlignment="Left"
+                        AutomationProperties.Name="Save unregister-on-exit policy"
+                        Content="Save lifecycle policy"
+                        Command="{Binding TrackerBinding.SaveLifecyclePolicyCommand}" />
+              </StackPanel>
+            </Border>
+
+            <Grid ColumnDefinitions="180,*"
+                  RowDefinitions="Auto,Auto"
+                  ColumnSpacing="8"
+                  RowSpacing="3">
+              <TextBlock Text="Registration at next Start" />
+              <TextBlock x:Name="NextStartRegistrationStateText"
+                         Grid.Column="1"
+                         Text="{Binding TrackerBinding.RegistrationStateText}"
+                         TextWrapping="Wrap" />
+              <TextBlock Grid.Row="1"
+                         Text="SteamVR process gate" />
+              <TextBlock x:Name="SteamVrProcessGateText"
+                         Grid.Row="1"
+                         Grid.Column="1"
+                         Text="{Binding TrackerBinding.SteamVrProcessText}"
+                         TextWrapping="Wrap" />
+            </Grid>
           </StackPanel>
         </Border>
 

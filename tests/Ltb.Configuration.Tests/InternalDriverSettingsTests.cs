@@ -22,14 +22,98 @@ public sealed class InternalDriverSettingsTests
                 "openvrpaths_discovery",
                 "staged_driver_root",
                 "calibration_profile_store_path",
+                "unregister_on_exit",
             ],
             root.EnumerateObject().Select(property => property.Name));
         Assert.Equal(1, root.GetProperty("schema_version").GetInt32());
         var discovery = root.GetProperty("openvrpaths_discovery");
         Assert.Equal(["mode"], discovery.EnumerateObject().Select(property => property.Name));
         Assert.Equal("automatic", discovery.GetProperty("mode").GetString());
+        Assert.False(root.TryGetProperty("manual_tracker_binding", out _));
+        Assert.True(root.GetProperty("unregister_on_exit").GetBoolean());
         Assert.Equal(json, roundTrippedJson);
         Assert.EndsWith("\n", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManualBindingAndCleanupPolicyRoundTripCanonically()
+    {
+        var settings = Settings(
+            OpenVrPathsDiscovery.Automatic,
+            manualTrackerBinding: new InternalDriverTrackerBinding(
+                " lhr-left ",
+                "LhR-RiGhT"),
+            unregisterOnExit: false);
+
+        var json = InternalDriverSettingsJson.Serialize(settings);
+        var loaded = InternalDriverSettingsJson.Deserialize(json);
+        using var document = JsonDocument.Parse(json);
+        var binding = document.RootElement.GetProperty("manual_tracker_binding");
+
+        Assert.Equal(
+            ["left_tracker_serial", "right_tracker_serial"],
+            binding.EnumerateObject().Select(property => property.Name));
+        Assert.Equal("LHR-LEFT", binding.GetProperty("left_tracker_serial").GetString());
+        Assert.Equal("LHR-RIGHT", binding.GetProperty("right_tracker_serial").GetString());
+        Assert.False(document.RootElement.GetProperty("unregister_on_exit").GetBoolean());
+        Assert.Equal("LHR-LEFT", loaded.ManualTrackerBinding!.LeftTrackerSerial);
+        Assert.Equal("LHR-RIGHT", loaded.ManualTrackerBinding.RightTrackerSerial);
+        Assert.True(loaded.ManualTrackerBinding.ContainsSerial("lhr-left"));
+        Assert.False(loaded.UnregisterOnExit);
+    }
+
+    [Fact]
+    public void LegacySettingsWithoutBindingOrCleanupPolicyDefaultCleanupEnabled()
+    {
+        var legacy = SerializedSettingsObject();
+        legacy.Remove("manual_tracker_binding");
+        legacy.Remove("unregister_on_exit");
+
+        var loaded = InternalDriverSettingsJson.Deserialize(legacy.ToJsonString());
+
+        Assert.Null(loaded.ManualTrackerBinding);
+        Assert.True(loaded.UnregisterOnExit);
+    }
+
+    [Theory]
+    [InlineData("", "LHR-RIGHT")]
+    [InlineData(" ", "LHR-RIGHT")]
+    [InlineData("LHR-LEFT", "")]
+    [InlineData("LHR-SAME", "lhr-same")]
+    public void ManualBindingRejectsBlankIncompleteOrEqualSerials(
+        string leftTrackerSerial,
+        string rightTrackerSerial)
+    {
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new InternalDriverTrackerBinding(
+                leftTrackerSerial,
+                rightTrackerSerial));
+    }
+
+    [Fact]
+    public void SettingsUpdateHelpersPreserveAllIndependentFields()
+    {
+        var root = TemporaryRootPath();
+        var original = Settings(
+            OpenVrPathsDiscovery.Automatic,
+            root,
+            new InternalDriverTrackerBinding("LHR-LEFT", "LHR-RIGHT"),
+            unregisterOnExit: false);
+
+        var relocated = original.WithStagedDriverRoot(
+            Path.Combine(root, "relocated-driver"));
+        var cleared = relocated.WithManualTrackerBinding(manualTrackerBinding: null);
+        var optedIn = cleared.WithUnregisterOnExit(unregisterOnExit: true);
+
+        Assert.Equal(original.ManualTrackerBinding, relocated.ManualTrackerBinding);
+        Assert.False(relocated.UnregisterOnExit);
+        Assert.Null(cleared.ManualTrackerBinding);
+        Assert.False(cleared.UnregisterOnExit);
+        Assert.True(optedIn.UnregisterOnExit);
+        Assert.Equal(
+            Path.Combine(root, "relocated-driver"),
+            optedIn.StagedDriverRoot);
+        Assert.Equal(original.CalibrationProfileStorePath, optedIn.CalibrationProfileStorePath);
     }
 
     [Fact]
@@ -108,6 +192,8 @@ public sealed class InternalDriverSettingsTests
     [InlineData("openvrpaths_discovery", "true")]
     [InlineData("staged_driver_root", "42")]
     [InlineData("calibration_profile_store_path", "[]")]
+    [InlineData("manual_tracker_binding", "true")]
+    [InlineData("unregister_on_exit", "\"true\"")]
     public void WrongSettingsMemberTypesAreMalformed(string property, string replacementJson)
     {
         var root = SerializedSettingsObject();
@@ -175,6 +261,27 @@ public sealed class InternalDriverSettingsTests
         Assert.Equal(InternalDriverSettingsFormatReason.InvalidSettingsData, exception.Reason);
     }
 
+    [Theory]
+    [InlineData("""{"left_tracker_serial":"LHR-LEFT"}""")]
+    [InlineData("""{"right_tracker_serial":"LHR-RIGHT"}""")]
+    [InlineData("""{"left_tracker_serial":"","right_tracker_serial":"LHR-RIGHT"}""")]
+    [InlineData("""{"left_tracker_serial":"LHR-SAME","right_tracker_serial":"lhr-same"}""")]
+    public void InvalidPersistedManualBindingFailsClosed(string bindingJson)
+    {
+        var root = SerializedSettingsObject();
+        root["manual_tracker_binding"] = JsonNode.Parse(bindingJson);
+
+        var exception = Assert.Throws<InternalDriverSettingsFormatException>(() =>
+            InternalDriverSettingsJson.Deserialize(root.ToJsonString()));
+
+        Assert.Contains(
+            exception.Reason,
+            [
+                InternalDriverSettingsFormatReason.MalformedJson,
+                InternalDriverSettingsFormatReason.InvalidSettingsData,
+            ]);
+    }
+
     [Fact]
     public void FirstRunAbsenceIsDistinctFromMalformedSettings()
     {
@@ -232,14 +339,18 @@ public sealed class InternalDriverSettingsTests
 
     private static InternalDriverSettings Settings(
         OpenVrPathsDiscovery discovery,
-        string? rootPath = null)
+        string? rootPath = null,
+        InternalDriverTrackerBinding? manualTrackerBinding = null,
+        bool unregisterOnExit = true)
     {
         var root = rootPath ?? TemporaryRootPath();
         return new InternalDriverSettings(
             InternalDriverSettingsSchema.CurrentVersion,
             discovery,
             Path.Combine(root, "staged-driver"),
-            Path.Combine(root, "profiles", "calibration-profiles.json"));
+            Path.Combine(root, "profiles", "calibration-profiles.json"),
+            manualTrackerBinding,
+            unregisterOnExit);
     }
 
     private static JsonObject SerializedSettingsObject() =>

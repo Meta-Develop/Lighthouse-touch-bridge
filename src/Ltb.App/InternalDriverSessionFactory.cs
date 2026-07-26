@@ -187,7 +187,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                     health.Diagnostic,
                     meta,
                     [],
-                    new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal));
+                    new Dictionary<string, PoseSourceSample>(
+                        StringComparer.OrdinalIgnoreCase));
             }
 
             var devices = _openVr.EnumerateDevices();
@@ -209,7 +210,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                 exception.Message,
                 meta,
                 [],
-                new Dictionary<string, PoseSourceSample>(StringComparer.Ordinal));
+                new Dictionary<string, PoseSourceSample>(
+                    StringComparer.OrdinalIgnoreCase));
         }
     }
 
@@ -231,8 +233,20 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         _rightCaptureEvidence = null;
 
         var calibration = new InternalDriverCalibration(_paths.CalibrationProfileStorePath);
+        _ = EnsureDefaultSettings(_paths);
+        var configuredBinding =
+            InternalDriverSettingsFile.Load(_paths.SettingsPath).ManualTrackerBinding;
+        var manualBinding = configuredBinding is null
+            ? null
+            : new ManualTrackerBinding(
+                configuredBinding.LeftTrackerSerial,
+                configuredBinding.RightTrackerSerial);
         var requestedHands = _options.RequestedCalibrationHands;
-        var reusable = FindReusablePair(calibration, serials, explicitRequest: false);
+        var reusable = FindReusablePair(
+            calibration,
+            serials,
+            explicitRequest: false,
+            manualBinding);
         if (requestedHands == InternalDriverCalibrationHandSet.None && reusable is not null)
         {
             return reusable;
@@ -250,6 +264,7 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                 requestedHands,
                 serials,
                 progress,
+                manualBinding,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -268,19 +283,44 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         cancellationToken.ThrowIfCancellationRequested();
         progress(
             InternalDriverSessionState.Association,
-            $"Selecting a unique left/right pair from {serials.Length} raw tracker candidates " +
-            "using separate per-hand angular-speed captures.",
-            "Keep both tracker mounts unchanged; unrelated trackers may remain connected, " +
-            "but move only the requested mounted controller.");
-        var association = TrackerHandAssociator.Associate(
+            manualBinding is null
+                ? $"Selecting a unique left/right pair from {serials.Length} raw tracker " +
+                  "candidates using separate per-hand angular-speed captures."
+                : $"Verifying the authoritative manual pair against motion correlation " +
+                  $"without allowing correlation to reassign either hand.",
+            manualBinding is null
+                ? "Keep both tracker mounts unchanged; unrelated trackers may remain connected, " +
+                  "but move only the requested mounted controller."
+                : "A mismatch will be reported as an explicit correction choice; the manual " +
+                  "pair remains authoritative unless the owner accepts that correction.");
+        var verification = TrackerHandAssociator.VerifyManualBinding(
             ToAssociationCapture(leftCapture),
-            ToAssociationCapture(rightCapture));
-        if (!association.Success)
+            ToAssociationCapture(rightCapture),
+            manualBinding);
+        if (manualBinding is null && !verification.AutomaticAssociationAccepted)
         {
             throw new InvalidOperationException(
-                $"First-party tracker association failed ({association.Status}): {association.Reason}");
+                $"First-party tracker association failed: {verification.Reason}");
         }
 
+        var selectedLeftSerial = manualBinding?.LeftTrackerSerial ??
+            verification.CorrelationResult!.Left!.TrackerSerial;
+        var selectedRightSerial = manualBinding?.RightTrackerSerial ??
+            verification.CorrelationResult!.Right!.TrackerSerial;
+        if (string.IsNullOrWhiteSpace(selectedLeftSerial) ||
+            string.IsNullOrWhiteSpace(selectedRightSerial) ||
+            string.Equals(
+                selectedLeftSerial,
+                selectedRightSerial,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Profile resolution did not produce one complete distinct left/right tracker pair.");
+        }
+
+        var verificationEvidence = manualBinding is null
+            ? null
+            : ToManualBindingVerificationEvidence(verification);
         progress(
             InternalDriverSessionState.TimeAlignment,
             "Estimating per-hand residual lag after preserving Meta clock uncertainty evidence.",
@@ -303,7 +343,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                 new InternalDriverCalibration(stagedProfileStorePath),
                 leftCapture,
                 rightCapture,
-                association,
+                selectedLeftSerial,
+                selectedRightSerial,
                 explicitRequest,
                 cancellationToken),
             cancellationToken);
@@ -311,7 +352,10 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             InternalDriverSessionState.SaveProfile,
             "Both first-party results passed validation; exact schema-3 profiles were saved and reloaded.",
             "Keep the physical tracker mounts fixed for profile reuse.");
-        return profiles;
+        return profiles with
+        {
+            ManualBindingVerification = verificationEvidence,
+        };
     }
 
     private async ValueTask<InternalDriverProfilePair> CalibrateSelectedHandAsync(
@@ -319,12 +363,28 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         InternalDriverCalibrationHandSet requestedHand,
         IReadOnlyList<string> trackerSerials,
         InternalDriverProgress progress,
+        ManualTrackerBinding? manualBinding,
         CancellationToken cancellationToken)
     {
         var metaHand = requestedHand == InternalDriverCalibrationHandSet.Left
             ? MetaLinkHand.Left
             : MetaLinkHand.Right;
         var preserved = calibrationBase.PreservedOpposite;
+        var expectedPreservedSerial = requestedHand == InternalDriverCalibrationHandSet.Left
+            ? manualBinding?.RightTrackerSerial
+            : manualBinding?.LeftTrackerSerial;
+        if (expectedPreservedSerial is not null &&
+            !string.Equals(
+                preserved.TrackerSerial,
+                expectedPreservedSerial,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Selected-hand calibration retained opposite tracker " +
+                $"'{preserved.TrackerSerial}', but the authoritative manual binding requires " +
+                $"'{expectedPreservedSerial}'. No capture or profile write began.");
+        }
+
         var capture = await CaptureHandAsync(
             metaHand,
             trackerSerials,
@@ -342,9 +402,61 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             preserved.TrackerSerial);
         if (!association.Success)
         {
+            if (manualBinding is null)
+            {
+                throw new InvalidOperationException(
+                    $"Selected-hand tracker association failed ({association.Status}): " +
+                    association.Reason);
+            }
+        }
+
+        var selectedTrackerSerial = requestedHand == InternalDriverCalibrationHandSet.Left
+            ? manualBinding?.LeftTrackerSerial
+            : manualBinding?.RightTrackerSerial;
+        selectedTrackerSerial ??= association.Assignment!.TrackerSerial;
+        if (!trackerSerials.Contains(
+                selectedTrackerSerial,
+                StringComparer.OrdinalIgnoreCase))
+        {
             throw new InvalidOperationException(
-                $"Selected-hand tracker association failed ({association.Status}): " +
-                association.Reason);
+                $"The authoritative manual tracker '{selectedTrackerSerial}' is absent from " +
+                "the current selected-hand candidate roster.");
+        }
+
+        InternalDriverManualBindingVerificationEvidence? verificationEvidence = null;
+        if (manualBinding is not null)
+        {
+            var suggestedSelected = association.Assignment?.TrackerSerial;
+            var correctionLeft = requestedHand == InternalDriverCalibrationHandSet.Left
+                ? suggestedSelected
+                : preserved.TrackerSerial;
+            var correctionRight = requestedHand == InternalDriverCalibrationHandSet.Right
+                ? suggestedSelected
+                : preserved.TrackerSerial;
+            var agrees = association.Success &&
+                string.Equals(
+                    selectedTrackerSerial,
+                    suggestedSelected,
+                    StringComparison.OrdinalIgnoreCase);
+            verificationEvidence = new InternalDriverManualBindingVerificationEvidence(
+                !association.Success
+                    ? InternalDriverManualBindingVerificationState.CorrelationFailed
+                    : agrees
+                        ? InternalDriverManualBindingVerificationState.Agreement
+                        : InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
+                manualBinding.LeftTrackerSerial!,
+                manualBinding.RightTrackerSerial!,
+                !association.Success
+                    ? $"Manual binding remains authoritative because selected-hand " +
+                      $"correlation could not verify it: {association.Reason}"
+                    : agrees
+                        ? "Selected-hand motion correlation agrees with the authoritative " +
+                          "manual binding."
+                        : $"Manual binding remains authoritative; selected-hand motion " +
+                          $"correlation suggests left {correctionLeft} and right " +
+                          $"{correctionRight} as an explicit correction candidate.",
+                agrees || !association.Success ? null : correctionLeft,
+                agrees || !association.Success ? null : correctionRight);
         }
 
         progress(
@@ -373,7 +485,7 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                     new InternalDriverCalibration(stagedProfileStorePath),
                     capture,
                     metaHand,
-                    association.Assignment!.TrackerSerial,
+                    selectedTrackerSerial,
                     explicitRequest: true,
                     replacedTrackerSerial: calibrationBase.ReplacedTrackerSerial);
                 return metaHand == MetaLinkHand.Left
@@ -386,7 +498,10 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             $"The requested {metaHand} profile was atomically replaced; the opposite hand " +
             "and unrelated profile records were preserved.",
             "Keep both physical tracker mounts fixed for profile reuse.");
-        return result;
+        return result with
+        {
+            ManualBindingVerification = verificationEvidence,
+        };
     }
 
     internal SelectedHandCalibrationBase ResolveSelectedHandBase(
@@ -421,7 +536,7 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             : _options.PreviousRightTrackerSerial;
         var candidates = calibration.FindCandidateTrackerSerials(selectedMetaHand);
         if (configuredPrevious is not null &&
-            !candidates.Contains(configuredPrevious, StringComparer.Ordinal))
+            !candidates.Contains(configuredPrevious, StringComparer.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
                 $"Selected-{selectedMetaHand.ToString().ToLowerInvariant()} calibration " +
@@ -439,7 +554,7 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         MetaLinkHand hand)
     {
         var matches = serials
-            .Distinct(StringComparer.Ordinal)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(serial => calibration.FindReusableProfile(
                 new InternalDriverCalibrationContext(hand, serial, ControllerModel)))
             .Where(lookup => lookup.CanReuse)
@@ -467,10 +582,36 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         ArgumentNullException.ThrowIfNull(observation);
         return observation.TrackerSamples
             .Where(pair => pair.Value.IsConnected)
-            .Select(pair => pair.Key)
-            .Distinct(StringComparer.Ordinal)
+            .Select(pair => InternalDriverTrackerSerial.Require(
+                pair.Key,
+                nameof(observation.TrackerSamples)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(serial => serial, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    internal static IReadOnlyDictionary<string, PoseSourceSample>
+        CanonicalizeTrackerSamples(
+            IReadOnlyDictionary<string, PoseSourceSample> trackerSamples)
+    {
+        ArgumentNullException.ThrowIfNull(trackerSamples);
+        var canonical = new Dictionary<string, PoseSourceSample>(
+            trackerSamples.Count,
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in trackerSamples)
+        {
+            var serial = InternalDriverTrackerSerial.Require(
+                pair.Key,
+                nameof(trackerSamples));
+            if (!canonical.TryAdd(serial, pair.Value))
+            {
+                throw new InvalidDataException(
+                    $"Tracker samples repeated physical serial '{serial}' using " +
+                    "case-variant keys.");
+            }
+        }
+
+        return canonical;
     }
 
     public IDriverFeed CreateFeed()
@@ -500,7 +641,14 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         var currentRight = RequireUnchangedSource(store, expectedRight);
         var updatedLeft = WithMountAdjustment(currentLeft, left);
         var updatedRight = WithMountAdjustment(currentRight, right);
-        var updatedStore = store.Upsert(updatedLeft).Upsert(updatedRight);
+        var updatedStore = InternalDriverCalibration.ReplaceSelectedProfile(
+            store,
+            updatedLeft,
+            currentLeft.TrackerSerial);
+        updatedStore = InternalDriverCalibration.ReplaceSelectedProfile(
+            updatedStore,
+            updatedRight,
+            currentRight.TrackerSerial);
         // SaveStore's atomic replace is the persistence commit boundary. All
         // serialization/source-CAS validation is complete before this call;
         // do not add a post-commit reload that could report failure after the
@@ -548,7 +696,9 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         source.ControllerRuntime,
         source.ControllerModel,
         source.ControllerIdentity,
-        source.TrackerSerial,
+        InternalDriverTrackerSerial.Require(
+            source.TrackerSerial,
+            nameof(source.TrackerSerial)),
         source.DriverProfile
             ?? throw new InvalidDataException(
                 "First-party adjustment persistence requires a driver profile."),
@@ -620,11 +770,12 @@ internal sealed class ProductionInternalDriverSessionRuntime :
     private static InternalDriverProfilePair? FindReusablePair(
         InternalDriverCalibration calibration,
         IReadOnlyList<string> serials,
-        bool explicitRequest)
+        bool explicitRequest,
+        ManualTrackerBinding? manualBinding = null)
     {
         var leftProfiles = new List<InternalDriverProfileLookup>();
         var rightProfiles = new List<InternalDriverProfileLookup>();
-        foreach (var serial in serials.Distinct(StringComparer.Ordinal))
+        foreach (var serial in serials.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var left = calibration.FindReusableProfile(new InternalDriverCalibrationContext(
                 MetaLinkHand.Left,
@@ -658,7 +809,16 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             where !string.Equals(
                 left.Context.TrackerSerial,
                 right.Context.TrackerSerial,
-                StringComparison.Ordinal)
+                StringComparison.OrdinalIgnoreCase)
+            where manualBinding is null ||
+                string.Equals(
+                    left.Context.TrackerSerial,
+                    manualBinding.LeftTrackerSerial,
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    right.Context.TrackerSerial,
+                    manualBinding.RightTrackerSerial,
+                    StringComparison.OrdinalIgnoreCase)
             select new InternalDriverProfilePair(
                 ToHandProfile(
                     ProtocolHand.Left,
@@ -688,20 +848,22 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         InternalDriverProgress progress,
         CancellationToken cancellationToken)
     {
+        var canonicalTrackerSerials =
+            RequireDistinctCanonicalTrackerSerials(trackerSerials);
         var mappedMetaSamples = new InternalDriverMappedMetaSampleFilter(hand);
         var captureEvidence = new InternalDriverCaptureEvidenceTracker(hand);
-        var trackerSamples = trackerSerials.ToDictionary(
+        var trackerSamples = canonicalTrackerSerials.ToDictionary(
             serial => serial,
             _ => new List<PoseSourceSample>(),
-            StringComparer.Ordinal);
-        var lastTrackerTimes = trackerSerials.ToDictionary(
+            StringComparer.OrdinalIgnoreCase);
+        var lastTrackerTimes = canonicalTrackerSerials.ToDictionary(
             serial => serial,
             _ => double.NegativeInfinity,
-            StringComparer.Ordinal);
-        var continuouslyConnected = trackerSerials.ToDictionary(
+            StringComparer.OrdinalIgnoreCase);
+        var continuouslyConnected = canonicalTrackerSerials.ToDictionary(
             serial => serial,
             _ => true,
-            StringComparer.Ordinal);
+            StringComparer.OrdinalIgnoreCase);
         var startedNanoseconds = GetMonotonicNanoseconds();
         var durationNanoseconds = ToNanoseconds(_options.GuidedCaptureDurationPerHand);
         var reportCadence = new InternalDriverCaptureReportCadence(
@@ -724,6 +886,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             }
 
             var meta = observation.Meta.ForHand(hand);
+            var observedTrackerSamples =
+                CanonicalizeTrackerSamples(observation.TrackerSamples);
             _ = captureEvidence.TryAppend(observation.Meta);
 
             if (meta.Readiness == MetaLinkReadiness.Ready && meta.Controller is { } controller)
@@ -731,9 +895,9 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                 _ = mappedMetaSamples.TryAppend(controller);
             }
 
-            foreach (var serial in trackerSerials)
+            foreach (var serial in canonicalTrackerSerials)
             {
-                if (observation.TrackerSamples.TryGetValue(serial, out var sample))
+                if (observedTrackerSamples.TryGetValue(serial, out var sample))
                 {
                     continuouslyConnected[serial] &= sample.IsConnected;
                     if (sample.MonotonicHostTimeSeconds > lastTrackerTimes[serial])
@@ -777,6 +941,28 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             mappedMetaSamples.Samples.ToArray(),
             trackerSamples,
             continuouslyConnected);
+    }
+
+    private static string[] RequireDistinctCanonicalTrackerSerials(
+        IReadOnlyList<string> trackerSerials)
+    {
+        ArgumentNullException.ThrowIfNull(trackerSerials);
+        var canonical = trackerSerials
+            .Select(serial => InternalDriverTrackerSerial.Require(
+                serial,
+                nameof(trackerSerials)))
+            .ToArray();
+        var duplicate = canonical
+            .GroupBy(serial => serial, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicate is not null)
+        {
+            throw new InvalidDataException(
+                $"Guided capture received duplicate physical tracker serial " +
+                $"'{duplicate}' through case-variant candidates.");
+        }
+
+        return canonical;
     }
 
     private static ulong ToNanoseconds(TimeSpan duration)
@@ -895,15 +1081,35 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         bool explicitRequest,
         string? replacedTrackerSerial = null)
     {
-        var context = new InternalDriverCalibrationContext(hand, trackerSerial, ControllerModel)
+        var canonicalTrackerSerial = InternalDriverTrackerSerial.Require(
+            trackerSerial,
+            nameof(trackerSerial));
+        var context = new InternalDriverCalibrationContext(
+            hand,
+            canonicalTrackerSerial,
+            ControllerModel)
         {
             ExplicitRequest = explicitRequest,
         };
+        var matchingTrackerSamples = capture.TrackerSamples
+            .Where(pair => string.Equals(
+                pair.Key,
+                canonicalTrackerSerial,
+                StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToArray();
+        if (matchingTrackerSamples.Length != 1)
+        {
+            throw new InvalidDataException(
+                $"Guided capture requires exactly one sample stream for tracker " +
+                $"'{canonicalTrackerSerial}', but observed {matchingTrackerSamples.Length}.");
+        }
+
         var retained = new MetaLinkCalibrationCapture(
             hand,
-            trackerSerial,
+            canonicalTrackerSerial,
             capture.MetaSamples,
-            capture.TrackerSamples[trackerSerial]);
+            matchingTrackerSamples[0].Value);
         var result = calibration.CalibrateAndSave(
             context,
             retained,
@@ -924,7 +1130,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         InternalDriverCalibration calibration,
         GuidedHandCapture leftCapture,
         GuidedHandCapture rightCapture,
-        TrackerAssociationResult association,
+        string leftTrackerSerial,
+        string rightTrackerSerial,
         bool explicitRequest,
         CancellationToken cancellationToken)
     {
@@ -933,17 +1140,47 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             calibration,
             leftCapture,
             MetaLinkHand.Left,
-            association.Left!.TrackerSerial,
+            leftTrackerSerial,
             explicitRequest);
         cancellationToken.ThrowIfCancellationRequested();
         var right = Calibrate(
             calibration,
             rightCapture,
             MetaLinkHand.Right,
-            association.Right!.TrackerSerial,
+            rightTrackerSerial,
             explicitRequest);
         cancellationToken.ThrowIfCancellationRequested();
         return new InternalDriverProfilePair(left, right);
+    }
+
+    internal static InternalDriverManualBindingVerificationEvidence
+        ToManualBindingVerificationEvidence(
+            ManualTrackerBindingVerificationResult verification)
+    {
+        ArgumentNullException.ThrowIfNull(verification);
+        var authoritative = verification.AuthoritativeBinding ??
+            throw new ArgumentException(
+                "Manual verification evidence requires an authoritative binding.",
+                nameof(verification));
+        return new InternalDriverManualBindingVerificationEvidence(
+            verification.Status switch
+            {
+                ManualTrackerBindingVerificationStatus.Agreement =>
+                    InternalDriverManualBindingVerificationState.Agreement,
+                ManualTrackerBindingVerificationStatus.MismatchCorrectionCandidate =>
+                    InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
+                ManualTrackerBindingVerificationStatus.CorrelationFailed =>
+                    InternalDriverManualBindingVerificationState.CorrelationFailed,
+                _ => throw new ArgumentException(
+                    $"Manual verification status '{verification.Status}' cannot be " +
+                    "presented as an accepted manual binding.",
+                    nameof(verification)),
+            },
+            authoritative.LeftTrackerSerial!,
+            authoritative.RightTrackerSerial!,
+            verification.Reason,
+            verification.CorrectionCandidate?.LeftTrackerSerial,
+            verification.CorrectionCandidate?.RightTrackerSerial);
     }
 
     /// <summary>
@@ -1037,7 +1274,9 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         InternalDriverProfileReadiness readiness,
         string diagnostic) => new(
         hand,
-        profile.TrackerSerial,
+        InternalDriverTrackerSerial.Require(
+            profile.TrackerSerial,
+            nameof(profile.TrackerSerial)),
         profile.TrackerToController.ToRigidTransform(),
         readiness,
         diagnostic)
@@ -1115,11 +1354,7 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                 expected.StagedDriverRoot,
                 StringComparison.Ordinal))
         {
-            var relocated = new InternalDriverSettings(
-                current.SchemaVersion,
-                current.OpenVrPathsDiscovery,
-                expected.StagedDriverRoot,
-                current.CalibrationProfileStorePath);
+            var relocated = current.WithStagedDriverRoot(expected.StagedDriverRoot);
             InternalDriverSettingsFile.Save(paths.SettingsPath, relocated);
             return new InternalDriverSettingsPreparation(
                 InternalDriverSettingsPreparationStatus.StagedDriverRootUpdated,
@@ -1405,6 +1640,7 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
         InternalDriverDriverEvidence? Driver,
         InternalDriverLighthouseHmdEvidence? LighthouseHmd,
         InternalDriverTrackerNeutralizationSnapshot? TrackerNeutralization,
+        InternalDriverManualBindingVerificationEvidence? ManualBindingVerification,
         bool RestartRequired,
         string Diagnostic,
         string Remediation)
@@ -1418,6 +1654,7 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
             snapshot.Driver,
             snapshot.LighthouseHmd,
             snapshot.TrackerNeutralization,
+            snapshot.ManualBindingVerification,
             snapshot.RestartRequired,
             snapshot.Diagnostic,
             snapshot.Remediation);

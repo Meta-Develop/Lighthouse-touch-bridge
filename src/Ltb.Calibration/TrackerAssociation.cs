@@ -2,6 +2,20 @@ using Ltb.Core;
 
 namespace Ltb.Calibration;
 
+internal static class CanonicalTrackerSerial
+{
+    internal static string Require(string trackerSerial, string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(trackerSerial, parameterName);
+        return trackerSerial.Trim().ToUpperInvariant();
+    }
+
+    internal static string? Optional(string? trackerSerial) =>
+        string.IsNullOrWhiteSpace(trackerSerial)
+            ? trackerSerial
+            : trackerSerial.Trim().ToUpperInvariant();
+}
+
 /// <summary>One serial-keyed tracker stream observed during a hand-motion capture.</summary>
 public sealed record TrackerAssociationCandidate
 {
@@ -12,7 +26,7 @@ public sealed record TrackerAssociationCandidate
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(trackerSerial);
         ArgumentNullException.ThrowIfNull(samples);
-        TrackerSerial = trackerSerial;
+        TrackerSerial = CanonicalTrackerSerial.Require(trackerSerial, nameof(trackerSerial));
         Samples = Array.AsReadOnly(samples.ToArray());
         IsConnected = isConnected;
     }
@@ -48,7 +62,7 @@ public sealed record HandMotionCapture
         }
 
         var duplicateSerial = trackerCandidates
-            .GroupBy(candidate => candidate.TrackerSerial, StringComparer.Ordinal)
+            .GroupBy(candidate => candidate.TrackerSerial, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(group => group.Count() > 1)?.Key;
         if (duplicateSerial is not null)
         {
@@ -138,13 +152,34 @@ public enum TrackerAssociationCandidateRejection
 }
 
 /// <summary>One hand/candidate score, including an accepted lag or explicit rejection.</summary>
-public sealed record TrackerAssociationCandidateScore(
-    CalibrationHand Hand,
-    string TrackerSerial,
-    TrackerAssociationCandidateRejection Rejection,
-    string Reason,
-    LagEstimate? Lag)
+public sealed record TrackerAssociationCandidateScore
 {
+    public TrackerAssociationCandidateScore(
+        CalibrationHand hand,
+        string trackerSerial,
+        TrackerAssociationCandidateRejection rejection,
+        string reason,
+        LagEstimate? lag)
+    {
+        Hand = hand;
+        TrackerSerial = CanonicalTrackerSerial.Require(
+            trackerSerial,
+            nameof(trackerSerial));
+        Rejection = rejection;
+        Reason = reason;
+        Lag = lag;
+    }
+
+    public CalibrationHand Hand { get; }
+
+    public string TrackerSerial { get; }
+
+    public TrackerAssociationCandidateRejection Rejection { get; }
+
+    public string Reason { get; }
+
+    public LagEstimate? Lag { get; }
+
     public bool IsAccepted => Rejection is TrackerAssociationCandidateRejection.None && Lag is not null;
 
     public double CorrelationScore => Lag?.CorrelationScore ?? double.NaN;
@@ -173,10 +208,26 @@ public enum TrackerCandidateOrderDiagnostic
 }
 
 /// <summary>A stable serial assignment for one hand.</summary>
-public sealed record HandTrackerAssignment(
-    CalibrationHand Hand,
-    string TrackerSerial,
-    LagEstimate Lag);
+public sealed record HandTrackerAssignment
+{
+    public HandTrackerAssignment(
+        CalibrationHand hand,
+        string trackerSerial,
+        LagEstimate lag)
+    {
+        Hand = hand;
+        TrackerSerial = CanonicalTrackerSerial.Require(
+            trackerSerial,
+            nameof(trackerSerial));
+        Lag = lag ?? throw new ArgumentNullException(nameof(lag));
+    }
+
+    public CalibrationHand Hand { get; }
+
+    public string TrackerSerial { get; }
+
+    public LagEstimate Lag { get; }
+}
 
 /// <summary>Two-hand association result with stable serials and diagnostics.</summary>
 public sealed record TrackerAssociationResult(
@@ -202,18 +253,37 @@ public sealed record TrackerAssociationResult(
 /// User-selected left/right tracker serials. Verification accepts only a
 /// complete pair whose serials are distinct when compared case-insensitively.
 /// </summary>
-public sealed record ManualTrackerBinding(
-    string? LeftTrackerSerial,
-    string? RightTrackerSerial);
+public sealed record ManualTrackerBinding
+{
+    public ManualTrackerBinding(
+        string? leftTrackerSerial,
+        string? rightTrackerSerial)
+    {
+        LeftTrackerSerial = CanonicalTrackerSerial.Optional(leftTrackerSerial);
+        RightTrackerSerial = CanonicalTrackerSerial.Optional(rightTrackerSerial);
+    }
+
+    public string? LeftTrackerSerial { get; }
+
+    public string? RightTrackerSerial { get; }
+}
 
 /// <summary>Outcome of checking an authoritative manual binding against motion correlation.</summary>
 public enum ManualTrackerBindingVerificationStatus
 {
+    AutomaticAssociation,
     Agreement,
     MismatchCorrectionCandidate,
     CorrelationFailed,
     IncompleteBinding,
     NonDistinctBinding,
+}
+
+/// <summary>Explicit owner decision when correlation disagrees with a manual pair.</summary>
+public enum ManualTrackerBindingDecision
+{
+    RetainManualBinding,
+    AcceptCorrectionCandidate,
 }
 
 /// <summary>
@@ -232,6 +302,28 @@ public sealed record ManualTrackerBindingVerificationResult(
 
     public bool CorrelationAgrees =>
         Status is ManualTrackerBindingVerificationStatus.Agreement;
+
+    public bool AutomaticAssociationAccepted =>
+        Status is ManualTrackerBindingVerificationStatus.AutomaticAssociation &&
+        CorrelationResult?.Success is true;
+
+    public ManualTrackerBinding SelectBinding(ManualTrackerBindingDecision decision) =>
+        decision switch
+        {
+            ManualTrackerBindingDecision.RetainManualBinding
+                when AuthoritativeBinding is not null =>
+                AuthoritativeBinding,
+            ManualTrackerBindingDecision.AcceptCorrectionCandidate
+                when CorrectionCandidate is not null =>
+                CorrectionCandidate,
+            ManualTrackerBindingDecision.RetainManualBinding =>
+                throw new InvalidOperationException(
+                    "No authoritative manual tracker binding is available to retain."),
+            ManualTrackerBindingDecision.AcceptCorrectionCandidate =>
+                throw new InvalidOperationException(
+                    "Motion correlation did not produce a correction candidate."),
+            _ => throw new ArgumentOutOfRangeException(nameof(decision)),
+        };
 }
 
 /// <summary>
@@ -254,8 +346,22 @@ public static class TrackerHandAssociator
         ArgumentNullException.ThrowIfNull(leftCapture);
         ArgumentNullException.ThrowIfNull(rightCapture);
 
-        if (manualBinding is null ||
-            string.IsNullOrWhiteSpace(manualBinding.LeftTrackerSerial) ||
+        if (manualBinding is null)
+        {
+            var automaticResult = Associate(leftCapture, rightCapture, options);
+            return new ManualTrackerBindingVerificationResult(
+                automaticResult.Success
+                    ? ManualTrackerBindingVerificationStatus.AutomaticAssociation
+                    : ManualTrackerBindingVerificationStatus.CorrelationFailed,
+                automaticResult.Success
+                    ? "No manual tracker binding is stored; the existing automatic motion-correlation association selected the pair."
+                    : $"No manual tracker binding is stored and automatic association failed: {automaticResult.Reason}",
+                null,
+                null,
+                automaticResult);
+        }
+
+        if (string.IsNullOrWhiteSpace(manualBinding.LeftTrackerSerial) ||
             string.IsNullOrWhiteSpace(manualBinding.RightTrackerSerial))
         {
             return new ManualTrackerBindingVerificationResult(
@@ -344,7 +450,7 @@ public static class TrackerHandAssociator
             .Select(candidate => candidate.TrackerSerial)
             .Intersect(
                 rightCapture.TrackerCandidates.Select(candidate => candidate.TrackerSerial),
-                StringComparer.Ordinal)
+                StringComparer.OrdinalIgnoreCase)
             .OrderBy(serial => serial, StringComparer.Ordinal)
             .ToArray();
         if (commonSerials.Length < 2)
@@ -359,9 +465,9 @@ public static class TrackerHandAssociator
         foreach (var serial in commonSerials)
         {
             var leftCandidate = leftCapture.TrackerCandidates.Single(candidate =>
-                string.Equals(candidate.TrackerSerial, serial, StringComparison.Ordinal));
+                string.Equals(candidate.TrackerSerial, serial, StringComparison.OrdinalIgnoreCase));
             var rightCandidate = rightCapture.TrackerCandidates.Single(candidate =>
-                string.Equals(candidate.TrackerSerial, serial, StringComparison.Ordinal));
+                string.Equals(candidate.TrackerSerial, serial, StringComparison.OrdinalIgnoreCase));
             scores.Add(Score(
                 leftCapture,
                 leftCandidate,
@@ -394,7 +500,10 @@ public static class TrackerHandAssociator
         var assignments = (
             from left in acceptedLeft
             from right in acceptedRight
-            where !string.Equals(left.TrackerSerial, right.TrackerSerial, StringComparison.Ordinal)
+            where !string.Equals(
+                left.TrackerSerial,
+                right.TrackerSerial,
+                StringComparison.OrdinalIgnoreCase)
             select new AssignmentCandidate(
                 left,
                 right,

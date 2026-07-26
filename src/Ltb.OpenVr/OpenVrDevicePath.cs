@@ -14,6 +14,15 @@ public enum OfflineOpenVrDevicePathStatus
 }
 
 /// <summary>
+/// Provenance carried by offline identity evidence. It explicitly does not
+/// attest the registered device token used as a SteamVR settings key.
+/// </summary>
+public enum OfflineOpenVrDevicePathEvidenceProvenance
+{
+    PairedLighthouseConfig,
+}
+
+/// <summary>
 /// Carries the offline identity evidence that can safely be retained while
 /// requiring a live OpenVR device-path lookup.
 /// </summary>
@@ -24,12 +33,14 @@ public sealed record OfflineOpenVrDevicePathResult
         string stableSerial,
         string model,
         string driverId,
+        OfflineOpenVrDevicePathEvidenceProvenance evidenceProvenance,
         string diagnostic)
     {
         Status = status;
         StableSerial = stableSerial;
         Model = model;
         DriverId = driverId;
+        EvidenceProvenance = evidenceProvenance;
         Diagnostic = diagnostic;
     }
 
@@ -40,6 +51,8 @@ public sealed record OfflineOpenVrDevicePathResult
     public string Model { get; }
 
     public string DriverId { get; }
+
+    public OfflineOpenVrDevicePathEvidenceProvenance EvidenceProvenance { get; }
 
     public string? CanonicalDevicePath { get; }
 
@@ -65,9 +78,10 @@ public static class OfflineOpenVrDevicePath
 
         return new OfflineOpenVrDevicePathResult(
             OfflineOpenVrDevicePathStatus.LiveRegisteredDevicePathRequired,
-            stableSerial,
-            model,
+            stableSerial.Trim().ToUpperInvariant(),
+            model.Trim(),
             LighthouseDriverId,
+            OfflineOpenVrDevicePathEvidenceProvenance.PairedLighthouseConfig,
             "Offline Lighthouse config.json proves the stable serial and model, but not " +
             "the registered device token. Resolve the matching live OpenVR registered " +
             "device path before changing SteamVR settings; do not derive it from the " +
