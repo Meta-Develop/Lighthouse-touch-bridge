@@ -93,6 +93,13 @@ public sealed class DriverRegistrationReceiptStore
             canonicalDriverRoot));
     }
 
+    /// <summary>
+    /// Returns a complete immutable snapshot for stale-root inspection.
+    /// Missing storage is an empty snapshot; malformed storage still fails
+    /// loudly under the same schema validation as exact-root lookup.
+    /// </summary>
+    public IReadOnlyList<DriverRegistrationReceiptRecord> LoadAll() => Load();
+
     public void Save(DriverRegistrationReceiptRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);

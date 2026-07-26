@@ -208,6 +208,24 @@ internal sealed class FakeVrPathRegRunner : ISteamVrProcessRunner
     }
 }
 
+internal sealed class MemorySteamVrDriverReceiptStore : ISteamVrDriverReceiptStore
+{
+    private readonly Dictionary<string, SteamVrDriverRegistrationReceipt> _receipts =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public SteamVrDriverRegistrationReceipt? TryLoad(string canonicalDriverRoot) =>
+        _receipts.TryGetValue(canonicalDriverRoot, out var receipt) ? receipt : null;
+
+    public IReadOnlyList<SteamVrDriverRegistrationReceipt> LoadAll() =>
+        _receipts.Values.ToArray();
+
+    public void Save(SteamVrDriverRegistrationReceipt receipt) =>
+        _receipts[receipt.CanonicalDriverRoot] = receipt;
+
+    public void Delete(string canonicalDriverRoot) =>
+        _receipts.Remove(canonicalDriverRoot);
+}
+
 internal sealed class SteamVrLifecycleFixture : IDisposable
 {
     public const string BuildId = "driver_ltb-0.1.0-ipc-1.0";
@@ -215,7 +233,8 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
     public SteamVrLifecycleFixture(
         SteamVrActivateMultipleDriversState setting =
             SteamVrActivateMultipleDriversState.Disabled,
-        bool steamVrSectionPresent = true)
+        bool steamVrSectionPresent = true,
+        ISteamVrDriverReceiptStore? receiptStore = null)
     {
         Root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ltb-lifecycle-tests"));
         LocalApplicationData = Path.Combine(Root, "current-user", "AppData", "Local");
@@ -238,7 +257,7 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
             OpenVrJson([OtherDriverRoot]));
         FileSystem.AddFile(VrPathRegExecutable);
         FileSystem.AddFile(SettingsFile, SettingsJson(setting, steamVrSectionPresent));
-        FileSystem.AddFile(ManifestFile, "{}");
+        FileSystem.AddFile(ManifestFile, DriverManifestJson);
         FileSystem.AddFile(BinaryFile, "driver bytes");
         FileSystem.AddFile(BuildIdFile, BuildId + "\n");
         ProcessRunner = new FakeVrPathRegRunner(FileSystem, OpenVrPathsFile);
@@ -248,7 +267,8 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
                 LocalApplicationDataPath = LocalApplicationData,
             },
             FileSystem,
-            ProcessRunner);
+            ProcessRunner,
+            receiptStore);
     }
 
     public string Root { get; }
@@ -280,6 +300,17 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
     public FakeVrPathRegRunner ProcessRunner { get; }
 
     public SteamVrDriverLifecycle Lifecycle { get; }
+
+    public static string DriverManifestJson =>
+        """
+        {
+          "alwaysActivate": true,
+          "name": "ltb",
+          "directory": "",
+          "resourceOnly": false,
+          "hmd_presence": []
+        }
+        """;
 
     public void Dispose()
     {
@@ -329,6 +360,21 @@ internal sealed class SteamVrLifecycleFixture : IDisposable
         {
             WriteIndented = true,
         }) + "\n";
+    }
+
+    public void AddCompleteLtbDriver(
+        string driverRoot,
+        string buildId = BuildId)
+    {
+        FileSystem.AddFile(
+            Path.Combine(driverRoot, SteamVrDriverLifecycle.DriverManifestRelativePath),
+            DriverManifestJson);
+        FileSystem.AddFile(
+            Path.Combine(driverRoot, SteamVrDriverLifecycle.DriverBinaryRelativePath),
+            "driver bytes");
+        FileSystem.AddFile(
+            Path.Combine(driverRoot, SteamVrDriverLifecycle.DriverBuildIdRelativePath),
+            buildId + "\n");
     }
 
     private static string SettingsJson(

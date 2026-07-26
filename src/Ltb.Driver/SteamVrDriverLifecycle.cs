@@ -10,6 +10,7 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
     public const string DriverManifestRelativePath = "driver.vrdrivermanifest";
     public const string DriverBinaryRelativePath = "bin/win64/driver_ltb.dll";
     public const string DriverBuildIdRelativePath = "build-id.txt";
+    private const string DriverManifestName = "ltb";
     private const string SteamVrSectionName = "steamvr";
     private const string ActivateMultipleDriversName = "activateMultipleDrivers";
     private static readonly JsonDocumentOptions DocumentOptions = new()
@@ -97,6 +98,217 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                 stagedDriver.BuildId,
                 IsRegistered: exactRegistrationCount == 1,
                 settings.ActivateMultipleDrivers);
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
+    }
+
+    public async ValueTask<SteamVrDriverStartupInspection> InspectStartupAsync(
+        string stagedDriverRoot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagedDriverRoot);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var paths = await DiscoverAsync(cancellationToken).ConfigureAwait(false);
+            var stagedDriver = await ReadStagedDriverAsync(
+                stagedDriverRoot,
+                cancellationToken).ConfigureAwait(false);
+            var openVr = await ReadOpenVrStateAsync(
+                paths.OpenVrPathsFile,
+                cancellationToken).ConfigureAwait(false);
+            var settings = await ReadSettingsStateAsync(
+                paths.SettingsFile,
+                cancellationToken).ConfigureAwait(false);
+            var receipts = _receiptStore.LoadAll().ToArray();
+            var canonicalReceiptRoots = new List<string>(receipts.Length);
+            var receiptIntegrityLost = false;
+            foreach (var receipt in receipts)
+            {
+                try
+                {
+                    var canonicalReceiptRoot =
+                        _fileSystem.GetCanonicalPath(receipt.CanonicalDriverRoot);
+                    canonicalReceiptRoots.Add(canonicalReceiptRoot);
+                    receiptIntegrityLost |= !PathsEqual(
+                        canonicalReceiptRoot,
+                        receipt.CanonicalDriverRoot);
+                }
+                catch (Exception exception) when (
+                    exception is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    receiptIntegrityLost = true;
+                }
+            }
+
+            receiptIntegrityLost |= canonicalReceiptRoots
+                .GroupBy(root => root, StringComparer.OrdinalIgnoreCase)
+                .Any(group => group.Count() > 1);
+
+            var registrations = new List<StartupRegistration>();
+            var unrelatedDrivers = new List<string>();
+            var hasAmbiguousAlias = false;
+
+            foreach (var registeredPath in openVr.ExternalDrivers)
+            {
+                string canonicalRoot;
+                try
+                {
+                    canonicalRoot = _fileSystem.GetCanonicalPath(registeredPath);
+                }
+                catch (Exception exception) when (
+                    exception is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    unrelatedDrivers.Add(registeredPath);
+                    continue;
+                }
+
+                var hasMatchingReceipt = receipts.Any(receipt => PathsEqual(
+                    receipt.CanonicalDriverRoot,
+                    canonicalRoot));
+                var isArtifactProven = false;
+                if (!hasMatchingReceipt)
+                {
+                    isArtifactProven =
+                        HasCompleteLtbArtifacts(canonicalRoot) &&
+                        await HasLtbManifestIdentityAsync(
+                            canonicalRoot,
+                            cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!hasMatchingReceipt && !isArtifactProven)
+                {
+                    unrelatedDrivers.Add(registeredPath);
+                    continue;
+                }
+
+                if (isArtifactProven)
+                {
+                    _ = await ReadStagedDriverAsync(
+                        canonicalRoot,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                registrations.Add(new StartupRegistration(
+                    registeredPath,
+                    canonicalRoot,
+                    isArtifactProven));
+                hasAmbiguousAlias |= !PathsEqual(
+                    registeredPath,
+                    canonicalRoot);
+            }
+
+            var registrationGroups = registrations
+                .GroupBy(
+                    registration => registration.CanonicalRoot,
+                    StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var duplicateRegistrations =
+                registrationGroups.Length > 1 ||
+                registrationGroups.Any(group => group.Count() > 1);
+
+            var state = SteamVrDriverStartupState.NoLtbRegistration;
+            SteamVrDriverRegistrationReceipt? matchingReceipt = null;
+            string diagnostic;
+            if (hasAmbiguousAlias)
+            {
+                state = SteamVrDriverStartupState.AmbiguousNonCanonicalRegistration;
+                diagnostic =
+                    "A non-canonical alias of an LTB-owned or artifact-proven registration was " +
+                    "detected; " +
+                    "automatic removal is refused until the exact registry path is repaired.";
+            }
+            else if (duplicateRegistrations)
+            {
+                state = SteamVrDriverStartupState.DuplicateRegistrations;
+                diagnostic =
+                    "Multiple LTB-owned or artifact-proven registrations were detected; " +
+                    "automatic removal is refused until ownership is unambiguous.";
+            }
+            else if (registrationGroups.Length == 0)
+            {
+                if (receipts.Length == 0)
+                {
+                    diagnostic =
+                        "No artifact-proven LTB registration or durable LTB receipt was found; " +
+                        "unrelated external drivers are unchanged.";
+                }
+                else if (!receiptIntegrityLost &&
+                    receipts.Length == 1 &&
+                    openVr.ExternalDrivers.All(path => !IsCanonicalEquivalent(
+                        path,
+                        receipts[0].CanonicalDriverRoot)))
+                {
+                    state = SteamVrDriverStartupState.ReceiptOnlyNoRegistration;
+                    diagnostic =
+                        "Exactly one canonical durable LTB receipt exists without an " +
+                        "artifact-proven registration; receipt-scoped settings recovery is available.";
+                }
+                else
+                {
+                    state = SteamVrDriverStartupState.StaleReceiptRegistrationMismatch;
+                    diagnostic =
+                        "Durable LTB receipt state is non-canonical, duplicated, or otherwise " +
+                        "ambiguous without a matching artifact-proven registration.";
+                }
+            }
+            else
+            {
+                var registeredRoot = registrationGroups[0].Key;
+                var matchingReceipts = receipts
+                    .Where(receipt => PathsEqual(
+                        receipt.CanonicalDriverRoot,
+                        registeredRoot))
+                    .ToArray();
+                if (!receiptIntegrityLost &&
+                    receipts.Length == 1 &&
+                    matchingReceipts.Length == 1)
+                {
+                    state = SteamVrDriverStartupState.ReceiptOwnedRegistration;
+                    matchingReceipt = matchingReceipts[0];
+                    diagnostic =
+                        "Exactly one LTB registration is owned by its matching " +
+                        "durable receipt; unrelated external drivers are unchanged.";
+                }
+                else if (!receiptIntegrityLost &&
+                    receipts.Length == 0 &&
+                    registrationGroups[0].All(registration =>
+                        registration.IsArtifactProven))
+                {
+                    state = SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration;
+                    diagnostic =
+                        "Exactly one receiptless but artifact-proven LTB registration was found; " +
+                        "it may be adopted conservatively without changing activateMultipleDrivers.";
+                }
+                else
+                {
+                    state = SteamVrDriverStartupState.StaleReceiptRegistrationMismatch;
+                    diagnostic =
+                        "LTB receipt and artifact-proven registration roots do not form one exact " +
+                        "ownership pair; automatic removal is refused.";
+                }
+            }
+
+            return new SteamVrDriverStartupInspection(
+                paths,
+                stagedDriver.CanonicalRoot,
+                stagedDriver.BuildId,
+                state,
+                settings.ActivateMultipleDrivers,
+                registrationGroups
+                    .Select(group => group.Key)
+                    .ToArray(),
+                unrelatedDrivers.ToArray(),
+                receipts,
+                matchingReceipt,
+                state is SteamVrDriverStartupState.ReceiptOwnedRegistration
+                    or SteamVrDriverStartupState.ReceiptOnlyNoRegistration
+                    or SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration,
+                diagnostic);
         }
         finally
         {
@@ -419,7 +631,9 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                         ? SteamVrDriverReadiness.RestartRequired
                         : SteamVrDriverReadiness.NotRegistered,
                     changed
-                        ? "driver_ltb was removed without changing unrelated drivers; restart SteamVR."
+                        ? "driver_ltb was removed without changing unrelated drivers; restart " +
+                            "SteamVR before relying on the change because a running runtime " +
+                            "applies registration updates only after restart."
                         : "driver_ltb is already removed and its owned settings state is restored.",
                     paths,
                     receipt);
@@ -517,6 +731,55 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
         }
 
         return new StagedDriver(canonicalDriverRoot, buildId);
+    }
+
+    private bool HasCompleteLtbArtifacts(string canonicalDriverRoot) =>
+        _fileSystem.FileExists(_fileSystem.GetCanonicalPath(
+            Path.Combine(canonicalDriverRoot, DriverManifestRelativePath))) &&
+        _fileSystem.FileExists(_fileSystem.GetCanonicalPath(
+            Path.Combine(canonicalDriverRoot, DriverBinaryRelativePath))) &&
+        _fileSystem.FileExists(_fileSystem.GetCanonicalPath(
+            Path.Combine(canonicalDriverRoot, DriverBuildIdRelativePath)));
+
+    private async ValueTask<bool> HasLtbManifestIdentityAsync(
+        string canonicalDriverRoot,
+        CancellationToken cancellationToken)
+    {
+        var manifestPath = _fileSystem.GetCanonicalPath(
+            Path.Combine(canonicalDriverRoot, DriverManifestRelativePath));
+        string manifestText;
+        try
+        {
+            manifestText = await _fileSystem.ReadAllTextAsync(
+                manifestPath,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is not OperationCanceledException &&
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(manifestText, DocumentOptions);
+            var root = document.RootElement;
+            return root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("name", out var name) &&
+                name.ValueKind == JsonValueKind.String &&
+                string.Equals(
+                    name.GetString(),
+                    DriverManifestName,
+                    StringComparison.Ordinal) &&
+                root.TryGetProperty("resourceOnly", out var resourceOnly) &&
+                resourceOnly.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                !resourceOnly.GetBoolean();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static string RemoveSingleLineEnding(string text)
@@ -1074,6 +1337,11 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
     private sealed record OwnedRegistration(
         SteamVrDriverRegistrationReceipt Receipt,
         bool Removed);
+
+    private sealed record StartupRegistration(
+        string RegisteredPath,
+        string CanonicalRoot,
+        bool IsArtifactProven);
 
     private sealed record StagedDriver(string CanonicalRoot, string BuildId);
 

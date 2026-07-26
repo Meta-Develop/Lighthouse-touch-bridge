@@ -14,6 +14,23 @@ public enum SteamVrActivateMultipleDriversState
     Enabled,
 }
 
+/// <summary>
+/// Read-only classification of LTB registration ownership at application
+/// startup. External drivers without either an exact durable LTB receipt or
+/// LTB's complete staged artifact identity remain unrelated and never grant
+/// removal authority.
+/// </summary>
+public enum SteamVrDriverStartupState
+{
+    NoLtbRegistration = 0,
+    ReceiptOwnedRegistration,
+    ReceiptOnlyNoRegistration,
+    ReceiptlessArtifactProvenRegistration,
+    StaleReceiptRegistrationMismatch,
+    DuplicateRegistrations,
+    AmbiguousNonCanonicalRegistration,
+}
+
 public enum SteamVrDriverDiagnosticCode
 {
     PlatformUnsupported = 0,
@@ -48,6 +65,23 @@ public sealed record SteamVrDriverInspection(
     bool IsRegistered,
     SteamVrActivateMultipleDriversState ActivateMultipleDrivers);
 
+/// <summary>
+/// Read-only next-start evidence across the complete OpenVR external-driver
+/// registry and every durable LTB receipt.
+/// </summary>
+public sealed record SteamVrDriverStartupInspection(
+    SteamVrPaths Paths,
+    string CanonicalStagedDriverRoot,
+    string StagedBuildId,
+    SteamVrDriverStartupState State,
+    SteamVrActivateMultipleDriversState ActivateMultipleDrivers,
+    IReadOnlyList<string> CanonicalLtbDriverRoots,
+    IReadOnlyList<string> UnrelatedExternalDriverRoots,
+    IReadOnlyList<SteamVrDriverRegistrationReceipt> DurableReceipts,
+    SteamVrDriverRegistrationReceipt? MatchingReceipt,
+    bool CanRemoveAutomatically,
+    string Diagnostic);
+
 public sealed record SteamVrDriverRegistrationReceipt(
     string CanonicalDriverRoot,
     SteamVrActivateMultipleDriversState PriorActivateMultipleDrivers,
@@ -73,6 +107,12 @@ public interface ISteamVrDriverReceiptStore
 {
     SteamVrDriverRegistrationReceipt? TryLoad(string canonicalDriverRoot);
 
+    /// <summary>
+    /// Loads all durable receipts so a next-start inspection can detect
+    /// receipts for relocated or otherwise stale driver roots.
+    /// </summary>
+    IReadOnlyList<SteamVrDriverRegistrationReceipt> LoadAll();
+
     void Save(SteamVrDriverRegistrationReceipt receipt);
 
     void Delete(string canonicalDriverRoot);
@@ -87,6 +127,8 @@ public sealed class NullSteamVrDriverReceiptStore : ISteamVrDriverReceiptStore
     public static NullSteamVrDriverReceiptStore Instance { get; } = new();
 
     public SteamVrDriverRegistrationReceipt? TryLoad(string canonicalDriverRoot) => null;
+
+    public IReadOnlyList<SteamVrDriverRegistrationReceipt> LoadAll() => [];
 
     public void Save(SteamVrDriverRegistrationReceipt receipt)
     {

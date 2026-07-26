@@ -17,7 +17,12 @@ public sealed class InternalDriverRemovalTests
         var receipt = Receipt();
         var store = new MemoryReceiptStore();
         store.Save(receipt);
-        var lifecycle = new FakeLifecycle(Inspection(isRegistered: true));
+        var lifecycle = new FakeLifecycle(StartupInspection(
+            SteamVrDriverStartupState.ReceiptOwnedRegistration,
+            canonicalLtbDriverRoots: [StagedDriverRoot],
+            receipts: [receipt],
+            matchingReceipt: receipt,
+            canRemoveAutomatically: true));
         await using var removal = new InternalDriverRemoval(lifecycle, store, StagedDriverRoot);
 
         var result = await removal.RemoveAsync();
@@ -33,8 +38,8 @@ public sealed class InternalDriverRemovalTests
     public async Task ReceiptlessRegisteredDriverIsAdoptedWithoutClaimingTheSetting()
     {
         var store = new MemoryReceiptStore();
-        var lifecycle = new FakeLifecycle(Inspection(
-            isRegistered: true,
+        var lifecycle = new FakeLifecycle(StartupInspection(
+            SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration,
             setting: SteamVrActivateMultipleDriversState.Enabled));
         await using var removal = new InternalDriverRemoval(lifecycle, store, StagedDriverRoot);
 
@@ -53,7 +58,8 @@ public sealed class InternalDriverRemovalTests
     public async Task NothingIsRemovedWithoutReceiptOrRegistration()
     {
         var store = new MemoryReceiptStore();
-        var lifecycle = new FakeLifecycle(Inspection(isRegistered: false));
+        var lifecycle = new FakeLifecycle(StartupInspection(
+            SteamVrDriverStartupState.NoLtbRegistration));
         await using var removal = new InternalDriverRemoval(lifecycle, store, StagedDriverRoot);
 
         var result = await removal.RemoveAsync();
@@ -70,12 +76,66 @@ public sealed class InternalDriverRemovalTests
         var receipt = Receipt();
         var store = new MemoryReceiptStore();
         store.Save(receipt);
-        var lifecycle = new FakeLifecycle(Inspection(isRegistered: false));
+        var lifecycle = new FakeLifecycle(StartupInspection(
+            SteamVrDriverStartupState.ReceiptOnlyNoRegistration,
+            receipts: [receipt],
+            canRemoveAutomatically: true));
         await using var removal = new InternalDriverRemoval(lifecycle, store, StagedDriverRoot);
 
         _ = await removal.RemoveAsync();
 
         Assert.Equal([receipt], lifecycle.RemovedReceipts);
+    }
+
+    [Theory]
+    [InlineData(SteamVrDriverStartupState.StaleReceiptRegistrationMismatch)]
+    [InlineData(SteamVrDriverStartupState.DuplicateRegistrations)]
+    [InlineData(SteamVrDriverStartupState.AmbiguousNonCanonicalRegistration)]
+    public async Task AmbiguousStartupStateRefusesExitRemovalWithoutMutation(
+        SteamVrDriverStartupState state)
+    {
+        var store = new MemoryReceiptStore();
+        var lifecycle = new FakeLifecycle(StartupInspection(
+            state,
+            canonicalLtbDriverRoots: [StagedDriverRoot],
+            canRemoveAutomatically: false));
+        await using var removal = new InternalDriverRemoval(
+            lifecycle,
+            store,
+            StagedDriverRoot);
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => removal.RemoveAsync().AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.RemovalOwnershipLost, failure.DiagnosticCode);
+        Assert.Empty(lifecycle.RemovedReceipts);
+        Assert.Empty(store.LoadAll());
+    }
+
+    [Fact]
+    public async Task NextStartInspectionIsExplicitAndReadOnly()
+    {
+        var expected = StartupInspection(
+            SteamVrDriverStartupState.NoLtbRegistration,
+            unrelatedExternalDriverRoots:
+            [
+                @"C:\drivers\01spacecalibrator",
+                @"C:\drivers\bigscreenbeyond",
+                @"C:\drivers\vmt",
+                @"C:\drivers\alvr_server",
+            ]);
+        var lifecycle = new FakeLifecycle(expected);
+        var store = new MemoryReceiptStore();
+        await using var maintenance = new InternalDriverRemoval(
+            lifecycle,
+            store,
+            StagedDriverRoot);
+
+        var actual = await maintenance.InspectNextStartAsync();
+
+        Assert.Equal(expected, actual);
+        Assert.Empty(lifecycle.RemovedReceipts);
+        Assert.Empty(store.LoadAll());
     }
 
     [Fact]
@@ -186,9 +246,11 @@ public sealed class InternalDriverRemovalTests
 
             adapter.Save(receipt);
             var reloaded = adapter.TryLoad(StagedDriverRoot);
+            var all = adapter.LoadAll();
             adapter.Delete(StagedDriverRoot);
 
             Assert.Equal(receipt, reloaded);
+            Assert.Equal([receipt], all);
             Assert.Null(adapter.TryLoad(StagedDriverRoot));
         }
         finally
@@ -207,10 +269,15 @@ public sealed class InternalDriverRemovalTests
         SteamVrSectionWasPresent: true,
         Guid.NewGuid());
 
-    private static SteamVrDriverInspection Inspection(
-        bool isRegistered,
+    private static SteamVrDriverStartupInspection StartupInspection(
+        SteamVrDriverStartupState state,
         SteamVrActivateMultipleDriversState setting =
-            SteamVrActivateMultipleDriversState.Enabled) => new(
+            SteamVrActivateMultipleDriversState.Enabled,
+        IReadOnlyList<string>? canonicalLtbDriverRoots = null,
+        IReadOnlyList<string>? unrelatedExternalDriverRoots = null,
+        IReadOnlyList<SteamVrDriverRegistrationReceipt>? receipts = null,
+        SteamVrDriverRegistrationReceipt? matchingReceipt = null,
+        bool? canRemoveAutomatically = null) => new(
         new SteamVrPaths(
             @"C:\Users\user\AppData\Local\openvr\openvrpaths.vrpath",
             @"C:\Steam\steamapps\common\SteamVR",
@@ -219,8 +286,20 @@ public sealed class InternalDriverRemovalTests
             @"C:\Steam\config\steamvr.vrsettings"),
         StagedDriverRoot,
         "driver_ltb-0.1.0-ipc-1.0",
-        isRegistered,
-        setting);
+        state,
+        setting,
+        canonicalLtbDriverRoots ??
+            (state == SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration
+                ? [StagedDriverRoot]
+                : []),
+        unrelatedExternalDriverRoots ?? [],
+        receipts ?? [],
+        matchingReceipt,
+        canRemoveAutomatically ??
+            state is SteamVrDriverStartupState.ReceiptOwnedRegistration
+                or SteamVrDriverStartupState.ReceiptOnlyNoRegistration
+                or SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration,
+        "startup diagnostic");
 
     private sealed class MemoryReceiptStore : ISteamVrDriverReceiptStore
     {
@@ -229,6 +308,9 @@ public sealed class InternalDriverRemovalTests
 
         public SteamVrDriverRegistrationReceipt? TryLoad(string canonicalDriverRoot) =>
             _receipts.TryGetValue(canonicalDriverRoot, out var receipt) ? receipt : null;
+
+        public IReadOnlyList<SteamVrDriverRegistrationReceipt> LoadAll() =>
+            _receipts.Values.ToArray();
 
         public void Save(SteamVrDriverRegistrationReceipt receipt) =>
             _receipts[receipt.CanonicalDriverRoot] = receipt;
@@ -239,9 +321,9 @@ public sealed class InternalDriverRemovalTests
 
     private sealed class FakeLifecycle : ISteamVrDriverLifecycle
     {
-        private readonly SteamVrDriverInspection _inspection;
+        private readonly SteamVrDriverStartupInspection _inspection;
 
-        public FakeLifecycle(SteamVrDriverInspection inspection)
+        public FakeLifecycle(SteamVrDriverStartupInspection inspection)
         {
             _inspection = inspection;
         }
@@ -255,6 +337,21 @@ public sealed class InternalDriverRemovalTests
             ValueTask.FromResult(_inspection.Paths);
 
         public ValueTask<SteamVrDriverInspection> InspectAsync(
+            string stagedDriverRoot,
+            CancellationToken cancellationToken = default)
+        {
+            InspectedRoots.Add(stagedDriverRoot);
+            return ValueTask.FromResult(new SteamVrDriverInspection(
+                _inspection.Paths,
+                _inspection.CanonicalStagedDriverRoot,
+                _inspection.StagedBuildId,
+                _inspection.CanonicalLtbDriverRoots.Contains(
+                    _inspection.CanonicalStagedDriverRoot,
+                    StringComparer.OrdinalIgnoreCase),
+                _inspection.ActivateMultipleDrivers));
+        }
+
+        public ValueTask<SteamVrDriverStartupInspection> InspectStartupAsync(
             string stagedDriverRoot,
             CancellationToken cancellationToken = default)
         {
