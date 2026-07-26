@@ -6,6 +6,127 @@ namespace Ltb.Driver.Tests;
 public sealed class SteamVrPathDiscoveryTests
 {
     [Fact]
+    public async Task ConfigRootDiscoveryDoesNotRequireRuntimeOrSettingsArtifacts()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ltb-config-root-only"));
+        var localApplicationData = Path.Combine(root, "local");
+        var configRoot = Path.Combine(root, "steam-config");
+        var openVrPathsFile = Path.Combine(
+            localApplicationData,
+            "openvr",
+            "openvrpaths.vrpath");
+        var fileSystem = new MemorySteamVrFileSystem();
+        fileSystem.AddFile(
+            openVrPathsFile,
+            JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["config"] = [configRoot],
+            }));
+        var discovery = new SteamVrPathDiscovery(
+            new FakeSteamVrHostEnvironment
+            {
+                LocalApplicationDataPath = localApplicationData,
+            },
+            fileSystem);
+
+        var result = await discovery.DiscoverConfigRootAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(PairedLighthouseDeviceDiagnosticCode.None, result.DiagnosticCode);
+        Assert.Equal(Path.GetFullPath(openVrPathsFile), result.OpenVrPathsFile);
+        Assert.Equal(Path.GetFullPath(configRoot), result.ConfigRoot);
+    }
+
+    [Fact]
+    public async Task ConfigRootDiscoveryReportsMissingOpenVrRegistryAsTypedResult()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ltb-missing-registry"));
+        var discovery = new SteamVrPathDiscovery(
+            new FakeSteamVrHostEnvironment
+            {
+                LocalApplicationDataPath = Path.Combine(root, "local"),
+            },
+            new MemorySteamVrFileSystem());
+
+        var result = await discovery.DiscoverConfigRootAsync();
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            PairedLighthouseDeviceDiagnosticCode.OpenVrPathsMissing,
+            result.DiagnosticCode);
+        Assert.NotNull(result.OpenVrPathsFile);
+        Assert.Null(result.ConfigRoot);
+    }
+
+    [Fact]
+    public async Task ConfigRootDiscoveryReportsMissingOrEmptyConfigRootAsTypedResult()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            """
+            {
+              "config": ["", "   "],
+              "runtime": ["/unused"]
+            }
+            """);
+        var discovery = new SteamVrPathDiscovery(
+            new FakeSteamVrHostEnvironment
+            {
+                LocalApplicationDataPath = fixture.LocalApplicationData,
+            },
+            fixture.FileSystem);
+
+        var result = await discovery.DiscoverConfigRootAsync();
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            PairedLighthouseDeviceDiagnosticCode.ConfigRootUnavailable,
+            result.DiagnosticCode);
+        Assert.Equal(Path.GetFullPath(fixture.OpenVrPathsFile), result.OpenVrPathsFile);
+        Assert.Null(result.ConfigRoot);
+    }
+
+    [Fact]
+    public async Task ConfigRootDiscoveryDistinguishesMalformedAndUnreadableRegistry()
+    {
+        using var malformedFixture = new SteamVrLifecycleFixture();
+        malformedFixture.FileSystem.Write(
+            malformedFixture.OpenVrPathsFile,
+            """{ "config": [""");
+        var malformedDiscovery = new SteamVrPathDiscovery(
+            new FakeSteamVrHostEnvironment
+            {
+                LocalApplicationDataPath = malformedFixture.LocalApplicationData,
+            },
+            malformedFixture.FileSystem);
+
+        var malformed = await malformedDiscovery.DiscoverConfigRootAsync();
+
+        Assert.Equal(
+            PairedLighthouseDeviceDiagnosticCode.OpenVrPathsMalformed,
+            malformed.DiagnosticCode);
+
+        using var unreadableFixture = new SteamVrLifecycleFixture();
+        unreadableFixture.FileSystem.ThrowReadPath =
+            unreadableFixture.FileSystem.GetCanonicalPath(
+                unreadableFixture.OpenVrPathsFile);
+        unreadableFixture.FileSystem.ThrowReadNumber = 1;
+        var unreadableDiscovery = new SteamVrPathDiscovery(
+            new FakeSteamVrHostEnvironment
+            {
+                LocalApplicationDataPath = unreadableFixture.LocalApplicationData,
+            },
+            unreadableFixture.FileSystem);
+
+        var unreadable = await unreadableDiscovery.DiscoverConfigRootAsync();
+
+        Assert.Equal(
+            PairedLighthouseDeviceDiagnosticCode.OpenVrPathsUnreadable,
+            unreadable.DiagnosticCode);
+    }
+
+    [Fact]
     public async Task DiscoversCurrentUserOpenVrRegistryRuntimeAndConfigArrays()
     {
         using var fixture = new SteamVrLifecycleFixture();

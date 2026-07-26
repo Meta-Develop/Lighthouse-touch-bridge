@@ -1,6 +1,81 @@
 namespace Ltb.OpenVr;
 
 /// <summary>
+/// Describes why an OpenVR settings device path cannot be resolved from an
+/// offline paired Lighthouse configuration record.
+/// </summary>
+public enum OfflineOpenVrDevicePathStatus
+{
+    /// <summary>
+    /// The matching live OpenVR device must supply the registered path
+    /// evidence before the path can be used as a settings key.
+    /// </summary>
+    LiveRegisteredDevicePathRequired,
+}
+
+/// <summary>
+/// Carries the offline identity evidence that can safely be retained while
+/// requiring a live OpenVR device-path lookup.
+/// </summary>
+public sealed record OfflineOpenVrDevicePathResult
+{
+    internal OfflineOpenVrDevicePathResult(
+        OfflineOpenVrDevicePathStatus status,
+        string stableSerial,
+        string model,
+        string driverId,
+        string diagnostic)
+    {
+        Status = status;
+        StableSerial = stableSerial;
+        Model = model;
+        DriverId = driverId;
+        Diagnostic = diagnostic;
+    }
+
+    public OfflineOpenVrDevicePathStatus Status { get; }
+
+    public string StableSerial { get; }
+
+    public string Model { get; }
+
+    public string DriverId { get; }
+
+    public string? CanonicalDevicePath { get; }
+
+    public string Diagnostic { get; }
+
+    public bool IsResolved => CanonicalDevicePath is not null;
+}
+
+/// <summary>
+/// Defines the evidence boundary between an offline paired Lighthouse record
+/// and the registered device path used by SteamVR settings.
+/// </summary>
+public static class OfflineOpenVrDevicePath
+{
+    public const string LighthouseDriverId = "lighthouse";
+
+    public static OfflineOpenVrDevicePathResult FromPairedLighthouseRecord(
+        string stableSerial,
+        string model)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stableSerial);
+        ArgumentException.ThrowIfNullOrWhiteSpace(model);
+
+        return new OfflineOpenVrDevicePathResult(
+            OfflineOpenVrDevicePathStatus.LiveRegisteredDevicePathRequired,
+            stableSerial,
+            model,
+            LighthouseDriverId,
+            "Offline Lighthouse config.json proves the stable serial and model, but not " +
+            "the registered device token. Resolve the matching live OpenVR registered " +
+            "device path before changing SteamVR settings; do not derive it from the " +
+            "serial or the lowercase configuration-directory name.");
+    }
+}
+
+/// <summary>
 /// Converts OpenVR's RegisteredDeviceType property into the canonical device
 /// path syntax consumed by TrackingOverrides. Invalid or unavailable values
 /// resolve to a diagnostic URI that cannot be selected as an override source.
