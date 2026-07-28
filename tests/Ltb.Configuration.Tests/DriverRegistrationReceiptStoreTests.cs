@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Ltb.Configuration;
 
 namespace Ltb.Configuration.Tests;
@@ -127,6 +128,54 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
                 record => record.CanonicalDriverRoot,
                 StringComparer.OrdinalIgnoreCase),
             new DriverRegistrationReceiptStore(StorePath).LoadAll());
+    }
+
+    [Fact]
+    public async Task LockedLoadPreventsASecondSaveFromReadingTheSameGeneration()
+    {
+        var firstRecord = Record(@"C:\ltb\first", Guid.NewGuid());
+        var secondRecord = Record(@"C:\ltb\second", Guid.NewGuid());
+        using var firstLoaded = new ManualResetEventSlim(initialState: false);
+        using var releaseFirst = new ManualResetEventSlim(initialState: false);
+        using var secondStarted = new ManualResetEventSlim(initialState: false);
+        using var secondLoaded = new ManualResetEventSlim(initialState: false);
+        var firstStore = new DriverRegistrationReceiptStore(
+            StorePath,
+            lockTimeout: TimeSpan.FromSeconds(5),
+            lockRetryDelay: TimeSpan.FromMilliseconds(10),
+            afterLockedLoad: () =>
+            {
+                firstLoaded.Set();
+                releaseFirst.Wait();
+            },
+            beforeAtomicWrite: null);
+        var secondStore = new DriverRegistrationReceiptStore(
+            StorePath,
+            lockTimeout: TimeSpan.FromSeconds(5),
+            lockRetryDelay: TimeSpan.FromMilliseconds(10),
+            afterLockedLoad: () => secondLoaded.Set(),
+            beforeAtomicWrite: null);
+        var firstSave = Task.Run(() => firstStore.Save(firstRecord));
+        Assert.True(firstLoaded.Wait(TimeSpan.FromSeconds(5)));
+        var secondSave = Task.Run(() =>
+        {
+            secondStarted.Set();
+            secondStore.Save(secondRecord);
+        });
+        try
+        {
+            Assert.True(secondStarted.Wait(TimeSpan.FromSeconds(5)));
+            Assert.False(secondLoaded.Wait(TimeSpan.FromMilliseconds(250)));
+        }
+        finally
+        {
+            releaseFirst.Set();
+        }
+
+        await Task.WhenAll(firstSave, secondSave);
+
+        Assert.True(secondLoaded.IsSet);
+        Assert.Equal([firstRecord, secondRecord], firstStore.LoadAll());
     }
 
     [Fact]
@@ -297,6 +346,101 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
         Assert.False(File.Exists(StorePath));
     }
 
+    [Theory]
+    [InlineData(11, true)]
+    [InlineData(32, true)]
+    [InlineData(33, true)]
+    [InlineData(5, false)]
+    [InlineData(28, false)]
+    public void LockRetryPolicyRecognizesOnlySharingContention(
+        int nativeErrorCode,
+        bool expected)
+    {
+        var hresult = unchecked((int)(0x80070000U | (uint)nativeErrorCode));
+        var exception = new IOException("Scripted native I/O failure.", hresult);
+
+        Assert.Equal(
+            expected,
+            DriverRegistrationReceiptStore.IsLockContention(exception));
+    }
+
+    [Fact]
+    public async Task SeparateProcessWaitsForThePersistentExclusiveLock()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(LockPath)!);
+        var startedPath = Path.Combine(_root, "subprocess-started");
+        var acquiredPath = Path.Combine(_root, "subprocess-acquired");
+        var token = Guid.NewGuid();
+        using var heldLock = new FileStream(
+            LockPath,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        using var process = StartSubprocessLockProbe(
+            StorePath,
+            startedPath,
+            acquiredPath,
+            token);
+        try
+        {
+            Assert.True(
+                WaitForFile(startedPath, TimeSpan.FromSeconds(10)),
+                "The receipt-lock subprocess did not reach its save operation.");
+            Assert.False(
+                WaitForFile(acquiredPath, TimeSpan.FromMilliseconds(400)),
+                "The subprocess entered the locked load phase while another process held the lock.");
+            Assert.False(process.HasExited);
+            Assert.False(File.Exists(StorePath));
+        }
+        finally
+        {
+            heldLock.Dispose();
+        }
+
+        Assert.True(
+            process.WaitForExit(milliseconds: 10_000),
+            "The receipt-lock subprocess did not finish after the lock was released.");
+        var standardOutput = await process.StandardOutput.ReadToEndAsync();
+        var standardError = await process.StandardError.ReadToEndAsync();
+        Assert.True(
+            process.ExitCode == 0,
+            $"Subprocess exit code {process.ExitCode}.{Environment.NewLine}" +
+            $"{standardOutput}{Environment.NewLine}{standardError}");
+        Assert.True(File.Exists(acquiredPath));
+        Assert.Equal(
+            token,
+            new DriverRegistrationReceiptStore(StorePath)
+                .TryLoad(@"C:\ltb\subprocess")!
+                .OwnershipToken);
+    }
+
+    [Fact]
+    public void SubprocessLockProbe()
+    {
+        var storePath = Environment.GetEnvironmentVariable(
+            "LTB_RECEIPT_TEST_STORE_PATH");
+        if (string.IsNullOrWhiteSpace(storePath))
+        {
+            return;
+        }
+
+        var startedPath = Environment.GetEnvironmentVariable(
+            "LTB_RECEIPT_TEST_STARTED_PATH")!;
+        var acquiredPath = Environment.GetEnvironmentVariable(
+            "LTB_RECEIPT_TEST_ACQUIRED_PATH")!;
+        var token = Guid.Parse(Environment.GetEnvironmentVariable(
+            "LTB_RECEIPT_TEST_TOKEN")!);
+        File.WriteAllText(startedPath, "");
+        var store = new DriverRegistrationReceiptStore(
+            storePath,
+            lockTimeout: TimeSpan.FromSeconds(5),
+            lockRetryDelay: TimeSpan.FromMilliseconds(10),
+            afterLockedLoad: () => File.WriteAllText(acquiredPath, ""),
+            beforeAtomicWrite: null);
+
+        store.Save(Record(@"C:\ltb\subprocess", token));
+    }
+
     [Fact]
     public void AtomicUpdatesLeaveOnlyThePersistentLockAndNoTemporaryResidue()
     {
@@ -311,6 +455,30 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(StorePath)!)
             .Where(path => path.EndsWith(".tmp", StringComparison.Ordinal)));
         Assert.Equal([second], store.LoadAll());
+    }
+
+    [Fact]
+    public void ForcedPreWriteFailurePreservesOriginalBytesWithoutTemporaryResidue()
+    {
+        var original = Record(@"C:\ltb\original", Guid.NewGuid());
+        var added = Record(@"C:\ltb\added", Guid.NewGuid());
+        var store = new DriverRegistrationReceiptStore(StorePath);
+        store.Save(original);
+        var originalBytes = File.ReadAllBytes(StorePath);
+        var failingStore = new DriverRegistrationReceiptStore(
+            StorePath,
+            lockTimeout: TimeSpan.FromSeconds(1),
+            lockRetryDelay: TimeSpan.FromMilliseconds(10),
+            afterLockedLoad: null,
+            beforeAtomicWrite: () => throw new IOException(
+                "Scripted failure before atomic staging."));
+
+        Assert.Throws<IOException>(() => failingStore.Save(added));
+
+        Assert.Equal(originalBytes, File.ReadAllBytes(StorePath));
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(StorePath)!)
+            .Where(path => path.EndsWith(".tmp", StringComparison.Ordinal)));
+        Assert.Equal([original], store.LoadAll());
     }
 
     [Fact]
@@ -346,6 +514,43 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
         Assert.True(File.Exists(LockPath));
         Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(StorePath)!)
             .Where(path => path.EndsWith(".tmp", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("""{ "schema_version": 1 }""")]
+    [InlineData("""{ "schema_version": 1, "receipts": null }""")]
+    [InlineData("""{ "schema_version": 1, "receipts": [null] }""")]
+    [InlineData(
+        """
+        {
+          "schema_version": 1,
+          "receipts": [{
+            "canonical_driver_root": "C:\\ltb\\driver_ltb",
+            "prior_activate_multiple_drivers": "disabled",
+            "activate_multiple_drivers_changed": true,
+            "steamvr_section_was_present": true
+          }]
+        }
+        """)]
+    [InlineData(
+        """
+        {
+          "schema_version": 1,
+          "receipts": [{
+            "canonical_driver_root": "C:\\ltb\\driver_ltb",
+            "prior_activate_multiple_drivers": "disabled",
+            "activate_multiple_drivers_changed": true,
+            "steamvr_section_was_present": true,
+            "ownership_token": "00000000-0000-0000-0000-000000000000"
+          }]
+        }
+        """)]
+    public void MissingOrNullReceiptAuthorityFailsWithInvalidData(string json)
+    {
+        WriteStoreFile(json);
+        var store = new DriverRegistrationReceiptStore(StorePath);
+
+        Assert.Throws<InvalidDataException>(() => store.LoadAll());
     }
 
     [Fact]
@@ -421,6 +626,14 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
             priorState: "unknown"));
     }
 
+    [Fact]
+    public void RecordConstructionRejectsEmptyOwnershipToken()
+    {
+        Assert.Throws<ArgumentException>(() => Record(
+            @"C:\ltb\driver_ltb",
+            Guid.Empty));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
@@ -443,5 +656,59 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
     {
         Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
         File.WriteAllText(StorePath, contents);
+    }
+
+    private static Process StartSubprocessLockProbe(
+        string storePath,
+        string startedPath,
+        string acquiredPath,
+        Guid token)
+    {
+        var repositoryRoot = Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+        var projectPath = Path.Combine(
+            repositoryRoot,
+            "tests",
+            "Ltb.Configuration.Tests",
+            "Ltb.Configuration.Tests.csproj");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            WorkingDirectory = repositoryRoot,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("test");
+        startInfo.ArgumentList.Add(projectPath);
+        startInfo.ArgumentList.Add("--no-build");
+        startInfo.ArgumentList.Add("--no-restore");
+        startInfo.ArgumentList.Add("--filter");
+        startInfo.ArgumentList.Add(
+            $"FullyQualifiedName={typeof(DriverRegistrationReceiptStoreTests).FullName}." +
+            nameof(SubprocessLockProbe));
+        startInfo.Environment["LTB_RECEIPT_TEST_STORE_PATH"] = storePath;
+        startInfo.Environment["LTB_RECEIPT_TEST_STARTED_PATH"] = startedPath;
+        startInfo.Environment["LTB_RECEIPT_TEST_ACQUIRED_PATH"] = acquiredPath;
+        startInfo.Environment["LTB_RECEIPT_TEST_TOKEN"] = token.ToString();
+        return Process.Start(startInfo)
+            ?? throw new InvalidOperationException(
+                "Could not start the receipt-lock subprocess.");
+    }
+
+    private static bool WaitForFile(string path, TimeSpan timeout)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < timeout)
+        {
+            if (File.Exists(path))
+            {
+                return true;
+            }
+
+            Thread.Sleep(millisecondsTimeout: 10);
+        }
+
+        return File.Exists(path);
     }
 }

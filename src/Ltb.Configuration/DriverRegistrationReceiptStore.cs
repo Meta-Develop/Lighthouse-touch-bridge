@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Ltb.Configuration.Tests")]
+
 namespace Ltb.Configuration;
 
 /// <summary>Schema constants for the durable driver-registration receipt store.</summary>
@@ -35,6 +37,8 @@ public sealed record DriverRegistrationReceiptRecord(
     public string PriorActivateMultipleDrivers { get; } =
         RequirePriorState(PriorActivateMultipleDrivers);
 
+    public Guid OwnershipToken { get; init; } = RequireOwnershipToken(OwnershipToken);
+
     private static string Require(string value, string parameterName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
@@ -55,6 +59,13 @@ public sealed record DriverRegistrationReceiptRecord(
                 $"'{DriverRegistrationReceiptSchema.PriorStateEnabled}'.",
                 nameof(value));
     }
+
+    private static Guid RequireOwnershipToken(Guid value) =>
+        value != Guid.Empty
+            ? value
+            : throw new ArgumentException(
+                "The ownership token must not be empty.",
+                nameof(value));
 }
 
 /// <summary>
@@ -66,6 +77,9 @@ public sealed record DriverRegistrationReceiptRecord(
 /// </summary>
 public sealed class DriverRegistrationReceiptStore
 {
+    private const int UnixErrorTryAgain = 11;
+    private const int WindowsErrorSharingViolation = 32;
+    private const int WindowsErrorLockViolation = 33;
     private static readonly TimeSpan DefaultLockTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultLockRetryDelay = TimeSpan.FromMilliseconds(25);
     private static readonly UTF8Encoding Utf8WithoutBom = new(
@@ -85,6 +99,8 @@ public sealed class DriverRegistrationReceiptStore
     private readonly string _lockPath;
     private readonly TimeSpan _lockTimeout;
     private readonly TimeSpan _lockRetryDelay;
+    private readonly Action? _afterLockedLoad;
+    private readonly Action? _beforeAtomicWrite;
 
     public DriverRegistrationReceiptStore(string path)
         : this(path, DefaultLockTimeout, DefaultLockRetryDelay)
@@ -100,6 +116,21 @@ public sealed class DriverRegistrationReceiptStore
         string path,
         TimeSpan lockTimeout,
         TimeSpan lockRetryDelay)
+        : this(
+            path,
+            lockTimeout,
+            lockRetryDelay,
+            afterLockedLoad: null,
+            beforeAtomicWrite: null)
+    {
+    }
+
+    internal DriverRegistrationReceiptStore(
+        string path,
+        TimeSpan lockTimeout,
+        TimeSpan lockRetryDelay,
+        Action? afterLockedLoad,
+        Action? beforeAtomicWrite)
     {
         _path = SettingsPathValidation.RequireCanonicalAbsoluteFilePath(path, nameof(path));
         ValidatePositiveFiniteDuration(lockTimeout, nameof(lockTimeout));
@@ -109,6 +140,8 @@ public sealed class DriverRegistrationReceiptStore
         _lockPath = Path.Combine(
             Path.GetDirectoryName(_path)!,
             $".{Path.GetFileName(_path)}.lock");
+        _afterLockedLoad = afterLockedLoad;
+        _beforeAtomicWrite = beforeAtomicWrite;
     }
 
     public DriverRegistrationReceiptRecord? TryLoad(string canonicalDriverRoot)
@@ -182,6 +215,7 @@ public sealed class DriverRegistrationReceiptStore
 
         using var storeLock = AcquireExclusiveLock(cancellationToken);
         var loaded = Load();
+        _afterLockedLoad?.Invoke();
         var missing = new List<DriverRegistrationReceiptRecord>(additions.Count);
         foreach (var addition in additions.Values)
         {
@@ -257,6 +291,7 @@ public sealed class DriverRegistrationReceiptStore
 
         using var storeLock = AcquireExclusiveLock(cancellationToken);
         var loaded = Load();
+        _afterLockedLoad?.Invoke();
         var retained = loaded
             .Where(existing => !roots.Contains(existing.CanonicalDriverRoot))
             .ToArray();
@@ -300,6 +335,7 @@ public sealed class DriverRegistrationReceiptStore
 
         using var storeLock = AcquireExclusiveLock(cancellationToken);
         var loaded = Load();
+        _afterLockedLoad?.Invoke();
         var deletedRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var expectedRecord in expected.Values)
         {
@@ -369,9 +405,18 @@ public sealed class DriverRegistrationReceiptStore
 
         try
         {
-            var records = dto.Receipts
+            var receipts = dto.Receipts
+                ?? throw new InvalidDataException(
+                    "Driver-registration receipt store 'receipts' must be an array.");
+            if (receipts.Any(receipt => receipt is null))
+            {
+                throw new InvalidDataException(
+                    "Driver-registration receipt store 'receipts' must not contain null.");
+            }
+
+            var records = receipts
                 .Select(receipt => new DriverRegistrationReceiptRecord(
-                    receipt.CanonicalDriverRoot,
+                    receipt!.CanonicalDriverRoot,
                     receipt.PriorActivateMultipleDrivers,
                     receipt.ActivateMultipleDriversChanged,
                     receipt.SteamVrSectionWasPresent,
@@ -416,6 +461,7 @@ public sealed class DriverRegistrationReceiptStore
                 })
                 .ToArray(),
         };
+        _beforeAtomicWrite?.Invoke();
         AtomicFileWriter.Write(_path, JsonSerializer.Serialize(dto, SerializerOptions) + "\n");
         var verified = Load();
         if (!expected.SequenceEqual(verified))
@@ -444,7 +490,7 @@ public sealed class DriverRegistrationReceiptStore
                     bufferSize: 1,
                     FileOptions.WriteThrough);
             }
-            catch (IOException exception)
+            catch (IOException exception) when (IsLockContention(exception))
             {
                 lastContention = exception;
             }
@@ -466,6 +512,15 @@ public sealed class DriverRegistrationReceiptStore
         }
     }
 
+    internal static bool IsLockContention(IOException exception)
+    {
+        var nativeErrorCode = exception.HResult & 0xFFFF;
+        return nativeErrorCode is
+            UnixErrorTryAgain or
+            WindowsErrorSharingViolation or
+            WindowsErrorLockViolation;
+    }
+
     private static Dictionary<string, DriverRegistrationReceiptRecord> ValidateDistinctRecords(
         IReadOnlyList<DriverRegistrationReceiptRecord> records,
         string parameterName)
@@ -478,6 +533,14 @@ public sealed class DriverRegistrationReceiptStore
             {
                 throw new ArgumentException(
                     "Driver-registration receipt records must not contain null.",
+                    parameterName);
+            }
+
+            if (record.OwnershipToken == Guid.Empty)
+            {
+                throw new ArgumentException(
+                    "Driver-registration receipt records must not contain an empty " +
+                    "ownership token.",
                     parameterName);
             }
 
@@ -515,7 +578,7 @@ public sealed class DriverRegistrationReceiptStore
 
         [JsonPropertyName("receipts")]
         [JsonPropertyOrder(1)]
-        public required IReadOnlyList<ReceiptDto> Receipts { get; init; }
+        public required IReadOnlyList<ReceiptDto?>? Receipts { get; init; }
     }
 
     private sealed class ReceiptDto
