@@ -48,6 +48,7 @@ public sealed class InternalDriverRemovalTests
         var adopted = Assert.Single(lifecycle.RemovedReceipts);
         Assert.Equal(StagedDriverRoot, adopted.CanonicalDriverRoot);
         Assert.False(adopted.ActivateMultipleDriversChanged);
+        Assert.Equal(ArtifactIdentity(), adopted.ArtifactIdentity);
         Assert.Equal(
             SteamVrActivateMultipleDriversState.Enabled,
             adopted.PriorActivateMultipleDrivers);
@@ -112,6 +113,7 @@ public sealed class InternalDriverRemovalTests
         var adopted = batch[1];
         Assert.Equal(relocatedRoot, adopted.CanonicalDriverRoot);
         Assert.False(adopted.ActivateMultipleDriversChanged);
+        Assert.Equal(ArtifactIdentity(), adopted.ArtifactIdentity);
         Assert.Equal(adopted, store.TryLoad(relocatedRoot));
         Assert.True(result.Changed);
         Assert.True(result.RestartRequired);
@@ -272,12 +274,16 @@ public sealed class InternalDriverRemovalTests
         {
             var adapter = new ConfigurationSteamVrDriverReceiptStore(
                 Path.Combine(root, "registration-receipts.json"));
-            var receipt = Receipt() with { PriorActivateMultipleDrivers = priorState };
+            var receipt = Receipt() with
+            {
+                PriorActivateMultipleDrivers = priorState,
+                ArtifactIdentity = ArtifactIdentity(),
+            };
 
             adapter.Save(receipt);
             var reloaded = adapter.TryLoad(StagedDriverRoot);
             var all = adapter.LoadAll();
-            adapter.Delete(StagedDriverRoot);
+            Assert.True(adapter.Delete(receipt));
 
             Assert.Equal(receipt, reloaded);
             Assert.Equal([receipt], all);
@@ -316,9 +322,36 @@ public sealed class InternalDriverRemovalTests
             adapter.SaveAll([first, second]);
             Assert.Equal([first, second], adapter.LoadAll());
 
-            adapter.DeleteAll(
-                [first.CanonicalDriverRoot, second.CanonicalDriverRoot]);
+            Assert.Equal(2, adapter.DeleteAll([first, second]));
             Assert.Empty(adapter.LoadAll());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ConfigurationReceiptStoreAdapterRefusesStaleExpectedRecordDeletion()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ltb-receipt-adapter-tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var adapter = new ConfigurationSteamVrDriverReceiptStore(
+                Path.Combine(root, "registration-receipts.json"));
+            var current = Receipt() with { ArtifactIdentity = ArtifactIdentity() };
+            var stale = current with { OwnershipToken = Guid.NewGuid() };
+            adapter.Save(current);
+
+            Assert.Throws<InvalidOperationException>(() => adapter.Delete(stale));
+
+            Assert.Equal(current, adapter.TryLoad(StagedDriverRoot));
         }
         finally
         {
@@ -335,6 +368,12 @@ public sealed class InternalDriverRemovalTests
         ActivateMultipleDriversChanged: true,
         SteamVrSectionWasPresent: true,
         Guid.NewGuid());
+
+    private static SteamVrDriverArtifactIdentity ArtifactIdentity() => new(
+        "driver_ltb-0.1.0-ipc-1.0",
+        new string('1', 64),
+        new string('2', 64),
+        new string('3', 64));
 
     private static SteamVrDriverStartupInspection StartupInspection(
         SteamVrDriverStartupState state,
@@ -366,7 +405,22 @@ public sealed class InternalDriverRemovalTests
             state is SteamVrDriverStartupState.ReceiptOwnedRegistration
                 or SteamVrDriverStartupState.ReceiptOnlyNoRegistration
                 or SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration,
-        "startup diagnostic");
+        "startup diagnostic")
+    {
+        ReceiptlessRegistrationArtifactEvidence = (
+                canonicalLtbDriverRoots ??
+                (state == SteamVrDriverStartupState.ReceiptlessArtifactProvenRegistration
+                    ? [StagedDriverRoot]
+                    : []))
+            .Where(root => (receipts ?? []).All(receipt => !string.Equals(
+                receipt.CanonicalDriverRoot,
+                root,
+                StringComparison.OrdinalIgnoreCase)))
+            .Select(root => new SteamVrDriverRegistrationArtifactEvidence(
+                root,
+                ArtifactIdentity()))
+            .ToArray(),
+    };
 
     private sealed class MemoryReceiptStore : ISteamVrDriverReceiptStore
     {
@@ -384,6 +438,41 @@ public sealed class InternalDriverRemovalTests
 
         public void Delete(string canonicalDriverRoot) =>
             _receipts.Remove(canonicalDriverRoot);
+
+        public bool Delete(SteamVrDriverRegistrationReceipt expectedReceipt)
+        {
+            if (!_receipts.TryGetValue(expectedReceipt.CanonicalDriverRoot, out var current))
+            {
+                return false;
+            }
+
+            if (current != expectedReceipt)
+            {
+                throw new InvalidOperationException(
+                    "A different receipt generation occupies the expected root.");
+            }
+
+            return _receipts.Remove(expectedReceipt.CanonicalDriverRoot);
+        }
+
+        public int DeleteAll(
+            IReadOnlyList<SteamVrDriverRegistrationReceipt> expectedReceipts)
+        {
+            foreach (var expectedReceipt in expectedReceipts)
+            {
+                if (_receipts.TryGetValue(
+                        expectedReceipt.CanonicalDriverRoot,
+                        out var current) &&
+                    current != expectedReceipt)
+                {
+                    throw new InvalidOperationException(
+                        "A different receipt generation occupies an expected root.");
+                }
+            }
+
+            return expectedReceipts.Count(expectedReceipt =>
+                _receipts.Remove(expectedReceipt.CanonicalDriverRoot));
+        }
     }
 
     private sealed class FakeLifecycle : ISteamVrDriverLifecycle

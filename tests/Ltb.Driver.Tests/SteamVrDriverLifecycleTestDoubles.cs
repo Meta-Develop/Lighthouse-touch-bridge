@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Ltb.Driver;
@@ -15,7 +16,8 @@ internal sealed class FakeSteamVrHostEnvironment : ISteamVrHostEnvironment
 
 internal sealed class MemorySteamVrFileSystem : ISteamVrFileSystem
 {
-    private readonly Dictionary<string, string> _files = new(StringComparer.Ordinal);
+    private static readonly UTF8Encoding Utf8WithoutBom = new(false);
+    private readonly Dictionary<string, byte[]> _files = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _readCounts = new(StringComparer.Ordinal);
     private int _replaceCount;
 
@@ -44,22 +46,29 @@ internal sealed class MemorySteamVrFileSystem : ISteamVrFileSystem
     {
         cancellationToken.ThrowIfCancellationRequested();
         var canonicalPath = GetCanonicalPath(path);
-        if (!_files.TryGetValue(canonicalPath, out var text))
+        if (!_files.TryGetValue(canonicalPath, out var bytes))
         {
             throw new FileNotFoundException("Fake file does not exist.", canonicalPath);
         }
 
-        var readCount = _readCounts.TryGetValue(canonicalPath, out var previousCount)
-            ? previousCount + 1
-            : 1;
-        _readCounts[canonicalPath] = readCount;
-        if (readCount == ThrowReadNumber &&
-            string.Equals(canonicalPath, ThrowReadPath, StringComparison.Ordinal))
+        RecordRead(canonicalPath);
+
+        return ValueTask.FromResult(Utf8WithoutBom.GetString(bytes));
+    }
+
+    public ValueTask<byte[]> ReadAllBytesAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var canonicalPath = GetCanonicalPath(path);
+        if (!_files.TryGetValue(canonicalPath, out var bytes))
         {
-            throw new IOException("Scripted transient read failure.");
+            throw new FileNotFoundException("Fake file does not exist.", canonicalPath);
         }
 
-        return ValueTask.FromResult(text);
+        RecordRead(canonicalPath);
+        return ValueTask.FromResult(bytes.ToArray());
     }
 
     public ValueTask<bool> TryReplaceTextAtomicallyAsync(
@@ -82,30 +91,60 @@ internal sealed class MemorySteamVrFileSystem : ISteamVrFileSystem
             return ValueTask.FromResult(false);
         }
 
-        if (!_files.TryGetValue(canonicalPath, out var current) ||
-            !string.Equals(current, expectedText, StringComparison.Ordinal))
+        if (!_files.TryGetValue(canonicalPath, out var currentBytes) ||
+            !string.Equals(
+                Utf8WithoutBom.GetString(currentBytes),
+                expectedText,
+                StringComparison.Ordinal))
         {
             return ValueTask.FromResult(false);
         }
 
         BeforeConditionalCommit?.Invoke(this, canonicalPath);
-        if (!_files.TryGetValue(canonicalPath, out current) ||
-            !string.Equals(current, expectedText, StringComparison.Ordinal))
+        if (!_files.TryGetValue(canonicalPath, out currentBytes) ||
+            !string.Equals(
+                Utf8WithoutBom.GetString(currentBytes),
+                expectedText,
+                StringComparison.Ordinal))
         {
             return ValueTask.FromResult(false);
         }
 
-        _files[canonicalPath] = replacementText;
+        _files[canonicalPath] = Utf8WithoutBom.GetBytes(replacementText);
         AfterSuccessfulReplace?.Invoke(this, canonicalPath);
         return ValueTask.FromResult(true);
     }
 
     public void AddFile(string path, string text = "") =>
-        _files.Add(GetCanonicalPath(path), text);
+        _files.Add(GetCanonicalPath(path), Utf8WithoutBom.GetBytes(text));
 
-    public string Read(string path) => _files[GetCanonicalPath(path)];
+    public void AddFile(string path, byte[] bytes) =>
+        _files.Add(GetCanonicalPath(path), bytes.ToArray());
 
-    public void Write(string path, string text) => _files[GetCanonicalPath(path)] = text;
+    public string Read(string path) =>
+        Utf8WithoutBom.GetString(_files[GetCanonicalPath(path)]);
+
+    public byte[] ReadBytes(string path) =>
+        _files[GetCanonicalPath(path)].ToArray();
+
+    public void Write(string path, string text) =>
+        _files[GetCanonicalPath(path)] = Utf8WithoutBom.GetBytes(text);
+
+    public void WriteBytes(string path, byte[] bytes) =>
+        _files[GetCanonicalPath(path)] = bytes.ToArray();
+
+    private void RecordRead(string canonicalPath)
+    {
+        var readCount = _readCounts.TryGetValue(canonicalPath, out var previousCount)
+            ? previousCount + 1
+            : 1;
+        _readCounts[canonicalPath] = readCount;
+        if (readCount == ThrowReadNumber &&
+            string.Equals(canonicalPath, ThrowReadPath, StringComparison.Ordinal))
+        {
+            throw new IOException("Scripted transient read failure.");
+        }
+    }
 }
 
 internal sealed class FakeVrPathRegRunner : ISteamVrProcessRunner
@@ -224,6 +263,38 @@ internal sealed class MemorySteamVrDriverReceiptStore : ISteamVrDriverReceiptSto
 
     public void Delete(string canonicalDriverRoot) =>
         _receipts.Remove(canonicalDriverRoot);
+
+    public bool Delete(SteamVrDriverRegistrationReceipt expectedReceipt)
+    {
+        if (!_receipts.TryGetValue(expectedReceipt.CanonicalDriverRoot, out var current))
+        {
+            return false;
+        }
+
+        if (current != expectedReceipt)
+        {
+            throw new InvalidOperationException(
+                "A different receipt generation occupies the expected root.");
+        }
+
+        return _receipts.Remove(expectedReceipt.CanonicalDriverRoot);
+    }
+
+    public int DeleteAll(IReadOnlyList<SteamVrDriverRegistrationReceipt> expectedReceipts)
+    {
+        foreach (var expectedReceipt in expectedReceipts)
+        {
+            if (_receipts.TryGetValue(expectedReceipt.CanonicalDriverRoot, out var current) &&
+                current != expectedReceipt)
+            {
+                throw new InvalidOperationException(
+                    "A different receipt generation occupies an expected root.");
+            }
+        }
+
+        return expectedReceipts.Count(expectedReceipt =>
+            _receipts.Remove(expectedReceipt.CanonicalDriverRoot));
+    }
 }
 
 internal sealed class SteamVrLifecycleFixture : IDisposable

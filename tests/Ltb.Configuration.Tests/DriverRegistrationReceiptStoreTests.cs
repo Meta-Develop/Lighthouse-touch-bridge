@@ -35,7 +35,11 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
             DriverRegistrationReceiptSchema.PriorStateDisabled,
             ActivateMultipleDriversChanged: true,
             SteamVrSectionWasPresent: false,
-            Guid.NewGuid());
+            Guid.NewGuid(),
+            "driver_ltb-0.1.0-ipc-1.0",
+            new string('1', 64),
+            new string('2', 64),
+            new string('3', 64));
 
         store.Save(record);
         var reloaded = new DriverRegistrationReceiptStore(StorePath)
@@ -556,13 +560,56 @@ public sealed class DriverRegistrationReceiptStoreTests : IDisposable
     [Fact]
     public void UnsupportedSchemaVersionIsRejected()
     {
-        WriteStoreFile("""{ "schema_version": 2, "receipts": [] }""");
+        WriteStoreFile("""{ "schema_version": 3, "receipts": [] }""");
         var store = new DriverRegistrationReceiptStore(StorePath);
 
         var failure = Assert.Throws<InvalidDataException>(
             () => store.TryLoad(@"C:\ltb\driver_ltb"));
 
         Assert.Contains("schema_version", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SchemaV1ReceiptLoadsWithNullArtifactIdentityWithoutBeingRewritten()
+    {
+        var token = Guid.NewGuid();
+        var original = $$"""
+            {
+              "schema_version": 1,
+              "receipts": [
+                {
+                  "canonical_driver_root": "C:\\ltb\\driver_ltb",
+                  "prior_activate_multiple_drivers": "disabled",
+                  "activate_multiple_drivers_changed": true,
+                  "steamvr_section_was_present": true,
+                  "ownership_token": "{{token}}"
+                }
+              ]
+            }
+            """;
+        WriteStoreFile(original);
+        var store = new DriverRegistrationReceiptStore(StorePath);
+
+        var receipt = Assert.Single(store.LoadAll());
+
+        Assert.Null(receipt.BuildId);
+        Assert.Null(receipt.ManifestSha256);
+        Assert.Null(receipt.BinarySha256);
+        Assert.Null(receipt.BuildIdSha256);
+        Assert.Equal(original, File.ReadAllText(StorePath));
+    }
+
+    [Fact]
+    public void PartialArtifactIdentityIsRejected()
+    {
+        Assert.Throws<ArgumentException>(() => new DriverRegistrationReceiptRecord(
+            @"C:\ltb\driver_ltb",
+            DriverRegistrationReceiptSchema.PriorStateDisabled,
+            ActivateMultipleDriversChanged: true,
+            SteamVrSectionWasPresent: true,
+            Guid.NewGuid(),
+            "driver_ltb-0.1.0-ipc-1.0",
+            ManifestSha256: new string('1', 64)));
     }
 
     [Fact]
