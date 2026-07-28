@@ -27,7 +27,8 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     private bool _isAvailable;
     private bool _isDirty;
     private bool _isBusy;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private int _disposeStarted;
     private double _selectedPositionStepMillimeters = PositionStepMillimeters;
     private double _selectedRotationStepDegrees = RotationStepDegrees;
     private string _dirtyStatusText = "No unsaved mount adjustments.";
@@ -682,7 +683,7 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
         {
             return;
         }
@@ -691,7 +692,7 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
         _port.SnapshotChanged -= OnSnapshotChanged;
         _lifetimeCancellation.Cancel();
         _lifetimeCancellation.Dispose();
-        RaiseCommandAvailability();
+        _dispatch(RaiseCommandAvailability);
     }
 
     private static bool TryNormalizeSnapshot(

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Numerics;
 using Ltb.Gui;
 using Ltb.Gui.ViewModels;
@@ -428,10 +429,70 @@ public sealed class MountAdjustmentViewModelTests
         Assert.Contains("Restoring", viewModel.TrackerNeutralizationStatusText);
     }
 
+    [Fact]
+    public async Task DisposeQueuesAllCommandNotificationsThroughSuppliedDispatcher()
+    {
+        var dispatches = new ConcurrentQueue<Action>();
+        using var suppliedDispatchDepth = new ThreadLocal<int>(() => 0);
+        var viewModel = new MountAdjustmentViewModel(
+            new FakeMountAdjustmentPort(AvailableSnapshot()),
+            dispatches.Enqueue);
+        DrainDispatches(dispatches, suppliedDispatchDepth);
+
+        var notifications =
+            new ConcurrentQueue<(string Name, bool InSuppliedDispatch)>();
+        void Observe(string name, RelayCommand command) =>
+            command.CanExecuteChanged += (_, _) =>
+                notifications.Enqueue((name, suppliedDispatchDepth.Value > 0));
+
+        Observe("save", viewModel.SaveCommand);
+        Observe("revert", viewModel.RevertCommand);
+        Observe("calibrate-left", viewModel.CalibrateLeftCommand);
+        Observe("calibrate-right", viewModel.CalibrateRightCommand);
+        Observe("calibrate-both", viewModel.CalibrateBothCommand);
+
+        await Task.Run(viewModel.Dispose);
+
+        Assert.Empty(notifications);
+        DrainDispatches(dispatches, suppliedDispatchDepth);
+
+        Assert.Equal(
+            ["save", "revert", "calibrate-left", "calibrate-right", "calibrate-both"],
+            notifications.Select(notification => notification.Name));
+        Assert.All(
+            notifications,
+            notification => Assert.True(
+                notification.InSuppliedDispatch,
+                $"{notification.Name} bypassed the supplied UI dispatcher."));
+        Assert.False(viewModel.SaveCommand.CanExecute(null));
+        Assert.False(viewModel.RevertCommand.CanExecute(null));
+        Assert.False(viewModel.CalibrateLeftCommand.CanExecute(null));
+        Assert.False(viewModel.CalibrateRightCommand.CanExecute(null));
+        Assert.False(viewModel.CalibrateBothCommand.CanExecute(null));
+    }
+
     private static MountAdjustmentViewModel NewViewModel(
         IMountAdjustmentPort port,
         Func<MountAdjustmentCalibrationTarget, bool>? canCalibrate = null) =>
         new(port, action => action(), canCalibrate);
+
+    private static void DrainDispatches(
+        ConcurrentQueue<Action> dispatches,
+        ThreadLocal<int> suppliedDispatchDepth)
+    {
+        while (dispatches.TryDequeue(out var dispatch))
+        {
+            suppliedDispatchDepth.Value++;
+            try
+            {
+                dispatch();
+            }
+            finally
+            {
+                suppliedDispatchDepth.Value--;
+            }
+        }
+    }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {

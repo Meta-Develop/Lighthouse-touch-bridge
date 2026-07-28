@@ -4,6 +4,8 @@ using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.Threading;
+using System.Collections.Concurrent;
+using System.Collections.Specialized;
 using System.Numerics;
 using Ltb.App;
 using Ltb.Gui.ViewModels;
@@ -17,20 +19,71 @@ public sealed class MainWindowInteractionTests
     [AvaloniaFact]
     public async Task RepeatedWindowCloseStopsOnceAndFinalCloseRunsOnUiThread()
     {
-        var session = new ControlledSession();
+        using var suppliedDispatchDepth = new ThreadLocal<int>(() => 0);
+        void Dispatch(Action action) =>
+            Dispatcher.UIThread.Post(() =>
+            {
+                suppliedDispatchDepth.Value++;
+                try
+                {
+                    action();
+                }
+                finally
+                {
+                    suppliedDispatchDepth.Value--;
+                }
+            });
+
+        var session = new ControlledSession(
+            holdStop: true,
+            inSuppliedDispatch: () => suppliedDispatchDepth.Value > 0);
         var viewModel = new InternalDriverViewModel(
             new ControlledSessionFactory(session),
-            action => Dispatcher.UIThread.Post(action));
+            Dispatch);
         var window = new MainWindow
         {
             DataContext = viewModel,
         };
         var closeCoordinator = new WindowCloseCoordinator(
-            viewModel.CloseAsync,
+            () => Task.Run(viewModel.CloseAsync),
             window.SavePlacementAsync,
             () => Dispatcher.UIThread.Post(window.Close));
         var canceledCloseCalls = 0;
         var finalCloseOnUiThread = false;
+        var guiNotifications =
+            new ConcurrentQueue<(string Name, bool InSuppliedDispatch, bool OnUiThread)>();
+        void ObserveCommand(string name, RelayCommand command) =>
+            command.CanExecuteChanged += (_, _) =>
+                guiNotifications.Enqueue((
+                    name,
+                    suppliedDispatchDepth.Value > 0,
+                    Dispatcher.UIThread.CheckAccess()));
+
+        ObserveCommand("save", viewModel.MountAdjustments.SaveCommand);
+        ObserveCommand("revert", viewModel.MountAdjustments.RevertCommand);
+        ObserveCommand("calibrate-left", viewModel.MountAdjustments.CalibrateLeftCommand);
+        ObserveCommand("calibrate-right", viewModel.MountAdjustments.CalibrateRightCommand);
+        ObserveCommand("calibrate-both", viewModel.MountAdjustments.CalibrateBothCommand);
+        viewModel.PropertyChanged += (_, eventArgs) =>
+            guiNotifications.Enqueue((
+                $"internal-driver:{eventArgs.PropertyName}",
+                suppliedDispatchDepth.Value > 0,
+                Dispatcher.UIThread.CheckAccess()));
+        viewModel.MountAdjustments.PropertyChanged += (_, eventArgs) =>
+            guiNotifications.Enqueue((
+                $"mount-adjustment:{eventArgs.PropertyName}",
+                suppliedDispatchDepth.Value > 0,
+                Dispatcher.UIThread.CheckAccess()));
+        ((INotifyCollectionChanged)viewModel.ReadinessRows).CollectionChanged += (_, _) =>
+            guiNotifications.Enqueue((
+                "readiness-rows",
+                suppliedDispatchDepth.Value > 0,
+                Dispatcher.UIThread.CheckAccess()));
+        ((INotifyCollectionChanged)viewModel.ReadinessGroups).CollectionChanged += (_, _) =>
+            guiNotifications.Enqueue((
+                "readiness-groups",
+                suppliedDispatchDepth.Value > 0,
+                Dispatcher.UIThread.CheckAccess()));
         window.Closing += (_, eventArgs) =>
         {
             if (closeCoordinator.AllowFinalClose)
@@ -50,9 +103,13 @@ public sealed class MainWindowInteractionTests
         window.Show();
         var run = viewModel.StartAsync();
         await session.Started.WaitAsync(InteractionTimeout);
+        await FlushUiDispatchAsync();
+        guiNotifications.Clear();
 
         window.Close();
         window.Close();
+        await session.StopEntered.WaitAsync(InteractionTimeout);
+        await Task.Run(session.AllowStop);
         await AssertUiConditionAsync(
             () => !window.IsVisible && session.DisposeCallCount == 1,
             "Repeated close did not complete one bounded stop/dispose/final-close cycle.");
@@ -61,6 +118,36 @@ public sealed class MainWindowInteractionTests
         Assert.True(canceledCloseCalls >= 1);
         Assert.Equal(1, session.StopCallCount);
         Assert.Equal(1, session.DisposeCallCount);
+        Assert.False(session.StopCompletedInsideSuppliedDispatch);
+        var commandNames = new[]
+        {
+            "save",
+            "revert",
+            "calibrate-left",
+            "calibrate-right",
+            "calibrate-both",
+        };
+        // Closing, completed run teardown, and mount disposal each publish one
+        // availability change for every mount command.
+        const int ExpectedCloseNotificationsPerCommand = 3;
+        foreach (var commandName in commandNames)
+        {
+            Assert.Equal(
+                ExpectedCloseNotificationsPerCommand,
+                guiNotifications.Count(notification => notification.Name == commandName));
+        }
+
+        Assert.All(
+            guiNotifications,
+            notification =>
+            {
+                Assert.True(
+                    notification.InSuppliedDispatch,
+                    $"{notification.Name} bypassed the supplied UI dispatcher.");
+                Assert.True(
+                    notification.OnUiThread,
+                    $"{notification.Name} was raised off the UI thread.");
+            });
         Assert.True(finalCloseOnUiThread);
         Assert.True(closeCoordinator.AllowFinalClose);
     }
@@ -821,11 +908,17 @@ public sealed class MainWindowInteractionTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class ControlledSession : IInternalDriverSession
+    private sealed class ControlledSession(
+        bool holdStop = false,
+        Func<bool>? inSuppliedDispatch = null) : IInternalDriverSession
     {
         private readonly TaskCompletionSource _started =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _runExit =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _stopEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _allowStop =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public event EventHandler<InternalDriverSessionSnapshot>? SnapshotChanged;
@@ -835,9 +928,13 @@ public sealed class MainWindowInteractionTests
 
         public Task Started => _started.Task;
 
+        public Task StopEntered => _stopEntered.Task;
+
         public int StopCallCount { get; private set; }
 
         public int DisposeCallCount { get; private set; }
+
+        public bool? StopCompletedInsideSuppliedDispatch { get; private set; }
 
         public async Task RunAsync(CancellationToken cancellationToken = default)
         {
@@ -848,10 +945,28 @@ public sealed class MainWindowInteractionTests
         public ValueTask StopAsync(CancellationToken cancellationToken = default)
         {
             StopCallCount++;
+            _stopEntered.TrySetResult();
+            if (holdStop)
+            {
+                return new ValueTask(CompleteHeldStopAsync());
+            }
+
+            CompleteStop();
+            return ValueTask.CompletedTask;
+        }
+
+        private async Task CompleteHeldStopAsync()
+        {
+            await _allowStop.Task.ConfigureAwait(false);
+            StopCompletedInsideSuppliedDispatch = inSuppliedDispatch?.Invoke();
+            CompleteStop();
+        }
+
+        private void CompleteStop()
+        {
             CurrentSnapshot = InternalDriverSessionSnapshot.Initial;
             SnapshotChanged?.Invoke(this, CurrentSnapshot);
             _runExit.TrySetResult();
-            return ValueTask.CompletedTask;
         }
 
         public ValueTask DisposeAsync()
@@ -859,6 +974,8 @@ public sealed class MainWindowInteractionTests
             DisposeCallCount++;
             return ValueTask.CompletedTask;
         }
+
+        public void AllowStop() => _allowStop.TrySetResult();
 
         public void AllowRunExit() => _runExit.TrySetResult();
 
