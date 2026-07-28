@@ -80,7 +80,18 @@ public sealed record SteamVrDriverStartupInspection(
     IReadOnlyList<SteamVrDriverRegistrationReceipt> DurableReceipts,
     SteamVrDriverRegistrationReceipt? MatchingReceipt,
     bool CanRemoveAutomatically,
-    string Diagnostic);
+    string Diagnostic)
+{
+    /// <summary>
+    /// Observational warnings for recognized unrelated registrations. These
+    /// warnings do not grant removal authority or claim runtime activity.
+    /// </summary>
+    public IReadOnlyList<ExternalSteamVrIntegrationWarning> ExternalIntegrationWarnings
+    {
+        get;
+        init;
+    } = [];
+}
 
 public sealed record SteamVrDriverRegistrationReceipt(
     string CanonicalDriverRoot,
