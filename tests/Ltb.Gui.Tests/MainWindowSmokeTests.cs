@@ -3,7 +3,9 @@ using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Headless.XUnit;
+using Avalonia.Input;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Ltb.App;
 using Ltb.Gui.ViewModels;
@@ -12,6 +14,90 @@ namespace Ltb.Gui.Tests;
 
 public sealed class MainWindowSmokeTests
 {
+    [AvaloniaFact]
+    public void ExpanderTemplateHeadersProvideOrderedTabEntryWithoutTrap()
+    {
+        var viewModel = new InternalDriverViewModel(
+            new IdleSessionFactory(),
+            action => action());
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+        };
+        try
+        {
+            window.Show();
+
+            var mountExpander =
+                window.FindControl<Expander>("MountAdjustmentExpander")!;
+            var mountHeader = FindTemplateHeader(mountExpander);
+            var maintenanceExpander =
+                window.FindControl<Expander>("MaintenanceExpander")!;
+            var maintenanceHeader = FindTemplateHeader(maintenanceExpander);
+            var saveLifecycle =
+                window.FindControl<Button>("SaveUnregisterOnExitButton")!;
+            var positionStep =
+                window.FindControl<ComboBox>("PositionStepPresetComboBox")!;
+            var removeDriver = window.FindControl<Button>("RemoveDriverButton")!;
+
+            Assert.False(mountExpander.IsTabStop);
+            Assert.True(mountHeader.Focusable);
+            Assert.True(mountHeader.IsTabStop);
+            Assert.True(mountHeader.IsEffectivelyVisible);
+            Assert.Equal(19, mountHeader.TabIndex);
+            Assert.Equal(18, saveLifecycle.TabIndex);
+            Assert.Equal(
+                "Per-hand mount adjustment tuning",
+                AutomationProperties.GetName(mountExpander));
+            Assert.Equal(
+                KeyboardNavigationMode.Continue,
+                KeyboardNavigation.GetTabNavigation(mountExpander));
+            Assert.Equal(
+                [mountHeader],
+                VisibleTabStopsInRange(window, 19, 54));
+
+            mountExpander.IsExpanded = true;
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            var mountTabStops = VisibleTabStopsInRange(window, 19, 54);
+            Assert.Equal(Enumerable.Range(19, 36), mountTabStops.Select(
+                control => control.TabIndex));
+            Assert.Same(mountHeader, mountTabStops[0]);
+            Assert.True(positionStep.IsEffectivelyVisible);
+
+            Assert.False(maintenanceExpander.IsTabStop);
+            Assert.True(maintenanceHeader.Focusable);
+            Assert.True(maintenanceHeader.IsTabStop);
+            Assert.True(maintenanceHeader.IsEffectivelyVisible);
+            Assert.Equal(59, maintenanceHeader.TabIndex);
+            Assert.Equal(
+                "Maintenance and legacy migration notice",
+                AutomationProperties.GetName(maintenanceExpander));
+            Assert.Equal(
+                KeyboardNavigationMode.Continue,
+                KeyboardNavigation.GetTabNavigation(maintenanceExpander));
+            Assert.Equal(
+                [maintenanceHeader],
+                VisibleTabStopsInRange(window, 59, 60));
+
+            maintenanceExpander.IsExpanded = true;
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            Assert.Equal(
+                [59, 60],
+                VisibleTabStopsInRange(window, 59, 60)
+                    .Select(control => control.TabIndex));
+            Assert.True(removeDriver.IsEffectivelyVisible);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    }
+
     [AvaloniaFact]
     public void MainWindowDefaultsToInternalDriverBindingsAndRequiredSurface()
     {
@@ -274,7 +360,6 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<Button>("CalibrateBothMountButton"));
             Assert.NotNull(window.FindControl<Button>("SaveMountAdjustmentsButton"));
             Assert.NotNull(window.FindControl<Button>("RevertMountAdjustmentsButton"));
-            Assert.Equal(19, mountExpander.TabIndex);
             Assert.Equal(36, window.FindControl<Button>("CalibrateLeftMountButton")!.TabIndex);
             Assert.Equal(51, window.FindControl<Button>("CalibrateRightMountButton")!.TabIndex);
             Assert.Equal(52, window.FindControl<Button>("CalibrateBothMountButton")!.TabIndex);
@@ -303,6 +388,26 @@ public sealed class MainWindowSmokeTests
             viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }
+
+    private static ToggleButton FindTemplateHeader(Expander expander) =>
+        expander.GetVisualDescendants()
+            .OfType<ToggleButton>()
+            .Single(button => button.Name == "ExpanderHeader");
+
+    private static Control[] VisibleTabStopsInRange(
+        MainWindow window,
+        int minimum,
+        int maximum) =>
+        window.GetVisualDescendants()
+            .OfType<Control>()
+            .Where(control =>
+                control.IsEffectivelyVisible &&
+                control.Focusable &&
+                control.IsTabStop &&
+                control.TabIndex >= minimum &&
+                control.TabIndex <= maximum)
+            .OrderBy(control => control.TabIndex)
+            .ToArray();
 
     [AvaloniaFact]
     public void MotionGuideTimerRunsOnlyWhileVisibleAndMotionIsEnabled()
