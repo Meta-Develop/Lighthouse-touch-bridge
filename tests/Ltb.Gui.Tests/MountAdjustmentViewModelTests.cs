@@ -231,6 +231,92 @@ public sealed class MountAdjustmentViewModelTests
     }
 
     [Fact]
+    public async Task RapidEditsRemainOrderedAcrossAnIntermediateRejectedRevision()
+    {
+        var port = new FakeMountAdjustmentPort(AvailableSnapshot());
+        using var viewModel = NewViewModel(port);
+        var slot = viewModel.LeftHand.TrackerSide;
+        port.BlockNextApply();
+
+        slot.PositionXMillimeters = 1d;
+        await port.ApplyEntered.WaitAsync(TimeSpan.FromSeconds(5));
+        port.RejectNextApply = true;
+        slot.PositionXMillimeters = 2d;
+        slot.PositionXMillimeters = 3d;
+
+        Assert.Single(port.ApplyRequests);
+        port.CompleteBlockedApply();
+        await WaitUntilAsync(() => port.ApplyRequests.Count == 3);
+
+        Assert.Equal([1L, 2L, 3L], port.ApplyRequests.Select(request => request.Revision));
+        Assert.Equal(
+            [1f, 2f, 3f],
+            port.ApplyRequests.Select(request =>
+                request.Adjustments.TrackerSide.TranslationMeters.X * 1_000f));
+        Assert.Equal([2L], port.RejectedApplyRevisions);
+        Assert.Equal(3L, port.CurrentSnapshot.Revision);
+        Assert.Equal(
+            0.003f,
+            port.CurrentSnapshot.Left.AppliedAdjustments.TrackerSide.TranslationMeters.X,
+            6);
+        Assert.True(viewModel.IsDirty);
+    }
+
+    [Fact]
+    public async Task ResetSaveAndRevertCannotOvertakeQueuedRapidEditsOrLoseCallTimeIntent()
+    {
+        var initialTracker = new MountAdjustmentTransform(
+            new Vector3(0.005f, 0f, 0f),
+            Quaternion.Identity);
+        var initialPair = new MountAdjustmentPair(
+            initialTracker,
+            MountAdjustmentTransform.Identity);
+        var port = new FakeMountAdjustmentPort(AvailableSnapshot() with
+        {
+            Left = HandSnapshot(
+                MountAdjustmentTransform.Identity,
+                initialPair,
+                initialPair),
+        });
+        using var viewModel = NewViewModel(port);
+        var slot = viewModel.LeftHand.TrackerSide;
+        port.BlockNextApply();
+
+        slot.PositionXMillimeters = 1d;
+        await port.ApplyEntered.WaitAsync(TimeSpan.FromSeconds(5));
+        slot.PositionXMillimeters = 2d;
+        slot.PositionXMillimeters = 3d;
+        slot.ResetCommand.Execute(null);
+        var save = viewModel.SaveAsync();
+        var revert = viewModel.RevertAsync();
+
+        Assert.Single(port.ApplyRequests);
+        Assert.Empty(port.SaveRequests);
+        port.CompleteBlockedApply();
+        await Task.WhenAll(save, revert).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(
+            [
+                "apply:1:Left",
+                "apply:2:Left",
+                "apply:3:Left",
+                "apply:4:Left",
+                "save:4",
+                "apply:5:Left",
+                "apply:5:Right",
+            ],
+            port.OperationLog);
+        Assert.Equal(
+            [1f, 2f, 3f, 0f],
+            port.ApplyRequests.Take(4).Select(request =>
+                request.Adjustments.TrackerSide.TranslationMeters.X * 1_000f));
+        Assert.Equal(0f, Assert.Single(port.SaveRequests)
+            .Left.TrackerSide.TranslationMeters.X);
+        Assert.Equal(5d, viewModel.LeftHand.TrackerSide.PositionXMillimeters, 6);
+        Assert.True(viewModel.IsDirty);
+    }
+
+    [Fact]
     public void ApplyAndInputFailuresStayDirtyAndSurfaceStatus()
     {
         var port = new FakeMountAdjustmentPort(AvailableSnapshot())
@@ -347,6 +433,20 @@ public sealed class MountAdjustmentViewModelTests
         Func<MountAdjustmentCalibrationTarget, bool>? canCalibrate = null) =>
         new(port, action => action(), canCalibrate);
 
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException("Timed out waiting for the expected mount operation.");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
     private static MountAdjustmentSnapshot AvailableSnapshot(
         long revision = 0,
         MountAdjustmentTransform? leftBase = null) => new(
@@ -386,6 +486,9 @@ public sealed class MountAdjustmentViewModelTests
 
     private sealed class FakeMountAdjustmentPort : IMountAdjustmentPort
     {
+        private TaskCompletionSource<MountAdjustmentPortResult>? _blockedApply;
+        private MountAdjustmentLiveApplyRequest? _blockedApplyRequest;
+        private TaskCompletionSource? _applyEntered;
         private TaskCompletionSource<MountAdjustmentPortResult>? _blockedSave;
         private MountAdjustmentSaveRequest? _blockedSaveRequest;
         private TaskCompletionSource? _saveEntered;
@@ -406,9 +509,16 @@ public sealed class MountAdjustmentViewModelTests
 
         public List<MountAdjustmentCalibrationTarget> CalibrationTargets { get; } = [];
 
+        public List<long> RejectedApplyRevisions { get; } = [];
+
+        public List<string> OperationLog { get; } = [];
+
         public bool RejectNextApply { get; set; }
 
         public bool RejectNextSave { get; set; }
+
+        public Task ApplyEntered => _applyEntered?.Task ??
+            throw new InvalidOperationException("No live apply is blocked.");
 
         public Task SaveEntered => _saveEntered?.Task ??
             throw new InvalidOperationException("No save is blocked.");
@@ -418,15 +528,31 @@ public sealed class MountAdjustmentViewModelTests
             CancellationToken cancellationToken = default)
         {
             ApplyRequests.Add(request);
-            if (RejectNextApply)
+            OperationLog.Add($"apply:{request.Revision}:{request.Hand}");
+            if (_blockedApply is not null)
+            {
+                _blockedApplyRequest = request;
+                _applyEntered!.TrySetResult();
+                return new ValueTask<MountAdjustmentPortResult>(_blockedApply.Task);
+            }
+
+            return ValueTask.FromResult(ApplyResult(request));
+        }
+
+        private MountAdjustmentPortResult ApplyResult(
+            MountAdjustmentLiveApplyRequest request,
+            bool honorConfiguredRejection = true)
+        {
+            if (honorConfiguredRejection && RejectNextApply)
             {
                 RejectNextApply = false;
+                RejectedApplyRevisions.Add(request.Revision);
                 SignalNextApply();
-                return ValueTask.FromResult(new MountAdjustmentPortResult(
+                return new MountAdjustmentPortResult(
                     request.Revision,
                     Succeeded: false,
                     "injected live apply failure",
-                    CurrentSnapshot));
+                    CurrentSnapshot);
             }
 
             var left = CurrentSnapshot.Left;
@@ -456,11 +582,11 @@ public sealed class MountAdjustmentViewModelTests
                 RestoreWarning = MountAdjustmentRestoreWarningUpdate.Unchanged,
             };
             SignalNextApply();
-            return ValueTask.FromResult(new MountAdjustmentPortResult(
+            return new MountAdjustmentPortResult(
                 request.Revision,
                 Succeeded: true,
                 $"Applied revision {request.Revision}.",
-                CurrentSnapshot));
+                CurrentSnapshot);
         }
 
         public ValueTask<MountAdjustmentPortResult> SaveAsync(
@@ -468,6 +594,7 @@ public sealed class MountAdjustmentViewModelTests
             CancellationToken cancellationToken = default)
         {
             SaveRequests.Add(request);
+            OperationLog.Add($"save:{request.Revision}");
             if (_blockedSave is not null)
             {
                 _blockedSaveRequest = request;
@@ -498,6 +625,27 @@ public sealed class MountAdjustmentViewModelTests
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _saveEntered = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public void BlockNextApply()
+        {
+            _blockedApply = new TaskCompletionSource<MountAdjustmentPortResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _applyEntered = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public void CompleteBlockedApply()
+        {
+            var completion = _blockedApply ??
+                throw new InvalidOperationException("No live apply is blocked.");
+            var request = _blockedApplyRequest ??
+                throw new InvalidOperationException("The blocked live apply has not entered.");
+            _blockedApply = null;
+            _blockedApplyRequest = null;
+            completion.TrySetResult(ApplyResult(
+                request,
+                honorConfiguredRejection: false));
         }
 
         public void CompleteBlockedSave()

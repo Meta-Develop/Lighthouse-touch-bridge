@@ -251,13 +251,32 @@ internal sealed class ProductionInternalDriverSessionRuntime :
 
         var calibration = new InternalDriverCalibration(_paths.CalibrationProfileStorePath);
         _ = EnsureDefaultSettings(_paths);
-        var configuredBinding =
-            InternalDriverSettingsFile.Load(_paths.SettingsPath).ManualTrackerBinding;
+        var authorityGenerationBefore =
+            InternalDriverSettingsFile.ComputeGeneration(
+                _paths.SettingsPath);
+        var configuredSettings = InternalDriverSettingsFile.Load(_paths.SettingsPath);
+        var authorityGenerationAfter =
+            InternalDriverSettingsFile.ComputeGeneration(
+                _paths.SettingsPath);
+        if (!string.Equals(
+                authorityGenerationBefore,
+                authorityGenerationAfter,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Authoritative pre-session settings changed while the manual binding was " +
+                "loaded. Refresh before beginning motion capture.");
+        }
+
+        var configuredBinding = configuredSettings.ManualTrackerBinding;
         var manualBinding = configuredBinding is null
             ? null
             : new ManualTrackerBinding(
                 configuredBinding.LeftTrackerSerial,
                 configuredBinding.RightTrackerSerial);
+        var manualBindingAuthorityGeneration = manualBinding is null
+            ? null
+            : authorityGenerationAfter;
         var requestedHands = _options.RequestedCalibrationHands;
         var reusable = FindReusablePair(
             calibration,
@@ -282,6 +301,7 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                 serials,
                 progress,
                 manualBinding,
+                manualBindingAuthorityGeneration,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -337,7 +357,9 @@ internal sealed class ProductionInternalDriverSessionRuntime :
 
         var verificationEvidence = manualBinding is null
             ? null
-            : ToManualBindingVerificationEvidence(verification);
+            : ToManualBindingVerificationEvidence(
+                verification,
+                manualBindingAuthorityGeneration);
         progress(
             InternalDriverSessionState.TimeAlignment,
             "Estimating per-hand residual lag after preserving Meta clock uncertainty evidence.",
@@ -381,6 +403,7 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         IReadOnlyList<string> trackerSerials,
         InternalDriverProgress progress,
         ManualTrackerBinding? manualBinding,
+        string? manualBindingAuthorityGeneration,
         CancellationToken cancellationToken)
     {
         var metaHand = requestedHand == InternalDriverCalibrationHandSet.Left
@@ -473,7 +496,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                           $"correlation suggests left {correctionLeft} and right " +
                           $"{correctionRight} as an explicit correction candidate.",
                 agrees || !association.Success ? null : correctionLeft,
-                agrees || !association.Success ? null : correctionRight);
+                agrees || !association.Success ? null : correctionRight,
+                manualBindingAuthorityGeneration);
         }
 
         progress(
@@ -1189,7 +1213,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
 
     internal static InternalDriverManualBindingVerificationEvidence
         ToManualBindingVerificationEvidence(
-            ManualTrackerBindingVerificationResult verification)
+            ManualTrackerBindingVerificationResult verification,
+            string? authorityGeneration = null)
     {
         ArgumentNullException.ThrowIfNull(verification);
         var authoritative = verification.AuthoritativeBinding ??
@@ -1214,7 +1239,8 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             authoritative.RightTrackerSerial!,
             verification.Reason,
             verification.CorrectionCandidate?.LeftTrackerSerial,
-            verification.CorrectionCandidate?.RightTrackerSerial);
+            verification.CorrectionCandidate?.RightTrackerSerial,
+            authorityGeneration);
     }
 
     /// <summary>
@@ -1351,7 +1377,10 @@ internal sealed class ProductionInternalDriverSessionRuntime :
                 profile.Quality.PositionRmsMillimeters,
                 profile.Quality.TranslationCondition,
                 profile.Quality.InlierRatio),
-            profile.CreatedUtc);
+            profile.CreatedUtc,
+            selectedMode == InternalDriverCalibrationMode.FullSixDof
+                ? profile.TrackerToController.TranslationMeters.Length() * 1000d
+                : null);
     }
 
     internal static InternalDriverSettingsPreparation EnsureDefaultSettings(

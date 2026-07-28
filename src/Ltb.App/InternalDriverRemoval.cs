@@ -1,5 +1,6 @@
 using Ltb.Configuration;
 using Ltb.Driver;
+using Ltb.OpenVr;
 
 namespace Ltb.App;
 
@@ -25,6 +26,14 @@ public interface IInternalDriverRegistrationMaintenance : IInternalDriverRemover
 {
     ValueTask<SteamVrDriverStartupInspection> InspectNextStartAsync(
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads role drift only for the exact tracker paths retained in LTB's
+    /// durable neutralization receipt. Implementations without that capability
+    /// return no evidence and never synthesize paths.
+    /// </summary>
+    TrackerRoleDrift? InspectTrackerRoleDrift(
+        SteamVrDriverStartupInspection inspection) => null;
 }
 
 /// <summary>
@@ -155,16 +164,21 @@ public sealed class InternalDriverRemoval : IInternalDriverRegistrationMaintenan
     private readonly ISteamVrDriverLifecycle _lifecycle;
     private readonly ISteamVrDriverReceiptStore _receiptStore;
     private readonly string _stagedDriverRoot;
+    private readonly string? _trackerRoleReceiptPath;
 
     internal InternalDriverRemoval(
         ISteamVrDriverLifecycle lifecycle,
         ISteamVrDriverReceiptStore receiptStore,
-        string stagedDriverRoot)
+        string stagedDriverRoot,
+        string? trackerRoleReceiptPath = null)
     {
         _lifecycle = lifecycle ?? throw new ArgumentNullException(nameof(lifecycle));
         _receiptStore = receiptStore ?? throw new ArgumentNullException(nameof(receiptStore));
         ArgumentException.ThrowIfNullOrWhiteSpace(stagedDriverRoot);
         _stagedDriverRoot = stagedDriverRoot;
+        _trackerRoleReceiptPath = trackerRoleReceiptPath is null
+            ? null
+            : Path.GetFullPath(trackerRoleReceiptPath);
     }
 
     public static InternalDriverRemoval Create(InternalDriverSessionOptions? options = null)
@@ -177,7 +191,12 @@ public sealed class InternalDriverRemoval : IInternalDriverRegistrationMaintenan
         return new InternalDriverRemoval(
             SteamVrDriverLifecycle.CreateDefault(receiptStore),
             receiptStore,
-            paths.StagedDriverRoot);
+            paths.StagedDriverRoot,
+            Path.Combine(
+                Path.GetDirectoryName(paths.DriverReceiptStorePath)
+                    ?? throw new InvalidOperationException(
+                        "The driver receipt store must have a parent directory."),
+                "tracker-role-recovery.json"));
     }
 
     public async ValueTask<InternalDriverRemovalResult> RemoveAsync(
@@ -264,6 +283,17 @@ public sealed class InternalDriverRemoval : IInternalDriverRegistrationMaintenan
         _lifecycle.InspectStartupAsync(
             _stagedDriverRoot,
             cancellationToken);
+
+    public TrackerRoleDrift? InspectTrackerRoleDrift(
+        SteamVrDriverStartupInspection inspection)
+    {
+        ArgumentNullException.ThrowIfNull(inspection);
+        return _trackerRoleReceiptPath is null
+            ? null
+            : SteamVrSettingsTrackerNeutralizationBackend.InspectRetainedRoleDrift(
+                _trackerRoleReceiptPath,
+                inspection.Paths.SettingsFile);
+    }
 
     public ValueTask DisposeAsync()
     {

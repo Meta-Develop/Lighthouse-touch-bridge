@@ -401,6 +401,11 @@ public sealed class TrackerPathObservationStoreTests
             Assert.Throws<InvalidDataException>(() => fixture.Store.LoadAll());
             Assert.Throws<InvalidDataException>(() =>
                 fixture.Store.TryLookup(SerialA));
+            Assert.True(fixture.Store.HasPendingReconciliation);
+            var presentation = Assert.Single(
+                fixture.Store.LoadLastCommittedForPresentation());
+            Assert.Equal(SerialA, presentation.TrackerSerial);
+            Assert.Equal(PathA, presentation.RegisteredDevicePath);
         }
         finally
         {

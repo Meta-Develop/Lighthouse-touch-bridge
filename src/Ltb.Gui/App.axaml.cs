@@ -33,7 +33,7 @@ public partial class App : Application
             var closeCoordinator = new WindowCloseCoordinator(
                 viewModel.CloseAsync,
                 window.SavePlacementAsync,
-                window.Close);
+                () => Dispatcher.UIThread.Post(window.Close));
             window.Closing += (_, eventArgs) =>
             {
                 if (closeCoordinator.AllowFinalClose)

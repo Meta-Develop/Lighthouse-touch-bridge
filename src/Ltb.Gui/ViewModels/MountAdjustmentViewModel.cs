@@ -19,7 +19,8 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     private readonly Func<MountAdjustmentCalibrationTarget, bool> _canCalibrate;
     private readonly Func<MountAdjustmentCalibrationTarget, Task>? _unavailableCalibrationFallback;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
-    private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly object _mutationQueueSync = new();
+    private Task _mutationTail = Task.CompletedTask;
     private long _revision;
     private MountAdjustmentPair _savedLeft = MountAdjustmentPair.Identity;
     private MountAdjustmentPair _savedRight = MountAdjustmentPair.Identity;
@@ -186,24 +187,22 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
         RaiseCommandAvailability();
     }
 
-    public async Task SaveAsync()
+    public Task SaveAsync()
     {
-        if (!CanSave)
+        if (!IsAvailable || !IsDirty || _disposed)
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        try
-        {
-            await _operationGate
-                .WaitAsync(_lifetimeCancellation.Token)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
-        {
-            return;
-        }
+        var request = new MountAdjustmentSaveRequest(
+            Volatile.Read(ref _revision),
+            LeftHand.Adjustments,
+            RightHand.Adjustments);
+        return EnqueueMutation(() => SaveCoreAsync(request));
+    }
 
+    private async Task SaveCoreAsync(MountAdjustmentSaveRequest request)
+    {
         try
         {
             if (_disposed || !IsAvailable)
@@ -211,10 +210,6 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            var request = new MountAdjustmentSaveRequest(
-                Volatile.Read(ref _revision),
-                LeftHand.Adjustments,
-                RightHand.Adjustments);
             DispatchBusy(true, $"Saving mount adjustment revision {request.Revision}...");
             MountAdjustmentPortResult result;
             try
@@ -237,39 +232,35 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            _operationGate.Release();
             DispatchBusy(false);
         }
     }
 
-    public async Task RevertAsync()
+    public Task RevertAsync()
     {
-        if (!CanRevert)
+        if (!IsAvailable || !IsDirty || _disposed)
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        try
-        {
-            await _operationGate
-                .WaitAsync(_lifetimeCancellation.Token)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
-        {
-            return;
-        }
+        var revision = Interlocked.Increment(ref _revision);
+        var savedLeft = _savedLeft;
+        var savedRight = _savedRight;
+        return EnqueueMutation(() => RevertCoreAsync(revision, savedLeft, savedRight));
+    }
 
+    private async Task RevertCoreAsync(
+        long revision,
+        MountAdjustmentPair savedLeft,
+        MountAdjustmentPair savedRight)
+    {
         try
         {
-            if (_disposed || !IsAvailable || !IsDirty)
+            if (_disposed || !IsAvailable)
             {
                 return;
             }
 
-            var revision = Interlocked.Increment(ref _revision);
-            var savedLeft = _savedLeft;
-            var savedRight = _savedRight;
             DispatchBusy(true, $"Reverting unsaved mount adjustment revision {revision} live...");
 
             MountAdjustmentPortResult leftResult;
@@ -314,7 +305,6 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            _operationGate.Release();
             DispatchBusy(false);
         }
     }
@@ -360,21 +350,46 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     private void OnSlotEdited(MountAdjustmentHand hand)
     {
         var revision = Interlocked.Increment(ref _revision);
+        var adjustments = hand == MountAdjustmentHand.Left
+            ? LeftHand.Adjustments
+            : RightHand.Adjustments;
+        var request = new MountAdjustmentLiveApplyRequest(
+            revision,
+            hand,
+            adjustments);
         RefreshDirty();
-        _ = ApplyLiveAsync(hand, revision);
+        _ = EnqueueMutation(() => ApplyLiveAsync(request));
     }
 
-    private async Task ApplyLiveAsync(MountAdjustmentHand hand, long requestedRevision)
+    private Task EnqueueMutation(Func<Task> mutation)
+    {
+        lock (_mutationQueueSync)
+        {
+            var queued = RunQueuedMutationAsync(_mutationTail, mutation);
+            _mutationTail = queued;
+            return queued;
+        }
+    }
+
+    private static async Task RunQueuedMutationAsync(
+        Task prior,
+        Func<Task> mutation)
     {
         try
         {
-            await _operationGate.WaitAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+            await prior.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        catch
         {
-            return;
+            // Each mutation handles and presents its own failure. An unexpected
+            // earlier failure must not collapse or suppress a later queued action.
         }
 
+        await mutation().ConfigureAwait(false);
+    }
+
+    private async Task ApplyLiveAsync(MountAdjustmentLiveApplyRequest request)
+    {
         try
         {
             if (_disposed || !IsAvailable)
@@ -383,14 +398,10 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            var revision = Volatile.Read(ref _revision);
-            var adjustments = hand == MountAdjustmentHand.Left
-                ? LeftHand.Adjustments
-                : RightHand.Adjustments;
-            var request = new MountAdjustmentLiveApplyRequest(revision, hand, adjustments);
             DispatchBusy(
                 true,
-                $"Applying {HandLabel(hand)} mount adjustment revision {revision} live...");
+                $"Applying {HandLabel(request.Hand)} mount adjustment revision " +
+                $"{request.Revision} live...");
             MountAdjustmentPortResult result;
             try
             {
@@ -408,19 +419,17 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            _dispatch(() => PresentApplyResult(request, result, requestedRevision));
+            _dispatch(() => PresentApplyResult(request, result));
         }
         finally
         {
-            _operationGate.Release();
             DispatchBusy(false);
         }
     }
 
     private void PresentApplyResult(
         MountAdjustmentLiveApplyRequest request,
-        MountAdjustmentPortResult result,
-        long requestedRevision)
+        MountAdjustmentPortResult result)
     {
         if (!result.Succeeded)
         {

@@ -82,7 +82,8 @@ public sealed record InternalDriverManualBindingVerificationEvidence
         string rightTrackerSerial,
         string diagnostic,
         string? correctionLeftTrackerSerial = null,
-        string? correctionRightTrackerSerial = null)
+        string? correctionRightTrackerSerial = null,
+        string? authorityGeneration = null)
     {
         if (!Enum.IsDefined(state))
         {
@@ -96,6 +97,16 @@ public sealed record InternalDriverManualBindingVerificationEvidence
         Diagnostic = InternalDriverEvidenceValidation.RequireNonblank(
             diagnostic,
             nameof(diagnostic));
+        if (authorityGeneration is not null &&
+            (authorityGeneration.Length != 64 ||
+             authorityGeneration.Any(character => !Uri.IsHexDigit(character))))
+        {
+            throw new ArgumentException(
+                "Manual-binding authority generation must be a SHA-256 value.",
+                nameof(authorityGeneration));
+        }
+
+        AuthorityGeneration = authorityGeneration?.ToUpperInvariant();
         if ((correctionLeftTrackerSerial is null) !=
             (correctionRightTrackerSerial is null))
         {
@@ -146,6 +157,12 @@ public sealed record InternalDriverManualBindingVerificationEvidence
     public string? CorrectionRightTrackerSerial { get; }
 
     public string Diagnostic { get; }
+
+    /// <summary>
+    /// Optional exact generation of the authoritative pre-session settings
+    /// bytes observed before capture. Production evidence always supplies it.
+    /// </summary>
+    public string? AuthorityGeneration { get; }
 
     public bool RequiresDecision =>
         State == InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate;
@@ -392,7 +409,8 @@ public sealed record InternalDriverCalibrationEvidence
         string selectionReason,
         double estimatedLagMilliseconds,
         InternalDriverCalibrationQualityEvidence quality,
-        DateTimeOffset createdUtc)
+        DateTimeOffset createdUtc,
+        double? leverArmMagnitudeMillimeters = null)
     {
         if (schemaVersion is not
                 CalibrationProfileSchema.DriverProfileVersion and not
@@ -439,6 +457,10 @@ public sealed record InternalDriverCalibrationEvidence
         EstimatedLagMilliseconds = estimatedLagMilliseconds;
         Quality = validatedQuality;
         CreatedUtc = createdUtc.ToUniversalTime();
+        LeverArmMagnitudeMillimeters =
+            InternalDriverEvidenceValidation.RequireOptionalFiniteNonnegative(
+                leverArmMagnitudeMillimeters,
+                nameof(leverArmMagnitudeMillimeters));
     }
 
     public int SchemaVersion { get; }
@@ -452,6 +474,14 @@ public sealed record InternalDriverCalibrationEvidence
     public InternalDriverCalibrationQualityEvidence Quality { get; }
 
     public DateTimeOffset CreatedUtc { get; }
+
+    /// <summary>
+    /// Magnitude of the calibrated tracker-to-controller translation for a
+    /// full-6DoF profile. Rotation-only and older compatibility evidence leave
+    /// this absent rather than treating conventional zero translation as a
+    /// measured lever arm.
+    /// </summary>
+    public double? LeverArmMagnitudeMillimeters { get; }
 }
 
 /// <summary>

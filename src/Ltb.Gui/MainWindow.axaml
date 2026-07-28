@@ -128,6 +128,78 @@
           </StackPanel>
         </Border>
 
+        <Border x:Name="CalibrationQualityGuidancePanel"
+                Classes="panel">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section-title"
+                       Text="Calibration quality before headset use" />
+            <TextBlock FontWeight="SemiBold"
+                       Text="Stored reusable profiles" />
+            <TextBlock x:Name="StoredLeftQualityGuidanceText"
+                       Text="{Binding TrackerBinding.StoredLeftQualityText}"
+                       TextWrapping="Wrap" />
+            <TextBlock x:Name="StoredRightQualityGuidanceText"
+                       Text="{Binding TrackerBinding.StoredRightQualityText}"
+                       TextWrapping="Wrap" />
+            <TextBlock x:Name="StoredPairQualityGuidanceText"
+                       Text="{Binding TrackerBinding.StoredPairQualityText}"
+                       TextWrapping="Wrap" />
+            <TextBlock FontWeight="SemiBold"
+                       Margin="0,4,0,0"
+                       Text="Newly completed or reused in this session" />
+            <TextBlock x:Name="CurrentLeftQualityGuidanceText"
+                       Text="{Binding LeftHand.CalibrationGuidance}"
+                       TextWrapping="Wrap" />
+            <TextBlock x:Name="CurrentRightQualityGuidanceText"
+                       Text="{Binding RightHand.CalibrationGuidance}"
+                       TextWrapping="Wrap" />
+            <TextBlock x:Name="CurrentPairQualityGuidanceText"
+                       Text="{Binding CalibrationPairGuidance}"
+                       TextWrapping="Wrap" />
+            <TextBlock Classes="muted"
+                       Text="These are operational guidance boundaries, not Windows hardware acceptance evidence."
+                       TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <Border x:Name="ExternalRegistrationWarningsPanel"
+                Classes="panel"
+                IsVisible="{Binding TrackerBinding.HasExternalRegistrationWarnings}">
+          <StackPanel Spacing="5">
+            <TextBlock Classes="section-title"
+                       Foreground="{DynamicResource LtbWarningBrush}"
+                       Text="Registered external SteamVR integrations" />
+            <TextBlock x:Name="ExternalRegistrationWarningsText"
+                       Text="{Binding TrackerBinding.ExternalRegistrationWarningsText}"
+                       TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <Border x:Name="RecoveryCandidatesPanel"
+                Classes="panel"
+                IsVisible="{Binding TrackerBinding.HasRecoveryCandidates}">
+          <StackPanel Spacing="5">
+            <TextBlock Classes="section-title"
+                       Text="Recovery backup candidates" />
+            <TextBlock x:Name="RecoveryCandidatesText"
+                       Text="{Binding TrackerBinding.RecoveryCandidatesText}"
+                       TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <Border x:Name="TrackerRoleDriftPanel"
+                Classes="panel"
+                IsVisible="{Binding TrackerBinding.HasTrackerRoleDrift}">
+          <StackPanel Spacing="5">
+            <TextBlock Classes="section-title"
+                       Foreground="{DynamicResource LtbWarningBrush}"
+                       Text="Bound tracker role drift" />
+            <TextBlock x:Name="TrackerRoleDriftText"
+                       Text="{Binding TrackerBinding.TrackerRoleDriftText}"
+                       TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
         <Border x:Name="TrackerBindingPanel"
                 Classes="panel">
           <StackPanel Spacing="9">
@@ -280,6 +352,16 @@
                          Text="{Binding TrackerBinding.SteamVrProcessText}"
                          TextWrapping="Wrap" />
             </Grid>
+
+            <Border Classes="raised">
+              <StackPanel Spacing="5">
+                <TextBlock FontWeight="SemiBold"
+                           Text="Registered tracker-path evidence" />
+                <TextBlock x:Name="TrackerPathEvidenceText"
+                           Text="{Binding TrackerBinding.TrackerPathEvidenceText}"
+                           TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
           </StackPanel>
         </Border>
 

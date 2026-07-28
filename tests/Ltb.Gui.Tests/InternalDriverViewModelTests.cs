@@ -132,6 +132,81 @@ public sealed class InternalDriverViewModelTests
     }
 
     [Fact]
+    public async Task CompletedQualityGuidanceUsesExactTwentyMillimeterBoundaries()
+    {
+        var session = new ControlledSession(Snapshot(
+            InternalDriverSessionState.DependencyCheck,
+            allReady: false));
+        await using var viewModel = NewViewModel(session);
+        var run = viewModel.StartAsync();
+        await session.Started;
+        var createdUtc = new DateTimeOffset(2026, 7, 28, 0, 0, 0, TimeSpan.Zero);
+
+        session.Publish(Snapshot(
+            InternalDriverSessionState.Recording,
+            allReady: false,
+            leftCalibration: CalibrationEvidence(
+                InternalDriverCalibrationMode.FullSixDof,
+                "Boundary profile.",
+                1d,
+                1d,
+                20d,
+                10d,
+                0.95d,
+                createdUtc,
+                leverArmMagnitudeMillimeters: 10d),
+            rightCalibration: CalibrationEvidence(
+                InternalDriverCalibrationMode.FullSixDof,
+                "Below-boundary profile.",
+                1d,
+                1d,
+                19.999d,
+                10d,
+                0.95d,
+                createdUtc,
+                leverArmMagnitudeMillimeters: 30d)));
+
+        Assert.Contains("worth recapturing", viewModel.LeftHand.CalibrationGuidance);
+        Assert.Contains("at or above 20.00 mm", viewModel.LeftHand.CalibrationGuidance);
+        Assert.Contains("below the 20.00 mm", viewModel.RightHand.CalibrationGuidance);
+        Assert.Contains("Material lever-arm", viewModel.CalibrationPairGuidance);
+        Assert.Contains("20.00 mm is at or above 20.00 mm", viewModel.CalibrationPairGuidance);
+
+        session.Publish(Snapshot(
+            InternalDriverSessionState.Recording,
+            allReady: false,
+            leftCalibration: CalibrationEvidence(
+                InternalDriverCalibrationMode.FullSixDof,
+                "Above-boundary profile.",
+                1d,
+                1d,
+                20.001d,
+                10d,
+                0.95d,
+                createdUtc,
+                leverArmMagnitudeMillimeters: 10d),
+            rightCalibration: CalibrationEvidence(
+                InternalDriverCalibrationMode.RotationOnly,
+                "Rotation-only profile.",
+                1d,
+                1d,
+                null,
+                null,
+                0.95d,
+                createdUtc)));
+
+        Assert.Contains("worth recapturing", viewModel.LeftHand.CalibrationGuidance);
+        Assert.Contains("insufficient evidence", viewModel.RightHand.CalibrationGuidance);
+        Assert.Contains("not poor quality", viewModel.RightHand.CalibrationGuidance);
+        Assert.Contains("insufficient evidence", viewModel.CalibrationPairGuidance);
+        Assert.Contains("not poor quality", viewModel.CalibrationPairGuidance);
+
+        session.AllowStop();
+        await viewModel.StopAsync();
+        await run;
+    }
+
+    [Fact]
     public async Task AbsentAndTerminalEvidenceRenderUnavailableAndClearPriorRunDetails()
     {
         var active = Snapshot(
@@ -1203,7 +1278,8 @@ public sealed class InternalDriverViewModelTests
         double? positionRmsMillimeters,
         double? translationConditionNumber,
         double inlierRatio,
-        DateTimeOffset createdUtc) => new(
+        DateTimeOffset createdUtc,
+        double? leverArmMagnitudeMillimeters = null) => new(
             2,
             mode,
             reason,
@@ -1213,7 +1289,8 @@ public sealed class InternalDriverViewModelTests
                 positionRmsMillimeters,
                 translationConditionNumber,
                 inlierRatio),
-            createdUtc);
+            createdUtc,
+            leverArmMagnitudeMillimeters);
 
     private static InternalDriverCaptureEvidence CaptureEvidence(
         int sampleCount,

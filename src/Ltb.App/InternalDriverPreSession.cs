@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Ltb.Calibration;
 using Ltb.Configuration;
 using Ltb.Driver;
+using Ltb.MetaLink;
 using Ltb.OpenVr;
 
 namespace Ltb.App;
@@ -20,6 +21,7 @@ public enum InternalDriverPreSessionState
     SteamVrMustBeStopped,
     RegisteredDevicePathUnresolved,
     RegistrationStateRequiresAction,
+    ManualBindingDecisionStale,
     RestartRequired,
     CleanupCompleted,
     CleanupSkipped,
@@ -96,6 +98,37 @@ public sealed record InternalDriverPreSessionSnapshot(
     public bool CanStart => State == InternalDriverPreSessionState.Ready;
 
     public bool RestartRequired => State == InternalDriverPreSessionState.RestartRequired;
+
+    /// <summary>
+    /// Read-only observations of recognized unrelated SteamVR registrations.
+    /// Registration never proves that an integration is loaded, running, or
+    /// publishing, and this evidence grants no mutation authority.
+    /// </summary>
+    public IReadOnlyList<ExternalSteamVrIntegrationWarning> ExternalRegistrationWarnings
+    {
+        get;
+        init;
+    } = [];
+
+    /// <summary>Metadata-only sibling backup discovery; backup bytes are never read.</summary>
+    public SteamVrSettingsRecoveryDiscovery? RecoveryDiscovery { get; init; }
+
+    /// <summary>Read-only role drift for the exact paths in a retained LTB receipt.</summary>
+    public TrackerRoleDrift? TrackerRoleDrift { get; init; }
+
+    /// <summary>Current exact live-observed tracker paths and bounded prior history.</summary>
+    public IReadOnlyList<TrackerPathObservation> TrackerPathObservations { get; init; } = [];
+
+    public bool TrackerPathReconciliationPending { get; init; }
+
+    public string TrackerPathEvidenceDiagnostic { get; init; } =
+        "No live tracker-path evidence has been loaded.";
+
+    /// <summary>
+    /// Conservative read-only assessment of the exact reusable manual pair, when
+    /// one complete pair can be selected without motion association.
+    /// </summary>
+    public StoredCalibrationProfilePairAssessment? StoredProfileQuality { get; init; }
 
     public static InternalDriverPreSessionSnapshot Initial { get; } = new(
         InternalDriverPreSessionState.NotLoaded,
@@ -208,6 +241,7 @@ internal sealed class SystemInternalDriverSteamVrProcessInspector :
 /// </summary>
 public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionControl
 {
+    private const string ControllerModel = "Quest 2 Touch";
     private readonly InternalDriverResolvedPaths _paths;
     private readonly IInternalDriverPairedTrackerDiscovery _trackerDiscovery;
     private readonly IInternalDriverSteamVrProcessInspector _processInspector;
@@ -371,12 +405,107 @@ public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionC
                         ManualTrackerBindingDecision.AcceptCorrectionCandidate,
                     _ => throw new ArgumentOutOfRangeException(nameof(decision)),
                 });
+                var loadedGenerationBefore =
+                    InternalDriverSettingsFile.ComputeGeneration(
+                        _paths.SettingsPath);
                 var settings = LoadPreparedSettings();
-                InternalDriverSettingsFile.Save(
-                    _paths.SettingsPath,
-                    settings.WithManualTrackerBinding(new InternalDriverTrackerBinding(
-                        selected.LeftTrackerSerial!,
-                        selected.RightTrackerSerial!)));
+                var loadedGenerationAfter =
+                    InternalDriverSettingsFile.ComputeGeneration(
+                        _paths.SettingsPath);
+                if (!string.Equals(
+                        loadedGenerationBefore,
+                        loadedGenerationAfter,
+                        StringComparison.Ordinal))
+                {
+                    var authoritative = await RefreshCoreAsync(token).ConfigureAwait(false);
+                    _snapshot = authoritative with
+                    {
+                        State = InternalDriverPreSessionState.ManualBindingDecisionStale,
+                        Diagnostic =
+                            "The authoritative pre-session settings changed while the " +
+                            "decision authority was loaded. The pending decision is stale and " +
+                            $"no settings were overwritten. Authoritative state was reloaded. " +
+                            $"{authoritative.Diagnostic}",
+                        Remediation =
+                            "Refresh, rerun motion verification for the current pair, then " +
+                            "make a new explicit decision.",
+                    };
+                    return _snapshot;
+                }
+
+                if (verification.AuthorityGeneration is { } authorityGeneration &&
+                    !string.Equals(
+                        authorityGeneration,
+                        loadedGenerationAfter,
+                        StringComparison.Ordinal))
+                {
+                    var authoritative = await RefreshCoreAsync(token).ConfigureAwait(false);
+                    _snapshot = authoritative with
+                    {
+                        State = InternalDriverPreSessionState.ManualBindingDecisionStale,
+                        Diagnostic =
+                            "The authoritative pre-session settings generation changed after " +
+                            "motion verification. The pending decision is stale and no settings " +
+                            $"were overwritten. Authoritative state was reloaded. " +
+                            $"{authoritative.Diagnostic}",
+                        Remediation =
+                            "Refresh, rerun motion verification for the current pair, then " +
+                            "make a new explicit decision.",
+                    };
+                    return _snapshot;
+                }
+
+                if (settings.ManualTrackerBinding is not { } currentBinding ||
+                    !string.Equals(
+                        currentBinding.LeftTrackerSerial,
+                        verification.LeftTrackerSerial,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(
+                        currentBinding.RightTrackerSerial,
+                        verification.RightTrackerSerial,
+                        StringComparison.Ordinal))
+                {
+                    var authoritative = await RefreshCoreAsync(token).ConfigureAwait(false);
+                    _snapshot = authoritative with
+                    {
+                        State = InternalDriverPreSessionState.ManualBindingDecisionStale,
+                        Diagnostic =
+                            "The manual tracker binding changed after motion verification. " +
+                            "The pending decision is stale and no settings were overwritten. " +
+                            $"Authoritative state was reloaded. {authoritative.Diagnostic}",
+                        Remediation =
+                            "Refresh, rerun motion verification for the current pair, then " +
+                            "make a new explicit decision.",
+                    };
+                    return _snapshot;
+                }
+
+                var mutationGeneration = verification.AuthorityGeneration ??
+                    loadedGenerationAfter;
+                if (!InternalDriverSettingsFile.TrySaveIfGenerationMatches(
+                        _paths.SettingsPath,
+                        mutationGeneration,
+                        settings.WithManualTrackerBinding(
+                            new InternalDriverTrackerBinding(
+                                selected.LeftTrackerSerial!,
+                                selected.RightTrackerSerial!))))
+                {
+                    var authoritative = await RefreshCoreAsync(token).ConfigureAwait(false);
+                    _snapshot = authoritative with
+                    {
+                        State = InternalDriverPreSessionState.ManualBindingDecisionStale,
+                        Diagnostic =
+                            "The authoritative pre-session settings changed at the commit " +
+                            "boundary. The pending decision is stale and no settings were " +
+                            $"overwritten. Authoritative state was reloaded. " +
+                            $"{authoritative.Diagnostic}",
+                        Remediation =
+                            "Refresh, rerun motion verification for the current pair, then " +
+                            "make a new explicit decision.",
+                    };
+                    return _snapshot;
+                }
+
                 var refreshed = await RefreshCoreAsync(token).ConfigureAwait(false);
                 _snapshot = refreshed with
                 {
@@ -409,6 +538,7 @@ public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionC
                 .ConfigureAwait(false);
             var processes = _processInspector.Inspect();
             SteamVrDriverStartupInspection? registration = null;
+            TrackerRoleDrift? trackerRoleDrift = null;
             string? registrationFailure = null;
             try
             {
@@ -418,6 +548,20 @@ public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionC
                 registration = await maintenance
                     .InspectNextStartAsync(cancellationToken)
                     .ConfigureAwait(false);
+                try
+                {
+                    trackerRoleDrift = maintenance.InspectTrackerRoleDrift(registration);
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    registration = registration with
+                    {
+                        Diagnostic =
+                            $"{registration.Diagnostic} Read-only tracker-role drift " +
+                            $"inspection was unavailable ({exception.GetType().Name}); no role " +
+                            "was rewritten.",
+                    };
+                }
             }
             catch (Exception exception) when (
                 exception is not OperationCanceledException ||
@@ -431,6 +575,9 @@ public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionC
                     device.Serial,
                     device.Model))
                 .ToArray();
+            var pathEvidence = InspectTrackerPathEvidence();
+            var recoveryDiscovery = InspectRecoveryCandidates(registration);
+            var storedProfileQuality = AssessStoredProfileQuality(settings);
             var state = discovery.IsSuccess
                 ? InternalDriverPreSessionState.Ready
                 : InternalDriverPreSessionState.TrackerDiscoveryFailed;
@@ -465,7 +612,17 @@ public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionC
                     ? "Select distinct left/right trackers or retain automatic association, " +
                       "then press Start."
                     : "Correct the typed pairing or registration diagnostic while stopped, " +
-                      "then refresh.");
+                      "then refresh.")
+            {
+                ExternalRegistrationWarnings =
+                    registration?.ExternalIntegrationWarnings.ToArray() ?? [],
+                RecoveryDiscovery = recoveryDiscovery,
+                TrackerRoleDrift = trackerRoleDrift,
+                TrackerPathObservations = pathEvidence.Observations,
+                TrackerPathReconciliationPending = pathEvidence.Pending,
+                TrackerPathEvidenceDiagnostic = pathEvidence.Diagnostic,
+                StoredProfileQuality = storedProfileQuality,
+            };
             return _snapshot;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -482,6 +639,102 @@ public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionC
                     "Repair internal-driver.json while the session is stopped, then refresh.",
             };
             return _snapshot;
+        }
+    }
+
+    private (
+        IReadOnlyList<TrackerPathObservation> Observations,
+        bool Pending,
+        string Diagnostic) InspectTrackerPathEvidence()
+    {
+        try
+        {
+            var store = new TrackerPathObservationStore(
+                _paths.EffectiveTrackerPathObservationStorePath);
+            if (store.HasPendingReconciliation)
+            {
+                var lastCommitted = store.LoadLastCommittedForPresentation().ToArray();
+                return (
+                    lastCommitted,
+                    true,
+                    "A tracker-path change is pending reconciliation. The displayed current " +
+                    "and history values are the last committed observations, not current " +
+                    "mutation authority, until one normal live session refreshes them.");
+            }
+
+            var observations = store.LoadAll().ToArray();
+            return observations.Length == 0
+                ? (
+                    observations,
+                    false,
+                    "No live tracker-path observation is stored. Run one normal live session " +
+                    "to capture exact registered paths.")
+                : (
+                    observations,
+                    false,
+                    $"Loaded {observations.Length} exact live tracker-path observation(s). " +
+                    "Run one normal live session after hardware or path changes to refresh them.");
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return (
+                Array.Empty<TrackerPathObservation>(),
+                false,
+                $"Tracker-path evidence is unavailable ({exception.GetType().Name}). " +
+                "Run one normal live session after repairing the evidence store.");
+        }
+    }
+
+    private static SteamVrSettingsRecoveryDiscovery? InspectRecoveryCandidates(
+        SteamVrDriverStartupInspection? registration)
+    {
+        if (registration is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new SteamVrSettingsManager(registration.Paths.SettingsFile)
+                .DiscoverRecoveryBackups();
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return null;
+        }
+    }
+
+    private StoredCalibrationProfilePairAssessment? AssessStoredProfileQuality(
+        InternalDriverSettings settings)
+    {
+        if (settings.ManualTrackerBinding is not { } binding)
+        {
+            return null;
+        }
+
+        try
+        {
+            var calibration = new InternalDriverCalibration(
+                _paths.CalibrationProfileStorePath);
+            var left = calibration.FindReusableProfile(
+                new InternalDriverCalibrationContext(
+                    MetaLinkHand.Left,
+                    binding.LeftTrackerSerial,
+                    ControllerModel));
+            var right = calibration.FindReusableProfile(
+                new InternalDriverCalibrationContext(
+                    MetaLinkHand.Right,
+                    binding.RightTrackerSerial,
+                    ControllerModel));
+            return left.CanReuse && right.CanReuse
+                ? StoredCalibrationProfileQualityAssessor.AssessPair(
+                    left.Profile!,
+                    right.Profile!)
+                : null;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return null;
         }
     }
 

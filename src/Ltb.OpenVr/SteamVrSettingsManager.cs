@@ -211,6 +211,18 @@ public sealed class SteamVrSettingsManager
     {
         var priorState = RequirePhysicalTrackerRoleState(
             neutralizationRecoveryPoint);
+        return InspectPhysicalTrackerRoleDrift(priorState.Targets);
+    }
+
+    /// <summary>
+    /// Reads the current roles for an exact caller-authorized tracker-path pair.
+    /// This overload exists for retained durable receipts whose prior values
+    /// are not needed for drift presentation. It never writes settings.
+    /// </summary>
+    public TrackerRoleDrift InspectPhysicalTrackerRoleDrift(
+        PhysicalTrackerRoleTargets targets)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
         var root = ParseRoot(ReadSettingsBytes(), SettingsFilePath);
         var trackersSectionIsPresent = root.TryGetPropertyValue(
             TrackersSectionName,
@@ -220,15 +232,15 @@ public sealed class SteamVrSettingsManager
             trackersSectionIsPresent && trackers is null;
 
         return new TrackerRoleDrift(
-            priorState.Targets,
+            targets,
             InspectPhysicalTrackerRole(
                 trackers,
                 invalidTrackersSection,
-                priorState.Targets.LeftTrackerDevicePath),
+                targets.LeftTrackerDevicePath),
             InspectPhysicalTrackerRole(
                 trackers,
                 invalidTrackersSection,
-                priorState.Targets.RightTrackerDevicePath));
+                targets.RightTrackerDevicePath));
     }
 
     /// <summary>

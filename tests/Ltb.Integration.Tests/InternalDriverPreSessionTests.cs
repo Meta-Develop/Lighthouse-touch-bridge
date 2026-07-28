@@ -1,7 +1,9 @@
+using System.Numerics;
 using Ltb.App;
 using Ltb.Calibration;
 using Ltb.Configuration;
 using Ltb.Driver;
+using Ltb.OpenVr;
 
 namespace Ltb.Integration.Tests;
 
@@ -386,6 +388,187 @@ public sealed class InternalDriverPreSessionTests
     }
 
     [Fact]
+    public async Task StaleVerificationDecisionReloadsNewBindingWithoutOverwritingIt()
+    {
+        using var fixture = new Fixture();
+        await using var control = fixture.CreateControl();
+        _ = await control.SaveManualBindingAsync("lhr-left", "lhr-right");
+        var verification = new InternalDriverManualBindingVerificationEvidence(
+            InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
+            "LHR-LEFT",
+            "LHR-RIGHT",
+            "Correlation suggests the reverse pair.",
+            "LHR-RIGHT",
+            "LHR-LEFT");
+        var newer = InternalDriverSettingsFile.Load(fixture.Paths.SettingsPath)
+            .WithManualTrackerBinding(
+                new InternalDriverTrackerBinding("LHR-RIGHT", "LHR-LEFT"));
+        InternalDriverSettingsFile.Save(fixture.Paths.SettingsPath, newer);
+
+        var result = await control.ApplyManualBindingDecisionAsync(
+            verification,
+            InternalDriverManualBindingDecision.RetainManualBinding);
+
+        Assert.Equal(
+            InternalDriverPreSessionState.ManualBindingDecisionStale,
+            result.State);
+        Assert.Equal("LHR-RIGHT", result.LeftTrackerSerial);
+        Assert.Equal("LHR-LEFT", result.RightTrackerSerial);
+        Assert.Contains("no settings were overwritten", result.Diagnostic);
+        Assert.Contains("rerun", result.Remediation, StringComparison.OrdinalIgnoreCase);
+        var retained = InternalDriverSettingsFile.Load(fixture.Paths.SettingsPath);
+        Assert.Equal("LHR-RIGHT", retained.ManualTrackerBinding?.LeftTrackerSerial);
+        Assert.Equal("LHR-LEFT", retained.ManualTrackerBinding?.RightTrackerSerial);
+    }
+
+    [Fact]
+    public async Task SamePairGenerationDriftMakesVerificationDecisionStaleWithoutOverwrite()
+    {
+        using var fixture = new Fixture();
+        await using var control = fixture.CreateControl();
+        _ = await control.SaveManualBindingAsync("lhr-left", "lhr-right");
+        var generation =
+            InternalDriverSettingsFile.ComputeGeneration(
+                fixture.Paths.SettingsPath);
+        var verification = new InternalDriverManualBindingVerificationEvidence(
+            InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
+            "LHR-LEFT",
+            "LHR-RIGHT",
+            "Correlation suggests the reverse pair.",
+            "LHR-RIGHT",
+            "LHR-LEFT",
+            generation);
+        var changed = InternalDriverSettingsFile.Load(fixture.Paths.SettingsPath)
+            .WithUnregisterOnExit(false);
+        InternalDriverSettingsFile.Save(fixture.Paths.SettingsPath, changed);
+        var changedBytes = File.ReadAllBytes(fixture.Paths.SettingsPath);
+
+        var result = await control.ApplyManualBindingDecisionAsync(
+            verification,
+            InternalDriverManualBindingDecision.AcceptCorrectionCandidate);
+
+        Assert.Equal(
+            InternalDriverPreSessionState.ManualBindingDecisionStale,
+            result.State);
+        Assert.Equal("LHR-LEFT", result.LeftTrackerSerial);
+        Assert.Equal("LHR-RIGHT", result.RightTrackerSerial);
+        Assert.Contains("generation changed", result.Diagnostic);
+        Assert.Contains("no settings were overwritten", result.Diagnostic);
+        Assert.Equal(changedBytes, File.ReadAllBytes(fixture.Paths.SettingsPath));
+    }
+
+    [Fact]
+    public async Task RefreshCarriesWarningsRecoveryPathHistoryAndReadOnlyRoleDrift()
+    {
+        using var fixture = new Fixture();
+        var settingsPath = fixture.Maintenance.Inspection.Paths.SettingsFile;
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        File.WriteAllText(
+            settingsPath,
+            """
+            {
+              "trackers": {
+                "/devices/lighthouse/live-left": "TrackerRole_None",
+                "/devices/lighthouse/live-right": "TrackerRole_Handed"
+              }
+            }
+            """);
+        var backupPath = settingsPath + ".ltb-backup";
+        File.WriteAllText(backupPath, "metadata-only candidate bytes");
+        fixture.RecordObservations(
+            ("LHR-LEFT", "/devices/lighthouse/prior-left"),
+            ("LHR-RIGHT", "/devices/lighthouse/live-right"));
+        _ = new TrackerPathObservationStore(
+                fixture.Paths.EffectiveTrackerPathObservationStorePath)
+            .RecordObservation(new TrackerPathObservationCandidate(
+                "LHR-LEFT",
+                "/devices/lighthouse/live-left",
+                Fixture.ObservedAt(3)));
+        fixture.Maintenance.Inspection = fixture.Maintenance.Inspection with
+        {
+            ExternalIntegrationWarnings =
+                ExternalSteamVrIntegrationWarning.FromRegisteredDriverRoots(
+                [Path.Combine(fixture.Root, "external", "vmt")]),
+        };
+        fixture.Maintenance.RoleDrift = new TrackerRoleDrift(
+            new PhysicalTrackerRoleTargets(
+                "/devices/lighthouse/live-left",
+                "/devices/lighthouse/live-right"),
+            new TrackerRoleDriftEntry(
+                "/devices/lighthouse/live-left",
+                TrackerRoleDriftStatus.UnchangedNeutral,
+                "TrackerRole_None"),
+            new TrackerRoleDriftEntry(
+                "/devices/lighthouse/live-right",
+                TrackerRoleDriftStatus.Changed,
+                "TrackerRole_Handed"));
+        var settingsBefore = File.ReadAllBytes(settingsPath);
+        var backupBefore = File.ReadAllBytes(backupPath);
+        await using var control = fixture.CreateControl();
+
+        var result = await control.RefreshAsync();
+
+        var warning = Assert.Single(result.ExternalRegistrationWarnings);
+        Assert.Equal(ExternalSteamVrIntegrationIdentity.VirtualMotionTracker, warning.Identity);
+        var recovery = Assert.IsType<SteamVrSettingsRecoveryDiscovery>(
+            result.RecoveryDiscovery);
+        var candidate = Assert.Single(recovery.Candidates);
+        Assert.Equal(Path.GetFileName(backupPath), candidate.FileName);
+        Assert.Equal(backupBefore.LongLength, candidate.LengthBytes);
+        Assert.True(result.TrackerRoleDrift?.HasDrift);
+        var left = Assert.Single(
+            result.TrackerPathObservations,
+            observation => observation.TrackerSerial == "LHR-LEFT");
+        Assert.Equal("/devices/lighthouse/live-left", left.RegisteredDevicePath);
+        Assert.Single(left.PathChangeHistory);
+        Assert.False(result.TrackerPathReconciliationPending);
+        Assert.Equal(settingsBefore, File.ReadAllBytes(settingsPath));
+        Assert.Equal(backupBefore, File.ReadAllBytes(backupPath));
+        Assert.Equal(0, fixture.Maintenance.RemoveCalls);
+    }
+
+    [Fact]
+    public async Task RefreshAssessesExactReusableStoredPairAtTwentyMillimeterBoundaries()
+    {
+        using var fixture = new Fixture();
+        await using var control = fixture.CreateControl();
+        _ = await control.SaveManualBindingAsync("lhr-left", "lhr-right");
+        CalibrationProfileFile.SaveStore(
+            fixture.Paths.CalibrationProfileStorePath,
+            new CalibrationProfileStore(
+            [
+                StoredProfile(
+                    ControllerHand.Left,
+                    "LHR-LEFT",
+                    positionRmsMillimeters: 20d,
+                    leverArmMillimeters: 10d),
+                StoredProfile(
+                    ControllerHand.Right,
+                    "LHR-RIGHT",
+                    positionRmsMillimeters: 19.999d,
+                    leverArmMillimeters: 30d),
+            ]));
+
+        var result = await control.RefreshAsync();
+
+        var quality = Assert.IsType<StoredCalibrationProfilePairAssessment>(
+            result.StoredProfileQuality);
+        Assert.Equal(
+            StoredCalibrationPositionGuidance.RecaptureRecommended,
+            quality.Left.PositionGuidance);
+        Assert.Equal(
+            StoredCalibrationPositionGuidance.WithinOperationalGuidance,
+            quality.Right.PositionGuidance);
+        Assert.Equal(
+            StoredCalibrationLeverArmGuidance.MaterialMagnitudeDisagreement,
+            quality.LeverArmGuidance);
+        Assert.Equal(
+            20d,
+            quality.LeverArmMagnitudeDifferenceMillimeters!.Value,
+            3);
+    }
+
+    [Fact]
     public void ManualAssociationMismatchMapsToTypedSessionEvidenceWithoutReassignment()
     {
         var authoritative = new ManualTrackerBinding("lhr-left", "lhr-right");
@@ -398,7 +581,9 @@ public sealed class InternalDriverPreSessionTests
             CorrelationResult: null);
 
         var evidence =
-            ProductionInternalDriverSessionRuntime.ToManualBindingVerificationEvidence(core);
+            ProductionInternalDriverSessionRuntime.ToManualBindingVerificationEvidence(
+                core,
+                new string('a', 64));
 
         Assert.Equal(
             InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
@@ -407,8 +592,36 @@ public sealed class InternalDriverPreSessionTests
         Assert.Equal("LHR-RIGHT", evidence.RightTrackerSerial);
         Assert.Equal("LHR-RIGHT", evidence.CorrectionLeftTrackerSerial);
         Assert.Equal("LHR-LEFT", evidence.CorrectionRightTrackerSerial);
+        Assert.Equal(new string('A', 64), evidence.AuthorityGeneration);
         Assert.True(evidence.RequiresDecision);
     }
+
+    private static CalibrationProfile StoredProfile(
+        ControllerHand hand,
+        string trackerSerial,
+        double positionRmsMillimeters,
+        double leverArmMillimeters) => new(
+        CalibrationProfileSchema.CurrentVersion,
+        $"{hand} stored profile",
+        hand,
+        ControllerRuntimeIdentities.MetaLinkLibOvr,
+        "Quest 2 Touch",
+        controllerIdentity: null,
+        trackerSerial,
+        CalibrationDriverProfiles.LtbTouch,
+        ProfileCalibrationPolicy.Auto,
+        ProfileCalibrationMode.FullSixDof,
+        "validated full 6DoF",
+        new TrackerToControllerTransform(
+            new Vector3((float)(leverArmMillimeters / 1_000d), 0f, 0f),
+            Quaternion.Identity),
+        estimatedLagMilliseconds: 1d,
+        new CalibrationProfileQuality(
+            rotationRmsDegrees: 1d,
+            positionRmsMillimeters,
+            translationCondition: 10d,
+            inlierRatio: 0.95d),
+        Fixture.ObservedAt(1));
 
     private static PairedLighthouseDeviceDiscoveryResult PairingFailure() =>
         new(
@@ -593,6 +806,8 @@ public sealed class InternalDriverPreSessionTests
     {
         public SteamVrDriverStartupInspection Inspection { get; set; } = null!;
 
+        public TrackerRoleDrift? RoleDrift { get; set; }
+
         public InternalDriverRemovalResult Removal { get; set; } = new(
             Changed: false,
             RestartRequired: false,
@@ -603,6 +818,9 @@ public sealed class InternalDriverPreSessionTests
         public ValueTask<SteamVrDriverStartupInspection> InspectNextStartAsync(
             CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(Inspection);
+
+        public TrackerRoleDrift? InspectTrackerRoleDrift(
+            SteamVrDriverStartupInspection inspection) => RoleDrift;
 
         public ValueTask<InternalDriverRemovalResult> RemoveAsync(
             CancellationToken cancellationToken = default)

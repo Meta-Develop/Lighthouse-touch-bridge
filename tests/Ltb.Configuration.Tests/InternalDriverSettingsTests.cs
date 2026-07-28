@@ -431,6 +431,49 @@ public sealed class InternalDriverSettingsTests
     }
 
     [Fact]
+    public void GenerationCompareAndSwapNeverOverwritesNewerSettings()
+    {
+        var rootPath = TemporaryRootPath();
+        var settingsPath = Path.Combine(rootPath, "settings.json");
+        var original = Settings(OpenVrPathsDiscovery.Automatic, rootPath);
+        var newer = original.WithUnregisterOnExit(false);
+        var proposed = original.WithManualTrackerBinding(
+            new InternalDriverTrackerBinding("LHR-LEFT", "LHR-RIGHT"));
+
+        try
+        {
+            InternalDriverSettingsFile.Save(settingsPath, original);
+            var originalGeneration =
+                InternalDriverSettingsFile.ComputeGeneration(settingsPath);
+            InternalDriverSettingsFile.Save(settingsPath, newer);
+            var newerBytes = File.ReadAllBytes(settingsPath);
+
+            Assert.False(InternalDriverSettingsFile.TrySaveIfGenerationMatches(
+                settingsPath,
+                originalGeneration,
+                proposed));
+            Assert.Equal(newerBytes, File.ReadAllBytes(settingsPath));
+
+            var newerGeneration =
+                InternalDriverSettingsFile.ComputeGeneration(settingsPath);
+            Assert.True(InternalDriverSettingsFile.TrySaveIfGenerationMatches(
+                settingsPath,
+                newerGeneration.ToLowerInvariant(),
+                proposed));
+            Assert.Equal(
+                proposed,
+                InternalDriverSettingsFile.Load(settingsPath));
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+            {
+                Directory.Delete(rootPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void SettingsFileBoundaryRejectsRelativeStoragePath()
     {
         var settings = Settings(OpenVrPathsDiscovery.Automatic);
@@ -439,6 +482,13 @@ public sealed class InternalDriverSettingsTests
             InternalDriverSettingsFile.Save("relative-settings.json", settings));
         Assert.Throws<ArgumentException>(() =>
             InternalDriverSettingsFile.TryLoad("relative-settings.json"));
+        Assert.Throws<ArgumentException>(() =>
+            InternalDriverSettingsFile.ComputeGeneration("relative-settings.json"));
+        Assert.Throws<ArgumentException>(() =>
+            InternalDriverSettingsFile.TrySaveIfGenerationMatches(
+                "relative-settings.json",
+                new string('A', 64),
+                settings));
     }
 
     private static InternalDriverSettings Settings(

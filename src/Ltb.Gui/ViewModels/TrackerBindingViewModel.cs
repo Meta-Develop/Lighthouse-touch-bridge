@@ -1,5 +1,8 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using Ltb.App;
+using Ltb.Configuration;
+using Ltb.OpenVr;
 
 namespace Ltb.Gui.ViewModels;
 
@@ -31,6 +34,23 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
     private string _steamVrProcessText = "Not inspected";
     private string _verificationStatusText =
         "Motion-correlation verification has not run for a manual binding.";
+    private string _externalRegistrationWarningsText =
+        "Recognized external SteamVR registrations have not been inspected.";
+    private string _recoveryCandidatesText =
+        "SteamVR settings recovery candidates have not been inspected.";
+    private string _trackerRoleDriftText =
+        "No retained tracker-role receipt has been inspected.";
+    private string _trackerPathEvidenceText =
+        "No live tracker-path evidence has been loaded.";
+    private string _storedLeftQualityText =
+        "No exact reusable stored left-hand profile is selected.";
+    private string _storedRightQualityText =
+        "No exact reusable stored right-hand profile is selected.";
+    private string _storedPairQualityText =
+        "No exact reusable stored profile pair is selected.";
+    private bool _hasExternalRegistrationWarnings;
+    private bool _hasRecoveryCandidates;
+    private bool _hasTrackerRoleDrift;
     private bool _hasManualBinding;
     private bool _hasCorrectionChoice;
     private bool _restartRequired;
@@ -127,6 +147,66 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
     {
         get => _verificationStatusText;
         private set => SetProperty(ref _verificationStatusText, value);
+    }
+
+    public string ExternalRegistrationWarningsText
+    {
+        get => _externalRegistrationWarningsText;
+        private set => SetProperty(ref _externalRegistrationWarningsText, value);
+    }
+
+    public string RecoveryCandidatesText
+    {
+        get => _recoveryCandidatesText;
+        private set => SetProperty(ref _recoveryCandidatesText, value);
+    }
+
+    public string TrackerRoleDriftText
+    {
+        get => _trackerRoleDriftText;
+        private set => SetProperty(ref _trackerRoleDriftText, value);
+    }
+
+    public string TrackerPathEvidenceText
+    {
+        get => _trackerPathEvidenceText;
+        private set => SetProperty(ref _trackerPathEvidenceText, value);
+    }
+
+    public string StoredLeftQualityText
+    {
+        get => _storedLeftQualityText;
+        private set => SetProperty(ref _storedLeftQualityText, value);
+    }
+
+    public string StoredRightQualityText
+    {
+        get => _storedRightQualityText;
+        private set => SetProperty(ref _storedRightQualityText, value);
+    }
+
+    public string StoredPairQualityText
+    {
+        get => _storedPairQualityText;
+        private set => SetProperty(ref _storedPairQualityText, value);
+    }
+
+    public bool HasExternalRegistrationWarnings
+    {
+        get => _hasExternalRegistrationWarnings;
+        private set => SetProperty(ref _hasExternalRegistrationWarnings, value);
+    }
+
+    public bool HasRecoveryCandidates
+    {
+        get => _hasRecoveryCandidates;
+        private set => SetProperty(ref _hasRecoveryCandidates, value);
+    }
+
+    public bool HasTrackerRoleDrift
+    {
+        get => _hasTrackerRoleDrift;
+        private set => SetProperty(ref _hasTrackerRoleDrift, value);
     }
 
     public bool HasManualBinding
@@ -421,19 +501,33 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
             _dispatch(() =>
             {
                 Apply(result);
-                VerificationStatusText = decision ==
-                    InternalDriverManualBindingDecision.AcceptCorrectionCandidate
-                        ? "Correction accepted explicitly and saved for the next preflight."
-                        : "Authoritative manual binding retained explicitly.";
                 _verification = null;
                 HasCorrectionChoice = false;
+                VerificationStatusText =
+                    result.State == InternalDriverPreSessionState.ManualBindingDecisionStale
+                        ? "Pending verification decision cleared: authoritative pre-session " +
+                          "settings changed by value or generation. Refresh and rerun motion " +
+                          "verification; no newer settings were overwritten."
+                        : decision ==
+                            InternalDriverManualBindingDecision.AcceptCorrectionCandidate
+                            ? "Correction accepted explicitly and saved for the next preflight."
+                            : "Authoritative manual binding retained explicitly.";
                 NotifyCommandAvailabilityChanged();
             });
         }
         catch (Exception exception)
         {
-            _dispatch(() => PresentUnexpectedFailure(
-                $"Manual-binding verification decision was not saved: {exception.Message}"));
+            _dispatch(() =>
+            {
+                _verification = null;
+                HasCorrectionChoice = false;
+                VerificationStatusText =
+                    "Pending verification decision cleared because its authority could not " +
+                    "be committed. Refresh and rerun motion verification; no decision retry " +
+                    "will occur automatically.";
+                PresentUnexpectedFailure(
+                    $"Manual-binding verification decision was not saved: {exception.Message}");
+            });
         }
         finally
         {
@@ -466,8 +560,178 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
         SteamVrProcessText = snapshot.SteamVrProcesses.IsAnyRunning
             ? $"Running: {snapshot.SteamVrProcesses.RunningProcessList}"
             : "Stopped: vrserver and vrmonitor are not running";
+        PresentExternalRegistrationWarnings(snapshot);
+        PresentRecoveryCandidates(snapshot);
+        PresentTrackerRoleDrift(snapshot);
+        PresentTrackerPathEvidence(snapshot);
+        PresentStoredQuality(snapshot.StoredProfileQuality);
+        ClearPendingVerificationAfterAuthoritativeRefresh();
         NotifyCommandAvailabilityChanged();
     }
+
+    private void ClearPendingVerificationAfterAuthoritativeRefresh()
+    {
+        if (_verification is null)
+        {
+            return;
+        }
+
+        _verification = null;
+        HasCorrectionChoice = false;
+        VerificationStatusText =
+            "Pending verification decision cleared because authoritative pre-session state " +
+            "was refreshed. Rerun motion verification before deciding, even when the same " +
+            "manual pair is still selected.";
+    }
+
+    private void PresentExternalRegistrationWarnings(
+        InternalDriverPreSessionSnapshot snapshot)
+    {
+        var warnings = snapshot.ExternalRegistrationWarnings;
+        HasExternalRegistrationWarnings = warnings.Count != 0;
+        ExternalRegistrationWarningsText = warnings.Count == 0
+            ? "No recognized unrelated SteamVR registrations were reported."
+            : string.Join(
+                Environment.NewLine,
+                warnings.Select(warning =>
+                    $"{warning.DisplayName}: registered root {warning.RegisteredDriverRoot}. " +
+                    "Registration is not evidence that this integration is loaded, running, " +
+                    $"or publishing. {warning.Guidance} LTB will not modify this registration."));
+    }
+
+    private void PresentRecoveryCandidates(InternalDriverPreSessionSnapshot snapshot)
+    {
+        var candidates = snapshot.RecoveryDiscovery?.Candidates ?? [];
+        HasRecoveryCandidates = candidates.Count != 0;
+        RecoveryCandidatesText = candidates.Count == 0
+            ? "No recognized LTB SteamVR settings backup candidate was found. Discovery " +
+              "uses metadata only and never reads or restores backup contents."
+            : "Metadata-only recovery candidates (no backup content was read and no automatic " +
+              "restore will run) beside settings file " +
+              $"{snapshot.RecoveryDiscovery!.SettingsFilePath}:" + Environment.NewLine +
+              string.Join(
+                  Environment.NewLine,
+                  candidates.Select(candidate => string.Create(
+                      CultureInfo.InvariantCulture,
+                      $"{candidate.BackupFilePath} · sequence {candidate.SequenceNumber} · " +
+                      $"{candidate.LengthBytes} bytes · " +
+                      $"{candidate.LastWriteTimeUtc:yyyy-MM-dd HH:mm:ss 'UTC'}"))) +
+              Environment.NewLine +
+              "Inspect current settings and the candidate manually before choosing any " +
+              "recovery action outside this read-only panel.";
+    }
+
+    private void PresentTrackerRoleDrift(InternalDriverPreSessionSnapshot snapshot)
+    {
+        var drift = snapshot.TrackerRoleDrift;
+        HasTrackerRoleDrift = drift?.HasDrift == true;
+        TrackerRoleDriftText = drift is null
+            ? "No valid retained LTB tracker-role receipt is available for exact-path drift inspection."
+            : $"{FormatRoleDrift("Left", drift.LeftTracker)} " +
+              $"{FormatRoleDrift("Right", drift.RightTracker)} " +
+              "This report is read-only; LTB did not rewrite, restore, or re-neutralize either role.";
+    }
+
+    private static string FormatRoleDrift(string hand, TrackerRoleDriftEntry entry) =>
+        $"{hand} exact path {entry.RegisteredDevicePath}: {entry.Status}" +
+        (entry.ObservedRole is { } role ? $" (observed role {role})." : ".");
+
+    private void PresentTrackerPathEvidence(InternalDriverPreSessionSnapshot snapshot)
+    {
+        var details = snapshot.TrackerPathObservations.Select(observation =>
+        {
+            var history = observation.PathChangeHistory.Count == 0
+                ? "no prior registered-path history"
+                : "prior history: " + string.Join(
+                    " | ",
+                    observation.PathChangeHistory.Select(entry =>
+                        $"{entry.PriorRegisteredDevicePath} last observed " +
+                        $"{FormatUtc(entry.PriorLastObservedUtc)}, replaced " +
+                        $"{FormatUtc(entry.ReplacementUtc)}"));
+            return $"{observation.TrackerSerial}: current exact path " +
+                $"{observation.RegisteredDevicePath}, last observed " +
+                $"{FormatUtc(observation.LastObservedUtc)}; {history}.";
+        });
+        TrackerPathEvidenceText =
+            $"{snapshot.TrackerPathEvidenceDiagnostic} Pending reconciliation: " +
+            $"{(snapshot.TrackerPathReconciliationPending ? "yes" : "no")}. " +
+            "One normal live session is required to refresh current observations." +
+            (snapshot.TrackerPathObservations.Count == 0
+                ? string.Empty
+                : Environment.NewLine + string.Join(Environment.NewLine, details));
+    }
+
+    private void PresentStoredQuality(StoredCalibrationProfilePairAssessment? assessment)
+    {
+        if (assessment is null)
+        {
+            StoredLeftQualityText =
+                "No exact reusable stored left-hand profile is selected; position quality is unavailable.";
+            StoredRightQualityText =
+                "No exact reusable stored right-hand profile is selected; position quality is unavailable.";
+            StoredPairQualityText =
+                "No exact reusable stored pair is selected; lever-arm comparison is insufficient evidence, not poor quality.";
+            return;
+        }
+
+        StoredLeftQualityText = FormatStoredHandQuality("Left", assessment.Left);
+        StoredRightQualityText = FormatStoredHandQuality("Right", assessment.Right);
+        StoredPairQualityText = assessment.LeverArmGuidance switch
+        {
+            StoredCalibrationLeverArmGuidance.MaterialMagnitudeDisagreement =>
+                "Material lever-arm magnitude difference: " +
+                assessment.LeverArmMagnitudeDifferenceMillimeters!.Value.ToString(
+                    "F2",
+                    CultureInfo.InvariantCulture) +
+                " mm is at or above " +
+                StoredCalibrationProfileQualityAssessor
+                    .MaterialLeverArmMagnitudeDifferenceMillimeters
+                    .ToString("F2", CultureInfo.InvariantCulture) +
+                " mm. Inspect the mounts before headset use.",
+            StoredCalibrationLeverArmGuidance.WithinOperationalGuidance =>
+                "Stored lever-arm magnitude difference " +
+                assessment.LeverArmMagnitudeDifferenceMillimeters!.Value.ToString(
+                    "F2",
+                    CultureInfo.InvariantCulture) +
+                " mm is below the " +
+                StoredCalibrationProfileQualityAssessor
+                    .MaterialLeverArmMagnitudeDifferenceMillimeters
+                    .ToString("F2", CultureInfo.InvariantCulture) +
+                " mm guidance boundary.",
+            StoredCalibrationLeverArmGuidance.InsufficientEvidence =>
+                "Stored lever-arm comparison is insufficient evidence because one or both " +
+                "profiles are rotation-only; this is not poor quality.",
+            _ => throw new ArgumentOutOfRangeException(nameof(assessment)),
+        };
+    }
+
+    private static string FormatStoredHandQuality(
+        string hand,
+        StoredCalibrationProfileAssessment assessment) =>
+        assessment.PositionGuidance switch
+        {
+            StoredCalibrationPositionGuidance.RecaptureRecommended =>
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{hand} stored profile is worth recapturing: position RMS " +
+                    $"{assessment.PositionRmsMillimeters:F2} mm is at or above " +
+                    $"{StoredCalibrationProfileQualityAssessor.PositionRmsRecaptureGuidanceMillimeters:F2} mm."),
+            StoredCalibrationPositionGuidance.WithinOperationalGuidance =>
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{hand} stored full-6DoF position RMS " +
+                    $"{assessment.PositionRmsMillimeters:F2} mm is below the " +
+                    $"{StoredCalibrationProfileQualityAssessor.PositionRmsRecaptureGuidanceMillimeters:F2} mm recapture boundary."),
+            StoredCalibrationPositionGuidance.InsufficientEvidence =>
+                $"{hand} stored {assessment.SelectedMode} profile has insufficient position " +
+                "evidence; rotation-only or absent position metrics are not poor quality.",
+            _ => throw new ArgumentOutOfRangeException(nameof(assessment)),
+        };
+
+    private static string FormatUtc(DateTimeOffset value) =>
+        value.ToUniversalTime().ToString(
+            "yyyy-MM-dd HH:mm:ss 'UTC'",
+            CultureInfo.InvariantCulture);
 
     private bool TrackersMatch(
         IReadOnlyList<InternalDriverPairedTrackerOption> pairedTrackers)

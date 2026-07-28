@@ -15,6 +15,57 @@ public sealed class MainWindowInteractionTests
     private static readonly TimeSpan InteractionTimeout = TimeSpan.FromSeconds(2);
 
     [AvaloniaFact]
+    public async Task RepeatedWindowCloseStopsOnceAndFinalCloseRunsOnUiThread()
+    {
+        var session = new ControlledSession();
+        var viewModel = new InternalDriverViewModel(
+            new ControlledSessionFactory(session),
+            action => Dispatcher.UIThread.Post(action));
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+        };
+        var closeCoordinator = new WindowCloseCoordinator(
+            viewModel.CloseAsync,
+            window.SavePlacementAsync,
+            () => Dispatcher.UIThread.Post(window.Close));
+        var canceledCloseCalls = 0;
+        var finalCloseOnUiThread = false;
+        window.Closing += (_, eventArgs) =>
+        {
+            if (closeCoordinator.AllowFinalClose)
+            {
+                return;
+            }
+
+            canceledCloseCalls++;
+            eventArgs.Cancel = true;
+            _ = closeCoordinator.RequestCloseAsync();
+        };
+        window.Closed += (_, _) =>
+        {
+            finalCloseOnUiThread = Dispatcher.UIThread.CheckAccess();
+        };
+
+        window.Show();
+        var run = viewModel.StartAsync();
+        await session.Started.WaitAsync(InteractionTimeout);
+
+        window.Close();
+        window.Close();
+        await AssertUiConditionAsync(
+            () => !window.IsVisible && session.DisposeCallCount == 1,
+            "Repeated close did not complete one bounded stop/dispose/final-close cycle.");
+        await run.WaitAsync(InteractionTimeout);
+
+        Assert.True(canceledCloseCalls >= 1);
+        Assert.Equal(1, session.StopCallCount);
+        Assert.Equal(1, session.DisposeCallCount);
+        Assert.True(finalCloseOnUiThread);
+        Assert.True(closeCoordinator.AllowFinalClose);
+    }
+
+    [AvaloniaFact]
     public async Task ActionButtonMouseClicksStartAndStopControlledSession()
     {
         var session = new ControlledSession();

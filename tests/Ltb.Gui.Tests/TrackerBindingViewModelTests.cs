@@ -1,6 +1,9 @@
+using System.Numerics;
 using Ltb.App;
+using Ltb.Configuration;
 using Ltb.Driver;
 using Ltb.Gui.ViewModels;
+using Ltb.OpenVr;
 
 namespace Ltb.Gui.Tests;
 
@@ -83,6 +86,198 @@ public sealed class TrackerBindingViewModelTests
             Assert.Single(control.Decisions));
         Assert.False(viewModel.HasCorrectionChoice);
         Assert.Contains("accepted explicitly", viewModel.VerificationStatusText);
+    }
+
+    [Fact]
+    public async Task AuthoritativeRefreshClearsPendingChoiceEvenWhenPairIsUnchanged()
+    {
+        var control = new FakePreSessionControl(Snapshot(
+            left: "LHR-LEFT",
+            right: "LHR-RIGHT"));
+        await using var viewModel = new TrackerBindingViewModel(
+            control,
+            action => action());
+        viewModel.ApplyVerification(new InternalDriverManualBindingVerificationEvidence(
+            InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
+            "LHR-LEFT",
+            "LHR-RIGHT",
+            "Motion correlation suggests a swap.",
+            "LHR-RIGHT",
+            "LHR-LEFT",
+            new string('A', 64)));
+
+        await viewModel.RefreshAsync();
+
+        Assert.False(viewModel.HasCorrectionChoice);
+        Assert.False(viewModel.AcceptCorrectionCommand.CanExecute(null));
+        Assert.Contains("authoritative pre-session state was refreshed", viewModel.VerificationStatusText);
+        Assert.Contains("same manual pair", viewModel.VerificationStatusText);
+    }
+
+    [Fact]
+    public async Task FailedDecisionCommitClearsPendingAuthorityWithoutAutomaticRetry()
+    {
+        var control = new FakePreSessionControl(Snapshot(
+            left: "LHR-LEFT",
+            right: "LHR-RIGHT"))
+        {
+            DecisionException = new IOException("injected CAS failure"),
+        };
+        await using var viewModel = new TrackerBindingViewModel(
+            control,
+            action => action());
+        viewModel.ApplyVerification(new InternalDriverManualBindingVerificationEvidence(
+            InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
+            "LHR-LEFT",
+            "LHR-RIGHT",
+            "Motion correlation suggests a swap.",
+            "LHR-RIGHT",
+            "LHR-LEFT",
+            new string('A', 64)));
+
+        await viewModel.ApplyVerificationDecisionAsync(
+            InternalDriverManualBindingDecision.AcceptCorrectionCandidate);
+
+        Assert.False(viewModel.HasCorrectionChoice);
+        Assert.Contains("authority could not be committed", viewModel.VerificationStatusText);
+        Assert.Contains("no decision retry", viewModel.VerificationStatusText);
+        Assert.Contains("was not saved", viewModel.StatusText);
+        Assert.Empty(control.Decisions);
+    }
+
+    [Fact]
+    public async Task RefreshPresentsReadOnlyWarningsRecoveryDriftPathsAndStoredQuality()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"ltb-binding-presentation-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var settingsPath = Path.Combine(root, "steamvr.vrsettings");
+            File.WriteAllText(
+                settingsPath,
+                """
+                {
+                  "trackers": {
+                    "/devices/lighthouse/left": "TrackerRole_None",
+                    "/devices/lighthouse/right": "TrackerRole_Handed"
+                  }
+                }
+                """);
+            File.WriteAllText(settingsPath + ".ltb-backup", "opaque candidate");
+            File.WriteAllText(settingsPath + ".ltb-backup.2", "second opaque candidate");
+            var manager = new SteamVrSettingsManager(settingsPath);
+            var storedQuality = StoredCalibrationProfileQualityAssessor.AssessPair(
+                StoredProfile(ControllerHand.Left, "LHR-LEFT", 20d, 10d),
+                StoredProfile(ControllerHand.Right, "LHR-RIGHT", 19.999d, 30d));
+            var snapshot = Snapshot("LHR-LEFT", "LHR-RIGHT") with
+            {
+                ExternalRegistrationWarnings =
+                    ExternalSteamVrIntegrationWarning.FromRegisteredDriverRoots(
+                        [
+                            Path.Combine(root, "vmt"),
+                            Path.Combine(root, "alvr_server"),
+                        ]),
+                RecoveryDiscovery = manager.DiscoverRecoveryBackups(),
+                TrackerRoleDrift = manager.InspectPhysicalTrackerRoleDrift(
+                    new PhysicalTrackerRoleTargets(
+                        "/devices/lighthouse/left",
+                        "/devices/lighthouse/right")),
+                TrackerPathObservations =
+                [
+                    new TrackerPathObservation(
+                        "LHR-LEFT",
+                        "/devices/lighthouse/left",
+                        new DateTimeOffset(2026, 7, 28, 0, 0, 2, TimeSpan.Zero),
+                        [
+                            new TrackerPathObservationHistoryEntry(
+                                "/devices/lighthouse/old-left",
+                                new DateTimeOffset(2026, 7, 28, 0, 0, 0, TimeSpan.Zero),
+                                new DateTimeOffset(2026, 7, 28, 0, 0, 1, TimeSpan.Zero)),
+                        ]),
+                ],
+                TrackerPathReconciliationPending = true,
+                TrackerPathEvidenceDiagnostic =
+                    "Last committed evidence is presentation-only while reconciliation is pending.",
+                StoredProfileQuality = storedQuality,
+            };
+            await using var viewModel = new TrackerBindingViewModel(
+                new FakePreSessionControl(snapshot),
+                action => action());
+
+            await viewModel.InitializeAsync();
+
+            Assert.True(viewModel.HasExternalRegistrationWarnings);
+            Assert.Contains("not evidence", viewModel.ExternalRegistrationWarningsText);
+            Assert.Contains("loaded, running, or publishing", viewModel.ExternalRegistrationWarningsText);
+            Assert.Contains("will not modify", viewModel.ExternalRegistrationWarningsText);
+            Assert.True(
+                viewModel.ExternalRegistrationWarningsText.IndexOf(
+                    "Virtual Motion Tracker",
+                    StringComparison.Ordinal) <
+                viewModel.ExternalRegistrationWarningsText.IndexOf(
+                    "ALVR server",
+                    StringComparison.Ordinal));
+            Assert.True(viewModel.HasRecoveryCandidates);
+            Assert.Contains("Metadata-only", viewModel.RecoveryCandidatesText);
+            Assert.Contains("no automatic restore", viewModel.RecoveryCandidatesText);
+            Assert.True(
+                viewModel.RecoveryCandidatesText.IndexOf(
+                    settingsPath + ".ltb-backup ·",
+                    StringComparison.Ordinal) <
+                viewModel.RecoveryCandidatesText.IndexOf(
+                    settingsPath + ".ltb-backup.2",
+                    StringComparison.Ordinal));
+            Assert.True(viewModel.HasTrackerRoleDrift);
+            Assert.Contains("/devices/lighthouse/right", viewModel.TrackerRoleDriftText);
+            Assert.Contains("read-only", viewModel.TrackerRoleDriftText);
+            Assert.Contains("did not rewrite", viewModel.TrackerRoleDriftText);
+            Assert.Contains("Pending reconciliation: yes", viewModel.TrackerPathEvidenceText);
+            Assert.Contains("current exact path /devices/lighthouse/left", viewModel.TrackerPathEvidenceText);
+            Assert.Contains("prior history", viewModel.TrackerPathEvidenceText);
+            Assert.Contains("One normal live session", viewModel.TrackerPathEvidenceText);
+            Assert.Contains("worth recapturing", viewModel.StoredLeftQualityText);
+            Assert.Contains("below", viewModel.StoredRightQualityText);
+            Assert.Contains("Material lever-arm", viewModel.StoredPairQualityText);
+
+            var insufficientSnapshot = snapshot with
+            {
+                StoredProfileQuality =
+                    StoredCalibrationProfileQualityAssessor.AssessPair(
+                        StoredProfile(
+                            ControllerHand.Left,
+                            "LHR-LEFT",
+                            20.001d,
+                            10d),
+                        StoredRotationOnlyProfile(
+                            ControllerHand.Right,
+                            "LHR-RIGHT")),
+            };
+            await using var insufficientViewModel = new TrackerBindingViewModel(
+                new FakePreSessionControl(insufficientSnapshot),
+                action => action());
+            await insufficientViewModel.InitializeAsync();
+            Assert.Contains(
+                "worth recapturing",
+                insufficientViewModel.StoredLeftQualityText);
+            Assert.Contains(
+                "insufficient",
+                insufficientViewModel.StoredRightQualityText);
+            Assert.Contains(
+                "not poor quality",
+                insufficientViewModel.StoredRightQualityText);
+            Assert.Contains(
+                "insufficient evidence",
+                insufficientViewModel.StoredPairQualityText);
+            Assert.Contains(
+                "not poor quality",
+                insufficientViewModel.StoredPairQualityText);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -325,6 +520,56 @@ public sealed class TrackerBindingViewModelTests
         "Ready.",
         "No remediation.");
 
+    private static CalibrationProfile StoredProfile(
+        ControllerHand hand,
+        string trackerSerial,
+        double positionRmsMillimeters,
+        double leverArmMillimeters) => new(
+        CalibrationProfileSchema.CurrentVersion,
+        $"{hand} profile",
+        hand,
+        ControllerRuntimeIdentities.MetaLinkLibOvr,
+        "Quest 2 Touch",
+        controllerIdentity: null,
+        trackerSerial,
+        CalibrationDriverProfiles.LtbTouch,
+        ProfileCalibrationPolicy.Auto,
+        ProfileCalibrationMode.FullSixDof,
+        "validated full 6DoF",
+        new TrackerToControllerTransform(
+            new Vector3((float)(leverArmMillimeters / 1_000d), 0f, 0f),
+            Quaternion.Identity),
+        estimatedLagMilliseconds: 1d,
+        new CalibrationProfileQuality(
+            rotationRmsDegrees: 1d,
+            positionRmsMillimeters,
+            translationCondition: 10d,
+            inlierRatio: 0.95d),
+        new DateTimeOffset(2026, 7, 28, 0, 0, 0, TimeSpan.Zero));
+
+    private static CalibrationProfile StoredRotationOnlyProfile(
+        ControllerHand hand,
+        string trackerSerial) => new(
+        CalibrationProfileSchema.CurrentVersion,
+        $"{hand} rotation-only profile",
+        hand,
+        ControllerRuntimeIdentities.MetaLinkLibOvr,
+        "Quest 2 Touch",
+        controllerIdentity: null,
+        trackerSerial,
+        CalibrationDriverProfiles.LtbTouch,
+        ProfileCalibrationPolicy.Auto,
+        ProfileCalibrationMode.RotationOnly,
+        "translation unavailable",
+        new TrackerToControllerTransform(Vector3.Zero, Quaternion.Identity),
+        estimatedLagMilliseconds: 1d,
+        new CalibrationProfileQuality(
+            rotationRmsDegrees: 1d,
+            positionRmsMillimeters: null,
+            translationCondition: null,
+            inlierRatio: 0.95d),
+        new DateTimeOffset(2026, 7, 28, 0, 0, 0, TimeSpan.Zero));
+
     private sealed class FakePreSessionControl(
         InternalDriverPreSessionSnapshot snapshot) :
         IInternalDriverPreSessionControl
@@ -334,6 +579,8 @@ public sealed class TrackerBindingViewModelTests
         public int CleanupCalls { get; private set; }
 
         public TimeSpan PrepareStartSynchronousDelay { get; init; }
+
+        public Exception? DecisionException { get; init; }
 
         public TaskCompletionSource PrepareStartEntered { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -366,6 +613,11 @@ public sealed class TrackerBindingViewModelTests
             InternalDriverManualBindingDecision decision,
             CancellationToken cancellationToken = default)
         {
+            if (DecisionException is not null)
+            {
+                throw DecisionException;
+            }
+
             Decisions.Add(decision);
             CurrentSnapshot = CurrentSnapshot with
             {

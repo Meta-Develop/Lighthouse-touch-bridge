@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using Ltb.App;
+using Ltb.Configuration;
 
 namespace Ltb.Gui.ViewModels;
 
@@ -53,6 +54,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
     private string _feedError = "None";
     private bool _reduceMotion;
     private bool _isDebugEnabled;
+    private string _calibrationPairGuidance =
+        "No newly completed or reused session profile pair is available.";
     private InternalDriverSessionSnapshot? _latestPresentedSnapshot;
 
     public InternalDriverViewModel(
@@ -327,6 +330,12 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 _ = DebugDiagnostics.TrySample(snapshot, force: true);
             }
         }
+    }
+
+    public string CalibrationPairGuidance
+    {
+        get => _calibrationPairGuidance;
+        private set => SetProperty(ref _calibrationPairGuidance, value);
     }
 
     public RelayCommand ActionCommand { get; }
@@ -751,6 +760,9 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
 
             LeftHand.UpdateSemantic(snapshot.Left);
             RightHand.UpdateSemantic(snapshot.Right);
+            UpdateCalibrationPairGuidance(
+                snapshot.Left.Calibration,
+                snapshot.Right.Calibration);
             UpdateRows(snapshot);
             UpdateFeedSemantic(snapshot.Feed);
             CalibrationGuide.Update(snapshot);
@@ -764,6 +776,38 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         RightHand.UpdateTelemetry(snapshot.Right);
         UpdateFeedTelemetry(snapshot.Feed);
         _ = DebugDiagnostics.TrySample(snapshot);
+    }
+
+    private void UpdateCalibrationPairGuidance(
+        InternalDriverCalibrationEvidence? left,
+        InternalDriverCalibrationEvidence? right)
+    {
+        if (left?.LeverArmMagnitudeMillimeters is not { } leftMagnitude ||
+            right?.LeverArmMagnitudeMillimeters is not { } rightMagnitude)
+        {
+            CalibrationPairGuidance =
+                "New/reused lever-arm comparison is insufficient evidence because one or " +
+                "both profiles are rotation-only or lack a measured translation; this is not poor quality.";
+            return;
+        }
+
+        var difference = Math.Abs(leftMagnitude - rightMagnitude);
+        CalibrationPairGuidance = difference >=
+            StoredCalibrationProfileQualityAssessor.MaterialLeverArmMagnitudeDifferenceMillimeters
+            ? "Material lever-arm magnitude difference: " +
+              difference.ToString("F2", CultureInfo.InvariantCulture) +
+              " mm is at or above " +
+              StoredCalibrationProfileQualityAssessor
+                  .MaterialLeverArmMagnitudeDifferenceMillimeters
+                  .ToString("F2", CultureInfo.InvariantCulture) +
+              " mm. Inspect the mounts before headset use."
+            : "New/reused lever-arm magnitude difference " +
+              difference.ToString("F2", CultureInfo.InvariantCulture) +
+              " mm is below the " +
+              StoredCalibrationProfileQualityAssessor
+                  .MaterialLeverArmMagnitudeDifferenceMillimeters
+                  .ToString("F2", CultureInfo.InvariantCulture) +
+              " mm guidance boundary.";
     }
 
     private void UpdateRows(InternalDriverSessionSnapshot snapshot)
@@ -989,6 +1033,8 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
         private string _calibrationReason = "Unavailable";
         private string _calibrationLag = "Unavailable";
         private string _calibrationQuality = "Unavailable";
+        private string _calibrationGuidance =
+            "Position quality is unavailable; absent evidence is not poor quality.";
         private string _calibrationCreated = "Unavailable";
         private string _captureSamples = "Unavailable";
         private string _captureValidity = "Unavailable";
@@ -1083,6 +1129,12 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             private set => SetProperty(ref _calibrationQuality, value);
         }
 
+        public string CalibrationGuidance
+        {
+            get => _calibrationGuidance;
+            private set => SetProperty(ref _calibrationGuidance, value);
+        }
+
         public string CalibrationCreated
         {
             get => _calibrationCreated;
@@ -1164,13 +1216,15 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 CalibrationReason = "Unavailable";
                 CalibrationLag = "Unavailable";
                 CalibrationQuality = "Unavailable";
+                CalibrationGuidance =
+                    "Position quality is unavailable; absent evidence is not poor quality.";
                 CalibrationCreated = "Unavailable";
                 return;
             }
 
             var quality = calibration.Quality;
-            var positionRms = quality.PositionRmsMillimeters is { } position
-                ? position.ToString("F2", CultureInfo.InvariantCulture) + " mm"
+            var positionRms = quality.PositionRmsMillimeters is { } positionValue
+                ? positionValue.ToString("F2", CultureInfo.InvariantCulture) + " mm"
                 : "unavailable";
             var translationCondition = quality.TranslationConditionNumber is { } condition
                 ? condition.ToString("F2", CultureInfo.InvariantCulture)
@@ -1185,6 +1239,26 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 $"rotation RMS {quality.RotationRmsDegrees:F2} deg; " +
                 $"position RMS {positionRms}; translation condition {translationCondition}; " +
                 $"inliers {FormatPercent(quality.InlierRatio)}");
+            CalibrationGuidance = calibration.SelectedMode switch
+            {
+                InternalDriverCalibrationMode.FullSixDof
+                    when quality.PositionRmsMillimeters is { } measuredPosition &&
+                         measuredPosition >= StoredCalibrationProfileQualityAssessor
+                             .PositionRmsRecaptureGuidanceMillimeters =>
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"This hand is worth recapturing: position RMS {measuredPosition:F2} mm is at " +
+                        $"or above {StoredCalibrationProfileQualityAssessor.PositionRmsRecaptureGuidanceMillimeters:F2} mm."),
+                InternalDriverCalibrationMode.FullSixDof
+                    when quality.PositionRmsMillimeters is { } measuredPosition =>
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"Position RMS {measuredPosition:F2} mm is below the " +
+                        $"{StoredCalibrationProfileQualityAssessor.PositionRmsRecaptureGuidanceMillimeters:F2} mm recapture boundary."),
+                _ =>
+                    "Position quality is insufficient evidence because the profile is " +
+                    "rotation-only or has no position metric; this is not poor quality.",
+            };
             CalibrationCreated = FormatCreated(calibration.CreatedUtc);
         }
 

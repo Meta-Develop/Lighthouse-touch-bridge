@@ -62,6 +62,27 @@ public sealed class TrackerPathObservationStore
     }
 
     /// <summary>
+    /// Reports whether an interrupted path-change replacement still requires
+    /// reconciliation. This is presentation evidence only; callers must still
+    /// use <see cref="LoadAll"/> for the authoritative fail-closed read.
+    /// </summary>
+    public bool HasPendingReconciliation => _persistence.Exists(_pendingPath);
+
+    /// <summary>
+    /// Loads the last committed snapshot for read-only presentation even when a
+    /// pending reconciliation marker exists. The returned values must never be
+    /// used as current mutation authority while
+    /// <see cref="HasPendingReconciliation"/> is true.
+    /// </summary>
+    public IReadOnlyList<TrackerPathObservation> LoadLastCommittedForPresentation()
+    {
+        lock (_sync)
+        {
+            return LoadMain();
+        }
+    }
+
+    /// <summary>
     /// Loads a complete immutable, serial-sorted snapshot. Missing storage is
     /// empty. Any pending path-change marker makes all evidence unavailable.
     /// </summary>

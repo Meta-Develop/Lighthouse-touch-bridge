@@ -382,10 +382,44 @@ internal sealed class SteamVrSettingsTrackerNeutralizationBackend :
         }
     }
 
+    /// <summary>
+    /// Reads current roles only for the exact settings path and tracker paths
+    /// retained by a valid durable LTB receipt. No recovery, neutralization,
+    /// restore, receipt deletion, or settings write is performed.
+    /// </summary>
+    internal static TrackerRoleDrift? InspectRetainedRoleDrift(
+        string receiptPath,
+        string settingsFilePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(receiptPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(settingsFilePath);
+        var canonicalReceiptPath = Path.GetFullPath(receiptPath);
+        if (!File.Exists(canonicalReceiptPath))
+        {
+            return null;
+        }
+
+        var receipt = ReadReceipt(canonicalReceiptPath);
+        if (!PathsEqual(receipt.SettingsFilePath, settingsFilePath))
+        {
+            throw new InvalidDataException(
+                "The retained tracker-role receipt belongs to a different SteamVR settings file.");
+        }
+
+        return new SteamVrSettingsManager(settingsFilePath)
+            .InspectPhysicalTrackerRoleDrift(
+                new PhysicalTrackerRoleTargets(
+                    receipt.LeftTrackerDevicePath,
+                    receipt.RightTrackerDevicePath));
+    }
+
     private DurableReceipt ReadReceipt()
+        => ReadReceipt(_receiptPath);
+
+    private static DurableReceipt ReadReceipt(string receiptPath)
     {
         var receipt = JsonSerializer.Deserialize<DurableReceipt>(
-            File.ReadAllText(_receiptPath, Encoding.UTF8),
+            File.ReadAllText(receiptPath, Encoding.UTF8),
             ReceiptJsonOptions)
             ?? throw new InvalidDataException("Tracker-role recovery receipt is null.");
         if (receipt.SchemaVersion != ReceiptSchemaVersion ||
