@@ -207,8 +207,10 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await RunSerializedControlAsync(
-                    _control.PrepareStartAsync,
+            var result = await Task.Run(
+                    () => RunSerializedControlAsync(
+                        _control.PrepareStartAsync,
+                        CancellationToken.None),
                     CancellationToken.None)
                 .ConfigureAwait(false);
             _dispatch(() => Apply(result));
@@ -228,11 +230,12 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
     public async Task<InternalDriverPreSessionSnapshot> CompleteControlledStopAsync()
     {
-        if (!TryBeginOperation(allowWhileBusy: true))
+        if (!TryBeginControlledStopOperation(out var refreshCancellation))
         {
             return _control.CurrentSnapshot;
         }
 
+        CancelRefresh(refreshCancellation);
         try
         {
             var result = await RunSerializedControlAsync(
@@ -510,6 +513,36 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
                 _operationsDrained = new TaskCompletionSource(
                     TaskCreationOptions.RunContinuationsAsynchronously);
             }
+        }
+
+        if (becameBusy)
+        {
+            _dispatch(() => IsBusy = true);
+        }
+
+        return true;
+    }
+
+    private bool TryBeginControlledStopOperation(
+        out CancellationTokenSource? refreshCancellation)
+    {
+        bool becameBusy;
+        lock (_operationSync)
+        {
+            if (_disposed)
+            {
+                refreshCancellation = null;
+                return false;
+            }
+
+            becameBusy = _operationCount++ == 0;
+            if (becameBusy)
+            {
+                _operationsDrained = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            refreshCancellation = _refreshCancellation;
         }
 
         if (becameBusy)

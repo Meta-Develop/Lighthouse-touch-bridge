@@ -256,6 +256,21 @@ public sealed class GuiPerformanceMeasurementTests(ITestOutputHelper output)
             $"caller_thread={callerThread} control_thread={controlThread}");
         Assert.False(completedOnReturn);
         Assert.NotEqual(callerThread, controlThread);
+
+        stopwatch.Restart();
+        var prepare = viewModel.PrepareStartAsync();
+        stopwatch.Stop();
+        var prepareCompletedOnReturn = prepare.IsCompleted;
+        await control.PrepareEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var prepareControlThread = control.PrepareEntryThreadId;
+        _ = await prepare.WaitAsync(TimeSpan.FromSeconds(5));
+        output.WriteLine(
+            $"prepare_start_sync_prefix simulated_ms=25 " +
+            $"call_return_ms={stopwatch.Elapsed.TotalMilliseconds:F3} " +
+            $"completed_on_return={prepareCompletedOnReturn} " +
+            $"caller_thread={callerThread} control_thread={prepareControlThread}");
+        Assert.False(prepareCompletedOnReturn);
+        Assert.NotEqual(callerThread, prepareControlThread);
     }
 
     private void MeasureHeadlessWindowAndPlots()
@@ -601,7 +616,12 @@ public sealed class GuiPerformanceMeasurementTests(ITestOutputHelper output)
         public TaskCompletionSource Entered { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public TaskCompletionSource PrepareEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public int EntryThreadId { get; private set; }
+
+        public int PrepareEntryThreadId { get; private set; }
 
         public InternalDriverPreSessionSnapshot CurrentSnapshot { get; private set; } =
             InternalDriverPreSessionSnapshot.Initial;
@@ -637,8 +657,13 @@ public sealed class GuiPerformanceMeasurementTests(ITestOutputHelper output)
             ValueTask.FromResult(CurrentSnapshot);
 
         public ValueTask<InternalDriverPreSessionSnapshot> PrepareStartAsync(
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(CurrentSnapshot);
+            CancellationToken cancellationToken = default)
+        {
+            PrepareEntryThreadId = Environment.CurrentManagedThreadId;
+            PrepareEntered.TrySetResult();
+            Thread.Sleep(delay);
+            return ValueTask.FromResult(CurrentSnapshot);
+        }
 
         public ValueTask<InternalDriverPreSessionSnapshot> CompleteControlledStopAsync(
             CancellationToken cancellationToken = default) =>
