@@ -10,6 +10,14 @@
         Height="860"
         MinWidth="760"
         MinHeight="620">
+  <Window.Styles>
+    <Style Selector="Expander#MountAdjustmentExpander /template/ ToggleButton#ExpanderHeader">
+      <Setter Property="TabIndex" Value="19" />
+    </Style>
+    <Style Selector="Expander#MaintenanceExpander /template/ ToggleButton#ExpanderHeader">
+      <Setter Property="TabIndex" Value="59" />
+    </Style>
+  </Window.Styles>
   <DockPanel Margin="16">
     <!-- Status and primary actions stay visible while the evidence surface scrolls. -->
     <Border DockPanel.Dock="Top"
@@ -401,7 +409,6 @@
         <Border x:Name="MountAdjustmentPanel"
                 Classes="panel">
           <Expander x:Name="MountAdjustmentExpander"
-                    TabIndex="19"
                     AutomationProperties.Name="Per-hand mount adjustment tuning"
                     IsExpanded="False">
             <Expander.Header>
