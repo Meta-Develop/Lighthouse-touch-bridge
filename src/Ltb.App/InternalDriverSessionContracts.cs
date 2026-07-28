@@ -941,6 +941,13 @@ public sealed record InternalDriverSessionOptions
 
     public string? CalibrationProfileStorePath { get; init; }
 
+    /// <summary>
+    /// Optional private durable store for exact tracker paths observed from
+    /// live OpenVR enumeration. The production factory supplies a per-user
+    /// default when omitted.
+    /// </summary>
+    public string? TrackerPathObservationStorePath { get; init; }
+
     public string? StagedDriverRoot { get; init; }
 
     public string? StructuredLogPath { get; init; }
@@ -995,6 +1002,9 @@ public sealed record InternalDriverSessionOptions
         ValidateOptionalPath(LocalApplicationDataRoot, nameof(LocalApplicationDataRoot));
         ValidateOptionalPath(SettingsPath, nameof(SettingsPath));
         ValidateOptionalPath(CalibrationProfileStorePath, nameof(CalibrationProfileStorePath));
+        ValidateOptionalPath(
+            TrackerPathObservationStorePath,
+            nameof(TrackerPathObservationStorePath));
         ValidateOptionalPath(StagedDriverRoot, nameof(StagedDriverRoot));
         ValidateOptionalPath(StructuredLogPath, nameof(StructuredLogPath));
         ValidateOptionalIdentity(
@@ -1125,6 +1135,17 @@ internal interface IInternalDriverSessionRuntime : IAsyncDisposable
     ulong GetMonotonicNanoseconds();
 
     ValueTask StopRunAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Optional production capability that durably records only the exact selected
+/// physical tracker pair observed during a successful live OpenVR session.
+/// </summary>
+internal interface IInternalDriverTrackerPathObservationRuntime
+{
+    void RecordSelectedTrackerPaths(
+        IReadOnlyList<InternalDriverTrackerPath> trackerPaths,
+        DateTimeOffset observedAtUtc);
 }
 
 internal interface IInternalDriverSessionOutput : IDisposable

@@ -624,34 +624,64 @@ public sealed class InternalDriverPreSessionControl : IInternalDriverPreSessionC
             return _snapshot;
         }
 
-        var pathEvidence = selected.Select(serial =>
+        try
         {
-            var paired = refreshed.PairedTrackers.Single(option =>
-                string.Equals(option.Serial, serial, StringComparison.OrdinalIgnoreCase));
-            return OfflineOpenVrDevicePath.FromPairedLighthouseRecord(
-                paired.Serial,
-                paired.Model);
-        }).ToArray();
-        if (pathEvidence.Any(evidence => !evidence.IsResolved))
+            var store = new TrackerPathObservationStore(
+                _paths.EffectiveTrackerPathObservationStorePath);
+            var storedSnapshot = store.LoadAll();
+            var observations = selected
+                .Select(serial => storedSnapshot.SingleOrDefault(observation =>
+                    string.Equals(
+                        observation.TrackerSerial,
+                        serial,
+                        StringComparison.Ordinal)))
+                .ToArray();
+            if (observations.Any(observation => observation is null) ||
+                observations.Select(observation => observation!.RegisteredDevicePath)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count() != 2)
+            {
+                return RegisteredDevicePathUnresolved(
+                    "No complete distinct exact current tracker-path evidence pair is available.");
+            }
+
+            _snapshot = refreshed with
+            {
+                State = InternalDriverPreSessionState.Ready,
+                Diagnostic =
+                    "Manual-binding preflight resolved two distinct exact registered-device " +
+                    "paths from durable live-session evidence. The path values remain redacted; " +
+                    "no SteamVR settings write was attempted.",
+                Remediation =
+                    "Start may proceed with the saved manual pair. TrackerRole_None hardware " +
+                    "behavior remains unchecked on the target Windows SteamVR runtime.",
+            };
+            return _snapshot;
+        }
+        catch (Exception exception) when (
+            exception is not OutOfMemoryException and not OperationCanceledException)
+        {
+            return RegisteredDevicePathUnresolved(
+                $"Stored tracker-path evidence failed closed ({exception.GetType().Name}).");
+        }
+
+        InternalDriverPreSessionSnapshot RegisteredDevicePathUnresolved(string reason)
         {
             _snapshot = refreshed with
             {
                 State = InternalDriverPreSessionState.RegisteredDevicePathUnresolved,
                 Diagnostic =
                     "Manual-binding preflight is blocked before tracker-role neutralization. " +
-                    "Paired Lighthouse config proves the two uppercase serials and models, but " +
-                    "not either live registered-device path/key. No steamvr.vrsettings write " +
-                    "was attempted and no /devices/lighthouse/<serial> path was synthesized.",
+                    $"{reason} Paired Lighthouse config remains serial/model evidence only. " +
+                    "No steamvr.vrsettings write was attempted, no tracker path was " +
+                    "synthesized, and stored path values remain redacted.",
                 Remediation =
-                    "Capture Windows evidence that maps each real config serial/model to its " +
-                    "authoritative live OpenVR registered-device path across restart and device-" +
-                    "index churn, then add that proven provenance to the application boundary.",
+                    "Clear or disable the manual binding if automatic association is desired; " +
+                    "otherwise complete one normal live LTB session so real OpenVR enumeration " +
+                    "records the selected pair, then retry while SteamVR is stopped.",
             };
             return _snapshot;
         }
-
-        throw new InvalidOperationException(
-            "The current offline path-evidence boundary cannot produce a resolved path.");
     }
 
     private async ValueTask<InternalDriverPreSessionSnapshot> CompleteControlledStopCoreAsync(

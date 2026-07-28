@@ -64,13 +64,103 @@ public sealed class InternalDriverPreSessionTests
         Assert.Equal(
             InternalDriverPreSessionState.RegisteredDevicePathUnresolved,
             result.State);
-        Assert.Contains("config serial/model", result.Remediation, StringComparison.Ordinal);
+        Assert.Contains("one normal live LTB session", result.Remediation, StringComparison.Ordinal);
         Assert.Contains("No steamvr.vrsettings write", result.Diagnostic);
         Assert.Contains(
-            "no /devices/lighthouse/<serial> path was synthesized",
+            "no tracker path was synthesized",
             result.Diagnostic,
-            StringComparison.Ordinal);
+            StringComparison.OrdinalIgnoreCase);
         Assert.Equal(before, File.ReadAllBytes(steamVrSettings));
+    }
+
+    [Fact]
+    public async Task StoppedManualBindingUsesOneExactNormalizedCurrentEvidencePair()
+    {
+        using var fixture = new Fixture();
+        await using var control = fixture.CreateControl();
+        _ = await control.SaveManualBindingAsync(" lhr-left ", "lhr-right");
+        const string leftPath = "/devices/lighthouse/live-left";
+        const string rightPath = "/devices/custom.driver/live-right";
+        fixture.RecordObservations(
+            (" lhr-left ", leftPath),
+            ("LHR-RIGHT", rightPath));
+        var settingsBefore = File.ReadAllBytes(fixture.Paths.SettingsPath);
+
+        var result = await control.PrepareStartAsync();
+
+        Assert.Equal(InternalDriverPreSessionState.Ready, result.State);
+        Assert.True(result.CanStart);
+        Assert.Contains("two distinct exact", result.Diagnostic, StringComparison.Ordinal);
+        Assert.Contains("redacted", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(leftPath, result.Diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain(rightPath, result.Diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain(leftPath, result.Remediation, StringComparison.Ordinal);
+        Assert.DoesNotContain(rightPath, result.Remediation, StringComparison.Ordinal);
+        Assert.Equal(settingsBefore, File.ReadAllBytes(fixture.Paths.SettingsPath));
+    }
+
+    [Fact]
+    public async Task SimilarSerialAndPriorPathHistoryCannotSubstituteForExactCurrentEvidence()
+    {
+        using var fixture = new Fixture();
+        await using var control = fixture.CreateControl();
+        _ = await control.SaveManualBindingAsync("lhr-left", "lhr-right");
+        var store = new TrackerPathObservationStore(
+            fixture.Paths.EffectiveTrackerPathObservationStorePath);
+        store.RecordObservations(
+        [
+            new TrackerPathObservationCandidate(
+                "LHR-LEFT-SIMILAR",
+                "/devices/lighthouse/old-left",
+                Fixture.ObservedAt(1)),
+            new TrackerPathObservationCandidate(
+                "LHR-RIGHT",
+                "/devices/lighthouse/right",
+                Fixture.ObservedAt(1)),
+        ]);
+        store.RecordObservation(new TrackerPathObservationCandidate(
+            "LHR-LEFT-SIMILAR",
+            "/devices/lighthouse/current-left",
+            Fixture.ObservedAt(2)));
+
+        var result = await control.PrepareStartAsync();
+
+        Assert.Equal(
+            InternalDriverPreSessionState.RegisteredDevicePathUnresolved,
+            result.State);
+        Assert.Contains("one normal live LTB session", result.Remediation, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-left", result.Diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain("current-left", result.Diagnostic, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("duplicate")]
+    [InlineData("invalid_path")]
+    [InlineData("pending")]
+    public async Task MalformedAmbiguousInvalidOrPendingStoreFailsClosedWithoutWrites(
+        string storeCase)
+    {
+        using var fixture = new Fixture();
+        await using var control = fixture.CreateControl();
+        _ = await control.SaveManualBindingAsync("lhr-left", "lhr-right");
+        fixture.WriteInvalidStore(storeCase);
+        var settingsBefore = File.ReadAllBytes(fixture.Paths.SettingsPath);
+        var steamVrSettings = Path.Combine(fixture.Root, "steamvr.vrsettings");
+        File.WriteAllText(steamVrSettings, "{\"sentinel\":true}");
+        var steamVrBefore = File.ReadAllBytes(steamVrSettings);
+
+        var result = await control.PrepareStartAsync();
+
+        Assert.Equal(
+            InternalDriverPreSessionState.RegisteredDevicePathUnresolved,
+            result.State);
+        Assert.Contains("failed closed", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("one normal live LTB session", result.Remediation, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-left", result.Diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-right", result.Diagnostic, StringComparison.Ordinal);
+        Assert.Equal(settingsBefore, File.ReadAllBytes(fixture.Paths.SettingsPath));
+        Assert.Equal(steamVrBefore, File.ReadAllBytes(steamVrSettings));
     }
 
     [Fact]
@@ -370,6 +460,92 @@ public sealed class InternalDriverPreSessionTests
             new FakeDiscovery(() => DiscoveryResult),
             Processes,
             () => Maintenance);
+
+        public static DateTimeOffset ObservedAt(int second) => new(
+            2026,
+            7,
+            28,
+            0,
+            0,
+            second,
+            TimeSpan.Zero);
+
+        public void RecordObservations(
+            params (string Serial, string DevicePath)[] observations)
+        {
+            var candidates = observations
+                .Select((observation, index) =>
+                    new TrackerPathObservationCandidate(
+                        observation.Serial,
+                        observation.DevicePath,
+                        ObservedAt(index + 1)))
+                .ToArray();
+            _ = new TrackerPathObservationStore(
+                    Paths.EffectiveTrackerPathObservationStorePath)
+                .RecordObservations(candidates);
+        }
+
+        public void WriteInvalidStore(string storeCase)
+        {
+            var path = Paths.EffectiveTrackerPathObservationStorePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            if (storeCase == "pending")
+            {
+                RecordObservations(
+                    ("LHR-LEFT", "/devices/lighthouse/secret-left"),
+                    ("LHR-RIGHT", "/devices/lighthouse/secret-right"));
+                File.WriteAllText(
+                    path + ".path-change-pending",
+                    """
+                    {
+                      "schema_version": 1,
+                      "affected_tracker_serials": [
+                        "LHR-LEFT"
+                      ]
+                    }
+
+                    """);
+                return;
+            }
+
+            File.WriteAllText(
+                path,
+                storeCase switch
+                {
+                    "malformed" => "{",
+                    "duplicate" =>
+                        PersistedStore(
+                            "/devices/lighthouse/secret-left",
+                            "/devices/lighthouse/secret-left"),
+                    "invalid_path" =>
+                        PersistedStore(
+                            "openvr://device/secret-left",
+                            "/devices/lighthouse/secret-right"),
+                    _ => throw new ArgumentOutOfRangeException(nameof(storeCase)),
+                });
+        }
+
+        private static string PersistedStore(string leftPath, string rightPath) =>
+            $$"""
+            {
+              "schema_version": 1,
+              "observations": [
+                {
+                  "tracker_serial": "LHR-LEFT",
+                  "registered_device_path": "{{leftPath}}",
+                  "last_observed_utc": "2026-07-28T00:00:01.0000000Z",
+                  "path_change_history": []
+                },
+                {
+                  "tracker_serial": "LHR-RIGHT",
+                  "registered_device_path": "{{rightPath}}",
+                  "last_observed_utc": "2026-07-28T00:00:01.0000000Z",
+                  "path_change_history": []
+                }
+              ]
+            }
+
+            """;
 
         public SteamVrDriverStartupInspection Inspection(
             SteamVrDriverStartupState state,

@@ -42,6 +42,44 @@ public sealed class PairedLighthouseDeviceDiscoveryTests
     }
 
     [Fact]
+    public async Task IgnoresPathLikeConfigEvidenceAndReturnsSerialModelIdentityOnly()
+    {
+        using var fixture = new PairedDiscoveryFixture();
+        fixture.AddConfig(
+            "devices-lighthouse-LHR-DIRECTORY-SPOOF",
+            JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["device_class"] = "generic_tracker",
+                ["device_serial_number"] = " lhr-config-identity ",
+                ["model_number"] = " VIVE Tracker 3.0 ",
+                ["registered_device_type"] =
+                    "/devices/lighthouse/LHR-REGISTERED-SPOOF",
+                ["device_path"] = "/devices/lighthouse/LHR-PATH-SPOOF",
+            }));
+
+        var result = await fixture.Discovery.DiscoverAsync();
+
+        Assert.True(result.IsSuccess, result.Diagnostic);
+        var device = Assert.Single(result.Devices);
+        Assert.Equal("LHR-CONFIG-IDENTITY", device.Serial);
+        Assert.Equal("VIVE Tracker 3.0", device.Model);
+
+        var publicShape = JsonSerializer.SerializeToElement(device);
+        Assert.Equal(
+            ["Model", "Serial"],
+            publicShape
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .Order(StringComparer.Ordinal));
+        Assert.Equal(
+            "LHR-CONFIG-IDENTITY",
+            publicShape.GetProperty("Serial").GetString());
+        Assert.Equal(
+            "VIVE Tracker 3.0",
+            publicShape.GetProperty("Model").GetString());
+    }
+
+    [Fact]
     public async Task EnumeratesAllApplicableConfiguredRootsUsingExactLowercasePairingDirectory()
     {
         using var paths = new SteamVrLifecycleFixture();
