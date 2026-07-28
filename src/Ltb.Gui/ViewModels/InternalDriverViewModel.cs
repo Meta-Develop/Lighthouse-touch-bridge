@@ -714,39 +714,55 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             return false;
         }
 
+        var forceSemanticPresentation = generation != _presentedRunGeneration;
         _presentedRunGeneration = generation;
         _presentedSnapshotSequence = sequence;
-        ApplySnapshot(snapshot);
+        ApplySnapshot(snapshot, forceSemanticPresentation);
         return true;
     }
 
-    private void ApplySnapshot(InternalDriverSessionSnapshot snapshot)
+    private void ApplySnapshot(
+        InternalDriverSessionSnapshot snapshot,
+        bool forceSemanticPresentation)
     {
+        var updateSemanticPresentation =
+            forceSemanticPresentation ||
+            _latestPresentedSnapshot is null ||
+            !SnapshotPresentationCoalescer.HasEquivalentActivePresentationState(
+                _latestPresentedSnapshot,
+                snapshot);
         _latestPresentedSnapshot = snapshot;
-        CurrentPhase = snapshot.State;
-        PhaseText = SplitPascalCase(snapshot.State.ToString());
-        Diagnostic = snapshot.Diagnostic;
-        Remediation = snapshot.Remediation;
-        RestartRequired = snapshot.RestartRequired;
-        IsReady = snapshot.Readiness.CanPublish && !snapshot.RestartRequired;
-        OverallStatus = snapshot.State switch
+        if (updateSemanticPresentation)
         {
-            InternalDriverSessionState.Stopped => "Stopped",
-            _ when snapshot.RestartRequired => "Restart required",
-            _ when IsReady => "Ready",
-            InternalDriverSessionState.Faulted => "Action required",
-            _ => "Waiting",
-        };
+            CurrentPhase = snapshot.State;
+            PhaseText = SplitPascalCase(snapshot.State.ToString());
+            Diagnostic = snapshot.Diagnostic;
+            Remediation = snapshot.Remediation;
+            RestartRequired = snapshot.RestartRequired;
+            IsReady = snapshot.Readiness.CanPublish && !snapshot.RestartRequired;
+            OverallStatus = snapshot.State switch
+            {
+                InternalDriverSessionState.Stopped => "Stopped",
+                _ when snapshot.RestartRequired => "Restart required",
+                _ when IsReady => "Ready",
+                InternalDriverSessionState.Faulted => "Action required",
+                _ => "Waiting",
+            };
 
-        LeftHand.Update(snapshot.Left);
-        RightHand.Update(snapshot.Right);
-        UpdateRows(snapshot);
-        UpdateFeed(snapshot);
-        CalibrationGuide.Update(snapshot);
-        if (snapshot.ManualBindingVerification is { } verification)
-        {
-            TrackerBinding.ApplyVerification(verification);
+            LeftHand.UpdateSemantic(snapshot.Left);
+            RightHand.UpdateSemantic(snapshot.Right);
+            UpdateRows(snapshot);
+            UpdateFeedSemantic(snapshot.Feed);
+            CalibrationGuide.Update(snapshot);
+            if (snapshot.ManualBindingVerification is { } verification)
+            {
+                TrackerBinding.ApplyVerification(verification);
+            }
         }
+
+        LeftHand.UpdateTelemetry(snapshot.Left);
+        RightHand.UpdateTelemetry(snapshot.Right);
+        UpdateFeedTelemetry(snapshot.Feed);
         _ = DebugDiagnostics.TrySample(snapshot);
     }
 
@@ -814,20 +830,24 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             $"Feed state: {snapshot.Feed.Readiness}; reconnect attempts: {snapshot.Feed.ReconnectAttempts}.");
     }
 
-    private void UpdateFeed(InternalDriverSessionSnapshot snapshot)
+    private void UpdateFeedSemantic(InternalDriverFeedSnapshot feed)
     {
-        var feed = snapshot.Feed;
         FeedState = feed.Readiness.ToString();
         FeedSession = feed.SessionId is { } sessionId
             ? string.Create(
                 CultureInfo.InvariantCulture,
                 $"{sessionId.Word0:X16}{sessionId.Word1:X16}")
             : "None";
-        FeedSequence = feed.LastSuccessfulSequence?.ToString(CultureInfo.InvariantCulture) ?? "None";
-        FeedHeartbeatAge = FormatAge(feed.LastSuccessfulHeartbeatAge);
-        FeedSendAge = FormatAge(feed.LastSuccessfulSendAge);
         FeedReconnectAttempts = feed.ReconnectAttempts;
         FeedError = string.IsNullOrWhiteSpace(feed.LastError) ? "None" : feed.LastError;
+    }
+
+    private void UpdateFeedTelemetry(InternalDriverFeedSnapshot feed)
+    {
+        FeedSequence =
+            feed.LastSuccessfulSequence?.ToString(CultureInfo.InvariantCulture) ?? "None";
+        FeedHeartbeatAge = FormatAge(feed.LastSuccessfulHeartbeatAge);
+        FeedSendAge = FormatAge(feed.LastSuccessfulSendAge);
     }
 
     private ReadinessRowViewModel Row(string key) => _rowByKey[key];
@@ -1111,7 +1131,7 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             private set => SetProperty(ref _positionProgressStatus, value);
         }
 
-        internal void Update(InternalDriverHandSnapshot snapshot)
+        internal void UpdateSemantic(InternalDriverHandSnapshot snapshot)
         {
             ArgumentNullException.ThrowIfNull(snapshot);
             TrackerSerial = snapshot.TrackerSerial ?? "Not assigned";
@@ -1119,7 +1139,6 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
                 ? snapshot.TrackerTracked ? "Tracked" : "Connected / not tracked"
                 : "Disconnected";
             PoseStatus = snapshot.TrackerTracked ? "Tracked" : "Unavailable";
-            PoseAge = FormatAge(snapshot.PoseAge);
             InputStatus = snapshot.MetaInputsValid
                 ? $"Ready ({snapshot.MetaReadiness})"
                 : $"Unavailable ({snapshot.MetaReadiness})";
@@ -1129,6 +1148,12 @@ public sealed class InternalDriverViewModel : ObservableObject, IAsyncDisposable
             Diagnostic = snapshot.Diagnostic;
             UpdateCalibration(snapshot.Calibration);
             UpdateCapture(snapshot.Capture);
+        }
+
+        internal void UpdateTelemetry(InternalDriverHandSnapshot snapshot)
+        {
+            ArgumentNullException.ThrowIfNull(snapshot);
+            PoseAge = FormatAge(snapshot.PoseAge);
         }
 
         private void UpdateCalibration(InternalDriverCalibrationEvidence? calibration)

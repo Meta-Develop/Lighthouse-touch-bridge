@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Headless.XUnit;
@@ -33,6 +34,10 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(calibrationButton);
             Assert.Equal("Calibrate / Recalibrate", calibrationButton!.Content);
             Assert.True(calibrationButton.IsEnabled);
+            Assert.Equal("Alt+C", calibrationButton.HotKey!.ToString());
+            Assert.Equal(
+                "Alt+S",
+                window.FindControl<Button>("ActionButton")!.HotKey!.ToString());
             var readiness = window.FindControl<ItemsControl>("ReadinessList");
             Assert.NotNull(readiness);
             Assert.Equal(4, readiness!.ItemCount);
@@ -61,6 +66,9 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<Button>("SaveTrackerBindingButton"));
             Assert.NotNull(window.FindControl<Button>("ClearTrackerBindingButton"));
             Assert.NotNull(window.FindControl<Button>("RefreshTrackerBindingButton"));
+            Assert.Equal(
+                "F5",
+                window.FindControl<Button>("RefreshTrackerBindingButton")!.HotKey!.ToString());
             var unregisterOnExit =
                 window.FindControl<ToggleSwitch>("UnregisterOnExitToggle");
             Assert.NotNull(unregisterOnExit);
@@ -176,6 +184,8 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<TextBlock>("FeedErrorText"));
 
             Assert.NotNull(window.FindControl<Border>("MountAdjustmentPanel"));
+            Assert.False(
+                window.FindControl<Expander>("MountAdjustmentExpander")!.IsExpanded);
             Assert.NotNull(window.FindControl<Border>("LeftMountAdjustment"));
             Assert.NotNull(window.FindControl<Border>("RightMountAdjustment"));
             Assert.NotNull(window.FindControl<Border>("LeftTrackerSideAdjustment"));
@@ -197,6 +207,12 @@ public sealed class MainWindowSmokeTests
                 axisOrderHelp.Text,
                 StringComparison.Ordinal);
             Assert.Contains("Qx * Qy * Qz", axisOrderHelp.Text, StringComparison.Ordinal);
+            Assert.Equal(
+                1d,
+                window.FindControl<ComboBox>("PositionStepPresetComboBox")!.SelectedItem);
+            Assert.Equal(
+                1d,
+                window.FindControl<ComboBox>("RotationStepPresetComboBox")!.SelectedItem);
 
             var prefixes = new[]
             {
@@ -219,7 +235,14 @@ public sealed class MainWindowSmokeTests
                 Assert.NotNull(window.FindControl<Button>($"{prefix}ResetButton"));
                 foreach (var component in components)
                 {
-                    Assert.NotNull(window.FindControl<TextBox>($"{prefix}{component}TextBox"));
+                    var editor =
+                        window.FindControl<TextBox>($"{prefix}{component}TextBox");
+                    Assert.NotNull(editor);
+                    Assert.Contains("mount-editor", editor!.Classes);
+                    Assert.False(string.IsNullOrWhiteSpace(
+                        AutomationProperties.GetName(editor)));
+                    Assert.False(string.IsNullOrWhiteSpace(
+                        AutomationProperties.GetHelpText(editor)));
                     Assert.NotNull(
                         window.FindControl<Button>($"{prefix}{component}DecrementButton"));
                     Assert.NotNull(
@@ -227,15 +250,22 @@ public sealed class MainWindowSmokeTests
                 }
             }
 
-            Assert.Equal(
-                26,
-                window.GetVisualDescendants().OfType<TextBox>().Count());
+            Assert.Empty(window.GetVisualDescendants()
+                .OfType<TextBox>()
+                .Where(textBox => textBox.Classes.Contains("mount-editor")));
             Assert.NotNull(window.FindControl<TextBlock>("LeftEffectiveMountTransformText"));
             Assert.NotNull(window.FindControl<TextBlock>("RightEffectiveMountTransformText"));
             Assert.NotNull(window.FindControl<Button>("CalibrateLeftMountButton"));
             Assert.NotNull(window.FindControl<Button>("CalibrateRightMountButton"));
             Assert.NotNull(window.FindControl<Button>("CalibrateBothMountButton"));
             Assert.NotNull(window.FindControl<Button>("SaveMountAdjustmentsButton"));
+            Assert.NotNull(window.FindControl<Button>("RevertMountAdjustmentsButton"));
+            Assert.Equal(
+                "Ctrl+S",
+                window.FindControl<Button>("SaveMountAdjustmentsButton")!.HotKey!.ToString());
+            Assert.Equal(
+                "Ctrl+Z",
+                window.FindControl<Button>("RevertMountAdjustmentsButton")!.HotKey!.ToString());
             Assert.NotNull(window.FindControl<Border>("MountAdjustmentDirtyIndicator"));
             Assert.NotNull(window.FindControl<TextBlock>("MountAdjustmentDirtyText"));
             Assert.NotNull(window.FindControl<TextBlock>("TrackerNeutralizationStatusText"));
@@ -243,6 +273,9 @@ public sealed class MainWindowSmokeTests
                 window.FindControl<Border>("MountAdjustmentRestoreFailureWarning")!.IsVisible);
             Assert.NotNull(
                 window.FindControl<TextBlock>("MountAdjustmentRestoreFailureWarningText"));
+            Assert.Equal(
+                "Alt+M",
+                window.FindControl<Button>("RemoveDriverButton")!.HotKey!.ToString());
         }
         finally
         {
@@ -335,7 +368,9 @@ public sealed class MainWindowSmokeTests
         {
             window.Show();
 
-            Assert.Equal(26, window.GetVisualDescendants().OfType<TextBox>().Count());
+            Assert.Empty(window.GetVisualDescendants()
+                .OfType<TextBox>()
+                .Where(textBox => textBox.Classes.Contains("mount-editor")));
             Assert.Null(window.FindControl<TextBox>("LeftSlotTextBox"));
             Assert.Null(window.FindControl<TextBox>("RightSlotTextBox"));
             Assert.Null(window.FindControl<TextBox>("SteamVrSettingsTextBox"));

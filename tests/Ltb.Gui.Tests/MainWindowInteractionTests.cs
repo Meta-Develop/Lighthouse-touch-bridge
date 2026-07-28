@@ -187,6 +187,8 @@ public sealed class MainWindowInteractionTests
         try
         {
             window.Show();
+            window.FindControl<Expander>("MountAdjustmentExpander")!.IsExpanded = true;
+            window.UpdateLayout();
             var positionX = window.FindControl<TextBox>("LeftTrackerPositionXTextBox")!;
             var decrement =
                 window.FindControl<Button>("LeftTrackerPositionXDecrementButton")!;
@@ -198,6 +200,7 @@ public sealed class MainWindowInteractionTests
                 window.FindControl<Button>("LeftTrackerRotationXDecrementButton")!;
             var reset = window.FindControl<Button>("LeftTrackerResetButton")!;
             var save = window.FindControl<Button>("SaveMountAdjustmentsButton")!;
+            var revert = window.FindControl<Button>("RevertMountAdjustmentsButton")!;
 
             Assert.False(viewModel.MountAdjustments.IsDirty);
             Assert.False(viewModel.MountAdjustments.SaveCommand.CanExecute(null));
@@ -300,6 +303,23 @@ public sealed class MainWindowInteractionTests
             Assert.Equal(
                 "No unsaved mount adjustments.",
                 window.FindControl<TextBlock>("MountAdjustmentDirtyText")!.Text);
+
+            ExecuteBoundCommand(increment);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => viewModel.MountAdjustments.IsDirty &&
+                        viewModel.MountAdjustments.RevertCommand.CanExecute(null),
+                    InteractionTimeout),
+                "A post-save edit did not become revertible.");
+            var saveCount = port.SaveRequests.Count;
+            ExecuteBoundCommand(revert);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => !viewModel.MountAdjustments.IsDirty,
+                    InteractionTimeout),
+                "Revert did not restore the last saved mount values live.");
+            Assert.Equal(1d, viewModel.MountAdjustments.LeftHand.TrackerSide.PositionXMillimeters);
+            Assert.Equal(saveCount, port.SaveRequests.Count);
         }
         finally
         {
@@ -307,6 +327,70 @@ public sealed class MainWindowInteractionTests
             AssertCompletes(
                 viewModel.DisposeAsync().AsTask(),
                 "The mount-adjustment test ViewModel did not close cleanly.");
+        }
+    }
+
+    [AvaloniaFact]
+    public void FocusedMountEditorControlPlusMinusUsePresetWithoutGlobalAmbiguity()
+    {
+        var port = new ControlledMountAdjustmentPort(CreateMountSnapshot());
+        var viewModel = new InternalDriverViewModel(
+            new ControlledSessionFactory(new ControlledSession()),
+            action => action(),
+            mountAdjustmentPort: port);
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+        };
+
+        try
+        {
+            window.Show();
+            window.FindControl<Expander>("MountAdjustmentExpander")!.IsExpanded = true;
+            window.UpdateLayout();
+            viewModel.MountAdjustments.SelectedPositionStepMillimeters = 5d;
+            viewModel.MountAdjustments.SelectedRotationStepDegrees = 15d;
+            var position = window.FindControl<TextBox>("LeftTrackerPositionXTextBox")!;
+            var rotation = window.FindControl<TextBox>("LeftTrackerRotationZTextBox")!;
+
+            Assert.True(position.Focus());
+            window.KeyPress(
+                Key.Add,
+                RawInputModifiers.Control,
+                PhysicalKey.NumPadAdd,
+                "+");
+            Assert.Equal(
+                5d,
+                viewModel.MountAdjustments.LeftHand.TrackerSide.PositionXMillimeters,
+                6);
+
+            Assert.True(rotation.Focus());
+            window.KeyPress(
+                Key.OemMinus,
+                RawInputModifiers.Control,
+                PhysicalKey.Minus,
+                "-");
+            Assert.Equal(
+                -15d,
+                viewModel.MountAdjustments.LeftHand.TrackerSide.RotationZDegrees,
+                6);
+
+            var applyCount = port.ApplyRequests.Count;
+            Assert.True(window.FindControl<Button>("ActionButton")!.Focus());
+            window.KeyPress(
+                Key.Add,
+                RawInputModifiers.None,
+                PhysicalKey.NumPadAdd,
+                "+");
+            Assert.Equal(applyCount, port.ApplyRequests.Count);
+            Assert.Empty(port.SaveRequests);
+        }
+        finally
+        {
+            window.Close();
+            AssertCompletes(
+                viewModel.DisposeAsync().AsTask(),
+                "The focused-key mount-adjustment ViewModel did not close cleanly.");
         }
     }
 
@@ -328,6 +412,8 @@ public sealed class MainWindowInteractionTests
         try
         {
             window.Show();
+            window.FindControl<Expander>("MountAdjustmentExpander")!.IsExpanded = true;
+            window.UpdateLayout();
             await FlushUiDispatchAsync();
             var left = window.FindControl<Button>("CalibrateLeftMountButton")!;
             var right = window.FindControl<Button>("CalibrateRightMountButton")!;

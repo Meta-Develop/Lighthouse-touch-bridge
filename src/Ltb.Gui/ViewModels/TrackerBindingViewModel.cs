@@ -13,10 +13,14 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
     private readonly Action<Action> _dispatch;
     private readonly ObservableCollection<InternalDriverPairedTrackerOption> _trackers = [];
     private readonly object _operationSync = new();
+    private readonly SemaphoreSlim _controlSerialization = new(1, 1);
     private bool _isBusy;
     private int _operationCount;
+    private int _refreshOperationCount;
     private TaskCompletionSource? _operationsDrained;
     private Task? _disposeTask;
+    private CancellationTokenSource? _refreshCancellation;
+    private long _refreshGeneration;
     private InternalDriverPairedTrackerOption? _selectedLeftTracker;
     private InternalDriverPairedTrackerOption? _selectedRightTracker;
     private bool _unregisterOnExit = true;
@@ -203,7 +207,10 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await _control.PrepareStartAsync().ConfigureAwait(false);
+            var result = await RunSerializedControlAsync(
+                    _control.PrepareStartAsync,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
             _dispatch(() => Apply(result));
             return result.CanStart;
         }
@@ -228,8 +235,9 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await _control
-                .CompleteControlledStopAsync()
+            var result = await RunSerializedControlAsync(
+                    _control.CompleteControlledStopAsync,
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             _dispatch(() => Apply(result));
             return result;
@@ -248,24 +256,38 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
     public async Task RefreshAsync()
     {
-        if (!TryBeginOperation())
+        if (!TryBeginRefresh(
+                out var generation,
+                out var cancellation))
         {
             return;
         }
 
         try
         {
-            var result = await _control.RefreshAsync().ConfigureAwait(false);
-            _dispatch(() => Apply(result));
+            var result = await Task.Run(
+                    () => RunSerializedControlAsync(
+                        _control.RefreshAsync,
+                        cancellation.Token),
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            DispatchRefreshIfCurrent(generation, () => Apply(result));
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // A newer refresh or disposal owns cancellation. Stale generations
+            // never replace the latest stopped-panel state or diagnostic.
         }
         catch (Exception exception)
         {
-            _dispatch(() => PresentUnexpectedFailure(
-                $"Stopped/pre-session refresh failed: {exception.Message}"));
+            DispatchRefreshIfCurrent(
+                generation,
+                () => PresentUnexpectedFailure(
+                    $"Stopped/pre-session refresh failed: {exception.Message}"));
         }
         finally
         {
-            EndOperation();
+            EndRefreshOperation(cancellation);
         }
     }
 
@@ -280,8 +302,12 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await _control
-                .SaveManualBindingAsync(left.Serial, right.Serial)
+            var result = await RunSerializedControlAsync(
+                    cancellationToken => _control.SaveManualBindingAsync(
+                        left.Serial,
+                        right.Serial,
+                        cancellationToken),
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             _dispatch(() => Apply(result));
         }
@@ -305,8 +331,9 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await _control
-                .ClearManualBindingAsync()
+            var result = await RunSerializedControlAsync(
+                    _control.ClearManualBindingAsync,
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             _dispatch(() => Apply(result));
         }
@@ -331,8 +358,11 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
         var requested = UnregisterOnExit;
         try
         {
-            var result = await _control
-                .SetUnregisterOnExitAsync(requested)
+            var result = await RunSerializedControlAsync(
+                    cancellationToken => _control.SetUnregisterOnExitAsync(
+                        requested,
+                        cancellationToken),
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             _dispatch(() => Apply(result));
         }
@@ -378,8 +408,12 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await _control
-                .ApplyManualBindingDecisionAsync(verification, decision)
+            var result = await RunSerializedControlAsync(
+                    cancellationToken => _control.ApplyManualBindingDecisionAsync(
+                        verification,
+                        decision,
+                        cancellationToken),
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             _dispatch(() =>
             {
@@ -486,6 +520,44 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
         return true;
     }
 
+    private bool TryBeginRefresh(
+        out long generation,
+        out CancellationTokenSource cancellation)
+    {
+        CancellationTokenSource? replaced;
+        bool becameBusy;
+        lock (_operationSync)
+        {
+            if (_disposed || _operationCount != _refreshOperationCount)
+            {
+                generation = 0;
+                cancellation = null!;
+                return false;
+            }
+
+            becameBusy = _operationCount++ == 0;
+            _refreshOperationCount++;
+            if (becameBusy)
+            {
+                _operationsDrained = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            generation = ++_refreshGeneration;
+            cancellation = new CancellationTokenSource();
+            replaced = _refreshCancellation;
+            _refreshCancellation = cancellation;
+        }
+
+        CancelRefresh(replaced);
+        if (becameBusy)
+        {
+            _dispatch(() => IsBusy = true);
+        }
+
+        return true;
+    }
+
     private void EndOperation()
     {
         TaskCompletionSource? operationsDrained = null;
@@ -509,6 +581,87 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
         {
             _dispatch(() => IsBusy = false);
             operationsDrained.TrySetResult();
+        }
+    }
+
+    private void EndRefreshOperation(CancellationTokenSource cancellation)
+    {
+        lock (_operationSync)
+        {
+            if (ReferenceEquals(_refreshCancellation, cancellation))
+            {
+                _refreshCancellation = null;
+            }
+
+            if (_refreshOperationCount <= 0)
+            {
+                throw new InvalidOperationException(
+                    "Tracker-binding refresh accounting became unbalanced.");
+            }
+
+            _refreshOperationCount--;
+        }
+
+        try
+        {
+            EndOperation();
+        }
+        finally
+        {
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task<T> RunSerializedControlAsync<T>(
+        Func<CancellationToken, ValueTask<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        await _controlSerialization
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            return await operation(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _controlSerialization.Release();
+        }
+    }
+
+    private void DispatchRefreshIfCurrent(long generation, Action action) =>
+        _dispatch(() =>
+        {
+            lock (_operationSync)
+            {
+                if (_disposed || generation != _refreshGeneration)
+                {
+                    return;
+                }
+
+                action();
+            }
+        });
+
+    private static void CancelRefresh(CancellationTokenSource? cancellation)
+    {
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Completion may win the race with a replacement or disposal.
+        }
+        catch (AggregateException)
+        {
+            // A control-owned cancellation callback must not unbalance refresh
+            // replacement or disposal accounting.
         }
     }
 
@@ -541,6 +694,7 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         bool notifyAvailability = false;
+        CancellationTokenSource? refreshCancellation;
         Task disposeTask;
         lock (_operationSync)
         {
@@ -551,6 +705,7 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
 
             _disposed = true;
             notifyAvailability = true;
+            refreshCancellation = _refreshCancellation;
             var operationsDrained = _operationCount == 0
                 ? Task.CompletedTask
                 : _operationsDrained!.Task;
@@ -558,6 +713,7 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
             disposeTask = _disposeTask;
         }
 
+        CancelRefresh(refreshCancellation);
         if (notifyAvailability)
         {
             _dispatch(NotifyCommandAvailabilityChanged);
@@ -569,7 +725,14 @@ public sealed class TrackerBindingViewModel : ObservableObject, IAsyncDisposable
     private async Task DisposeControlAfterOperationsAsync(Task operationsDrained)
     {
         await operationsDrained.ConfigureAwait(false);
-        await _control.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await _control.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _controlSerialization.Dispose();
+        }
     }
 }
 
