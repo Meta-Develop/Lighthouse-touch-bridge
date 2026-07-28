@@ -72,8 +72,9 @@ Lighthouse HMD + two selected controller trackers (+ optional other trackers)
 
 During calibration, LTB associates each mounted tracker with one hand, aligns
 the Meta and Lighthouse streams in monotonic time, and estimates the fixed
-mount transform. During active use it publishes
-`T_output(t) = T_tracker(t) * X_mount`; Touch supplies controller inputs, while
+mount transform `X_mount`. During active use it derives
+`X_eff = A_tracker * X_mount * A_controller` and publishes
+`T_output(t) = T_tracker(t) * X_eff`; Touch supplies controller inputs, while
 the physical trackers supply the authoritative runtime poses.
 
 ## Calibration modes

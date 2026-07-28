@@ -18,15 +18,18 @@ install SteamVR, ALVR, VMT, drivers, firmware, or any other third-party
 software. There is no GUI, installer, background service, cloud account, or
 telemetry.
 
-The production `wizard` command performs live two-hand capture, calibration,
+The unsupported `legacy-wizard` command performs live two-hand capture,
+calibration,
 profile persistence, transactional VMT and `TrackingOverrides` application,
-and active-use monitoring. The production `bridge` command runs one saved
-calibration profile and VMT slot for one hand. The production `daily` command
+and active-use monitoring. The unsupported `legacy-bridge` command runs one saved
+calibration profile and VMT slot for one hand. The unsupported
+`legacy-daily` command
 loads a complete two-hand profile store and applies and monitors both hands.
-All three use the live OpenVR, VMT, and SteamVR settings adapters; `wizard` and
-`daily` also enforce the active-Lighthouse-HMD dependency gate.
+All three are retained legacy paths that use the live OpenVR, VMT, and SteamVR
+settings adapters; `legacy-wizard` and `legacy-daily` also enforce the
+active-Lighthouse-HMD dependency gate.
 
-The `wizard-demo` command remains a deterministic fake capture/apply path for
+The `legacy-wizard-demo` command remains a deterministic fake capture/apply path for
 creating and reloading an example two-hand store. It never opens SteamVR, VMT,
 or host settings and is not a live calibration command. Automated Linux tests
 exercise the same wizard sequencing through injected fakes, including
@@ -35,8 +38,8 @@ abort cleanup, and active-HMD rejection. Real OpenVR/VMT/ALVR/SteamVR timing,
 device provenance, and hardware behavior still require the unchecked Windows
 checks in [windows-verification.md](windows-verification.md).
 
-The exact live and scripted commands are in
-[Run the production two-hand wizard](#run-the-production-two-hand-wizard).
+The exact warning-gated legacy live and scripted commands are in
+[Run the unsupported legacy two-hand wizard](#run-the-unsupported-legacy-two-hand-wizard).
 
 ## Milestone 5 device combinations
 
@@ -81,12 +84,13 @@ Install and prepare these components before running the command:
 - [Virtual Motion Tracker (VMT)](https://gpsnmeajp.github.io/VirtualMotionTrackerDocument/setup/),
   installed, enabled in SteamVR add-ons, and visible to the runtime;
 - ALVR configured in tracking-reference-only mode for a recognized Meta Touch
-  controller profile; `wizard` and `daily` require both left/right roles and
-  inputs plus the local dashboard web server on default port `8082`, while
-  one-hand `bridge` requires its selected role; and
+  controller profile; `legacy-wizard` and `legacy-daily` require both
+  left/right roles and inputs plus the local dashboard web server on default
+  port `8082`, while
+  one-hand `legacy-bridge` requires its selected role; and
 - each physical Lighthouse pose source named by a profile, powered on, fully
   tracked, position-capable, eligible as a physical source, and identified by
-  the exact live serial printed by `devices`.
+  the exact live serial printed by `legacy-devices`.
 
 The portable package includes the .NET runtime. The .NET 8 SDK is required only
 when building or running directly from a source checkout with `dotnet run`.
@@ -97,7 +101,7 @@ the same response port. If LTB cannot bind `39571`, it exits with a diagnostic
 instead of starting the override. The port assignments and command fields are
 defined by the [official VMT API](https://gpsnmeajp.github.io/VirtualMotionTrackerDocument/api/).
 
-The production `wizard` and `daily` commands also require a successful,
+The `legacy-wizard` and `legacy-daily` commands also require a successful,
 nonempty response from `http://127.0.0.1:8082/api/version`. If the ALVR
 dashboard web-server port
 was customized, restore it to the default `8082`, restart ALVR, and confirm that
@@ -110,13 +114,13 @@ time, complete the VMT-requested SteamVR restart before continuing. From an
 extracted package, inspect the live enumeration with:
 
 ```powershell
-.\Ltb.App.exe devices
+.\Ltb.App.exe legacy-devices
 ```
 
 From a source checkout, the equivalent developer command is:
 
 ```powershell
-dotnet run --project src/Ltb.App -- devices
+dotnet run --project src/Ltb.App -- legacy-devices
 ```
 
 For a live Windows run, copy each physical pose source's `serial:` value
@@ -134,7 +138,7 @@ canonical storage and reporting.
 For a generalized combination, also confirm the physical source's path is not
 a VMT virtual-device path and the Meta Touch controller has a recognized family
 and compatible reported input-profile path. SteamVR remains responsible for
-choosing the active display. Before `wizard` or `daily` can leave
+choosing the active display. Before `legacy-wizard` or `legacy-daily` can leave
 `DependencyCheck`, LTB inspects OpenVR transient index `0`, requires one
 connected `HeadMountedDisplay`, rejects Quest/ALVR/Meta/Oculus evidence, and
 requires positive Lighthouse evidence in the driver or tracking-system
@@ -178,7 +182,7 @@ live runtime.
    should report `source_tree_dirty=false` and matching runtime framework and
    pack versions.
 5. Start SteamVR and the required integrations, then run
-   `.\Ltb.App.exe devices` from the extracted application directory.
+   `.\Ltb.App.exe legacy-devices` from the extracted application directory.
 
 Do not copy only the executable, add the package directory to a system-wide
 `PATH`, or replace `openvr_api.dll` with an unrelated SDK copy. The portable
@@ -187,7 +191,7 @@ remain explicit release checks rather than implied package properties.
 
 ## Profile schema 1
 
-The bridge reads UTF-8 profile schema 1. The required Milestone 2 subset is
+The legacy bridge reads UTF-8 profile schema 1. The required Milestone 2 subset is
 shown below with clearly fake identifiers:
 
 ```json
@@ -218,49 +222,49 @@ known properties, malformed JSON, unsupported schema versions, non-finite
 numbers, and materially non-unit quaternions are rejected before runtime
 activation.
 
-The production `daily` path loads the complete schema-1 store, including
+The unsupported `legacy-daily` path loads the complete schema-1 store, including
 `controller_runtime` and `controller_model`. These are the controller
-classification observed when the profile was created and `daily` compares
+classification observed when the profile was created and `legacy-daily` compares
 them with the current recognized Meta Touch classification before reuse. A
 different current family requests recalibration; changing stored text does not
 make an unsupported live descriptor acceptable. Capability flags and the
 OpenVR input-profile path remain current observations rather than persisted
 calibration data, so existing valid schema-1 profiles require no migration.
 
-The one-hand `bridge` command deliberately retains its Milestone 2 loader for
-the legacy subset shown above: schema version, profile name, hand, optional
-controller serial, tracker serial, selected mode, and transform. It ignores
-additional schema-1 provenance fields and does not classify or compare
+The one-hand `legacy-bridge` command deliberately retains its Milestone 2
+loader for the legacy subset shown above: schema version, profile name, hand,
+optional controller serial, tracker serial, selected mode, and transform. It
+ignores additional schema-1 provenance fields and does not classify or compare
 `controller_runtime` or `controller_model`. Its exact serial/role and runtime
 health checks are not evidence of controller-family compatibility and must not
-be treated as authorization for a generalized combination; use the production
-`daily` compatibility gate and the applicable Windows hardware rows for that
-claim.
+be treated as authorization for a generalized combination; use the retained
+`legacy-daily` compatibility gate and the applicable Windows hardware rows for
+that claim.
 
-The `daily` command requires one valid store containing exactly one reusable
-left profile and one reusable right profile with distinct tracker serials. It
-does not calibrate or repair an incomplete store. Use a reviewed store produced
-by the production `wizard`; `wizard-demo` creates only a deterministic fake
-example for offline testing.
+The `legacy-daily` command requires one valid store containing exactly one
+reusable left profile and one reusable right profile with distinct tracker
+serials. It does not calibrate or repair an incomplete store. Use a reviewed
+store produced by the unsupported `legacy-wizard`; `legacy-wizard-demo`
+creates only a deterministic fake example for offline testing.
 
-## Run the one-hand bridge
+## Run the one-hand legacy bridge
 
 Run this exact command form from the repository root:
 
 ```text
-dotnet run --project src/Ltb.App -- bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]
+dotnet run --project src/Ltb.App -- legacy-bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]
 ```
 
 From an extracted package, omit `dotnet run --project src/Ltb.App --`:
 
 ```text
-Ltb.App.exe bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]
+Ltb.App.exe legacy-bridge --profile <profile.json> --vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--stale-after <seconds>] [--monitor-rate <hz>]
 ```
 
 A concrete PowerShell example using only example paths is:
 
 ```powershell
-dotnet run --project src/Ltb.App -- bridge --profile .\left-test-profile.json --vmt-slot 1 --steamvr-settings "C:\LTB-EXAMPLE\steamvr.vrsettings" --stale-after 0.5 --monitor-rate 20
+dotnet run --project src/Ltb.App -- legacy-bridge --profile .\left-test-profile.json --vmt-slot 1 --steamvr-settings "C:\LTB-EXAMPLE\steamvr.vrsettings" --stale-after 0.5 --monitor-rate 20
 ```
 
 `--stale-after` defaults to `0.5` seconds and accepts values from `0.001`
@@ -275,7 +279,7 @@ timeout. The effective rate is printed after activation. VMT Alive heartbeat
 acquisition and post-activation discovery use a separate five-second bound.
 
 Before any SteamVR device enumeration or tracker/Touch selection gate, the
-bridge attempts both selected-slot VMT deactivation and stale exact
+legacy bridge attempts both selected-slot VMT deactivation and stale exact
 source-to-hand mapping release. It refuses to replace another source or hand
 owner, and any reported startup-cleanup failure blocks the new configuration.
 Only after both cleanup surfaces succeed does it enumerate devices, select the
@@ -321,7 +325,7 @@ effective_monitor_rate_hz: 20
 state: active
 state: Cancellation
 safe_disable_failures: 0
-message: Cancellation requested; the one-hand bridge was safely disabled.
+message: Cancellation requested; the one-hand legacy bridge was safely disabled.
 ```
 
 Before the final three lines are printed on a managed exit, SafeDisable
@@ -330,27 +334,27 @@ the exact VMT-source-to-hand mapping. The second operation is attempted even if
 the first one fails. The same cleanup path runs on tracker, VMT output-pose,
 Touch, VMT-device, or VMT heartbeat failure.
 
-If Ctrl+C cleanup is incomplete, the command does not print that the bridge was
-safely disabled. It reports that manual override inspection is required and
+If Ctrl+C cleanup is incomplete, the command does not print that the legacy
+bridge was safely disabled. It reports that manual override inspection is required and
 returns exit code `4`.
 
-## Run the production two-hand wizard
+## Run the unsupported legacy two-hand wizard
 
 Use this source-checkout command for first-run capture and calibration:
 
 ```text
-dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+dotnet run --project src/Ltb.App -- legacy-wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 From an extracted package, use:
 
 ```text
-Ltb.App.exe wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+Ltb.App.exe legacy-wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 The two VMT slots must be distinct. Keep the controllers observable to the
 Quest cameras if full 6DoF is desired, then follow the left-only and right-only
-multi-axis motion prompts. The first-run production sequence is:
+multi-axis motion prompts. The historical legacy first-run sequence is:
 
 ```text
 DependencyCheck -> WaitingForSteamVR -> WaitingForDevices -> Ready
@@ -370,7 +374,7 @@ persistence components then produce the two profiles. Application uses the
 same two-hand VMT and settings transaction as later daily use: both transforms
 and mappings must succeed before `Active` is reported.
 
-After activation, the same runtime watchdog used by `daily` monitors Touch,
+After activation, the same runtime watchdog used by `legacy-daily` monitors Touch,
 tracker, VMT, and SteamVR health. Ctrl+C or a health failure enters
 `SafeDisable`. For each applied hand, cleanup releases and verifies mappings
 that reference the configured or discovered application source or target the
@@ -385,49 +389,50 @@ mapping because it could point at a stale source; inspect the settings
 explicitly before another attempt if cleanup is reported incomplete.
 
 When the store already contains a complete compatible serial-and-hand pair,
-the wizard may take the profile-reuse path and skip capture. Use `daily` for
-normal later starts once the stored pair has been reviewed.
+the legacy wizard may take the profile-reuse path and skip capture. Use
+`legacy-daily` for later legacy starts once the stored pair has been reviewed.
 
-`wizard-demo` remains useful for an offline walkthrough:
+`legacy-wizard-demo` remains useful for an offline walkthrough:
 
 ```text
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
+dotnet run --project src/Ltb.App -- legacy-wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 It uses deterministic fake devices, never opens the live adapters, and cannot
 establish Windows or hardware readiness.
 
-## Run reliable daily use
+## Run the unsupported legacy daily-use path
 
 Use this source-checkout command after a complete two-hand profile store exists:
 
 ```text
-dotnet run --project src/Ltb.App -- daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+dotnet run --project src/Ltb.App -- legacy-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 From an extracted package, use:
 
 ```text
-Ltb.App.exe daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+Ltb.App.exe legacy-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 For example, with only example paths and slot numbers:
 
 ```powershell
-.\Ltb.App.exe daily --profiles .\two-hand-profiles.json --left-vmt-slot 1 --right-vmt-slot 2 --steamvr-settings "C:\LTB-EXAMPLE\steamvr.vrsettings" --log .\events.jsonl --monitor-rate 20 --reconnect-delay 0.25
+.\Ltb.App.exe legacy-daily --profiles .\two-hand-profiles.json --left-vmt-slot 1 --right-vmt-slot 2 --steamvr-settings "C:\LTB-EXAMPLE\steamvr.vrsettings" --log .\events.jsonl --monitor-rate 20 --reconnect-delay 0.25
 ```
 
 The left and right slots must be distinct and each must be from `0` through
 `57`. `--monitor-rate` defaults to `20` Hz and accepts values greater than zero
 through `1000` Hz. `--reconnect-delay` defaults to `0.25` seconds and accepts
-values greater than zero through `300` seconds. The production daily runtime
+values greater than zero through `300` seconds. The legacy daily runtime
 uses an internal `0.5`-second pose-staleness threshold, a five-second VMT
 heartbeat/discovery bound, and a two-second bound for each independent cleanup
 operation.
 
-Before `wizard` captures or `daily` applies either profile, each command
-enforces the same production dependency evidence. The local `/api/version`
-endpoint above must return a successful, nonempty response. The 500 ms request
+Before `legacy-wizard` captures or `legacy-daily` applies either profile, each
+command enforces the same retained legacy dependency evidence. The local
+`/api/version` endpoint above must return a successful, nonempty response. The
+500 ms request
 is cached for one second, which caps the probe at 1 Hz even when the dependency
 or watchdog loop runs faster. OpenVR index `0` must pass the active-Lighthouse-
 HMD gate, and the current enumeration must contain exactly one supported
@@ -457,8 +462,8 @@ contain device identities and configuration paths.
 
 ## Reliable daily-use lifecycle
 
-The production `daily` command composes the UI-neutral coordinator with the
-live Windows adapters and uses this later-run path:
+The unsupported `legacy-daily` command composes the UI-neutral coordinator
+with the live Windows adapters and uses this historical later-run path:
 
 ```text
 Stopped -> DependencyCheck -> WaitingForSteamVR -> WaitingForDevices
@@ -493,10 +498,10 @@ not permission to keep or revive a stale virtual-hand pose. If cleanup or
 rollback reports a failure, inspect both selected VMT slots and both exact
 LTB-owned settings mappings before trying again.
 
-The production composition is present, but Linux transition tests still use
-fakes. They do not prove that two real VMT slots, Touch inputs, OpenVR quit
-events, or hardware reconnect behave correctly. Complete the Windows checklist
-before accepting the live two-hand path.
+The retained legacy composition is implemented, but Linux transition tests
+still use fakes. They do not prove that two real VMT slots, Touch inputs,
+OpenVR quit events, or hardware reconnect behave correctly. Complete the
+legacy Windows checklist before accepting that live two-hand path.
 
 ## Structured diagnostics and logs
 
@@ -513,8 +518,10 @@ identifiers and paths before sharing an excerpt, and never place
 the repository or portable package. Version 0.1 sends no telemetry and has no
 cloud log destination.
 
-The `wizard --log <events.jsonl>`, `daily --log <events.jsonl>`, and
-`wizard-demo --log <events.jsonl>` options expose `JsonLinesLtbLogSink` as a
+The `legacy-wizard --log <events.jsonl>`,
+`legacy-daily --log <events.jsonl>`, and
+`legacy-wizard-demo --log <events.jsonl>` options expose
+`JsonLinesLtbLogSink` as a
 local append-only JSON Lines destination. Reusing a path appends another event
 sequence; omitting `--log` creates no default event file. Wizard events include
 state transitions and the distinct `NoPositionAvailable`,
@@ -522,7 +529,7 @@ state transitions and the distinct `NoPositionAvailable`,
 failure is not allowed to alter calibration or block SafeDisable or rollback.
 The option does not upload, rotate, redact, or delete the selected file.
 
-During active `wizard` or `daily` use, an unexpected adapter exception
+During active `legacy-wizard` or `legacy-daily` use, an unexpected adapter exception
 produces a
 `RuntimeFailure` event before bounded cleanup starts. The event contains the
 exception type and message but no stack trace. The coordinator then attempts
@@ -539,10 +546,10 @@ disablement.
 
 | Code | Meaning |
 | ---: | --- |
-| `0` | Help, device listing, recording, successful `wizard-demo`, or clean `bridge`/`wizard`/`daily` cancellation completed. |
+| `0` | Help, legacy device listing/recording, successful `legacy-wizard-demo`, or clean `legacy-bridge`/`legacy-wizard`/`legacy-daily` cancellation completed. |
 | `1` | Command-line usage or option validation failed. |
-| `2` | Startup, capture, calibration, profile loading, profile application, `wizard`, `wizard-demo`, or another bounded operational action failed without a cleanup/rollback failure. |
-| `3` | A live runtime health termination, including SteamVR stopping during active use or recovery, completed bounded cleanup without a reported failure; rerun `wizard` or `daily` to start a new session. |
+| `2` | Startup, capture, calibration, profile loading, profile application, `legacy-wizard`, `legacy-wizard-demo`, or another bounded legacy operational action failed without a cleanup/rollback failure. |
+| `3` | A legacy live runtime health termination, including SteamVR stopping during active use or recovery, completed bounded cleanup without a reported failure; rerun `legacy-wizard` or `legacy-daily` to start a new session. |
 | `4` | SafeDisable or transactional rollback reported at least one failure or timeout. Manual inspection is required. |
 
 ## Recovery after abrupt termination
@@ -557,8 +564,9 @@ Before reusing a hand after an abrupt termination:
 3. retain redacted evidence of any residual device or mapping before changing
    it; do not assume that one surface proves the other is clear;
 4. for an intended reuse, run the same command and confirm its pre-activation
-   cleanup completes before activation; `bridge` deactivates its slot and then
-   releases its exact mapping, while `wizard` and `daily` verify removal of
+   cleanup completes before activation; `legacy-bridge` deactivates its slot
+   and then releases its exact mapping, while `legacy-wizard` and
+   `legacy-daily` verify removal of
    application-source and semantic-hand mappings before deactivating the
    associated source; if two-hand mapping release fails, confirm the affected
    source remains running and activation stays blocked; and
