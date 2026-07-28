@@ -401,6 +401,7 @@
         <Border x:Name="MountAdjustmentPanel"
                 Classes="panel">
           <Expander x:Name="MountAdjustmentExpander"
+                    TabIndex="19"
                     AutomationProperties.Name="Per-hand mount adjustment tuning"
                     IsExpanded="False">
             <Expander.Header>
@@ -484,6 +485,7 @@
                                Text="{Binding MountAdjustments.LeftHand.Title}" />
                     <Button x:Name="CalibrateLeftMountButton"
                             Grid.Column="1"
+                            TabIndex="36"
                             AutomationProperties.Name="Calibrate left mount"
                             Content="Calibrate Left"
                             Command="{Binding MountAdjustments.CalibrateLeftCommand}" />
@@ -501,6 +503,7 @@
                         </StackPanel>
                         <Button x:Name="LeftTrackerResetButton"
                                 Grid.Column="1"
+                                TabIndex="28"
                                 AutomationProperties.Name="Reset left tracker-side adjustment"
                                 Content="Reset"
                                 Command="{Binding MountAdjustments.LeftHand.TrackerSide.ResetCommand}" />
@@ -514,6 +517,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftTrackerPositionXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left tracker-side X position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionXDecrementCommand}" />
@@ -529,6 +533,7 @@
                             <Button x:Name="LeftTrackerPositionXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left tracker-side X position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionXIncrementCommand}" />
@@ -540,6 +545,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftTrackerPositionYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left tracker-side Y position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionYDecrementCommand}" />
@@ -555,6 +561,7 @@
                             <Button x:Name="LeftTrackerPositionYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left tracker-side Y position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionYIncrementCommand}" />
@@ -566,6 +573,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftTrackerPositionZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left tracker-side Z position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionZDecrementCommand}" />
@@ -581,6 +589,7 @@
                             <Button x:Name="LeftTrackerPositionZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left tracker-side Z position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionZIncrementCommand}" />
@@ -596,6 +605,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftTrackerRotationXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left tracker-side X rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationXDecrementCommand}" />
@@ -611,6 +621,7 @@
                             <Button x:Name="LeftTrackerRotationXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left tracker-side X rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationXIncrementCommand}" />
@@ -622,6 +633,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftTrackerRotationYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left tracker-side Y rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationYDecrementCommand}" />
@@ -637,6 +649,7 @@
                             <Button x:Name="LeftTrackerRotationYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left tracker-side Y rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationYIncrementCommand}" />
@@ -648,6 +661,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftTrackerRotationZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left tracker-side Z rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationZDecrementCommand}" />
@@ -663,6 +677,7 @@
                             <Button x:Name="LeftTrackerRotationZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left tracker-side Z rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationZIncrementCommand}" />
@@ -684,6 +699,7 @@
                         </StackPanel>
                         <Button x:Name="LeftControllerResetButton"
                                 Grid.Column="1"
+                                TabIndex="35"
                                 AutomationProperties.Name="Reset left controller-side adjustment"
                                 Content="Reset"
                                 Command="{Binding MountAdjustments.LeftHand.ControllerSide.ResetCommand}" />
@@ -697,6 +713,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftControllerPositionXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left controller-side X position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionXDecrementCommand}" />
@@ -704,7 +721,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="28"
+                                     TabIndex="29"
                                      AutomationProperties.Name="Left controller-side X position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -712,6 +729,7 @@
                             <Button x:Name="LeftControllerPositionXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left controller-side X position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionXIncrementCommand}" />
@@ -723,6 +741,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftControllerPositionYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left controller-side Y position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionYDecrementCommand}" />
@@ -730,7 +749,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="29"
+                                     TabIndex="30"
                                      AutomationProperties.Name="Left controller-side Y position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -738,6 +757,7 @@
                             <Button x:Name="LeftControllerPositionYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left controller-side Y position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionYIncrementCommand}" />
@@ -749,6 +769,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftControllerPositionZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left controller-side Z position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionZDecrementCommand}" />
@@ -756,7 +777,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="30"
+                                     TabIndex="31"
                                      AutomationProperties.Name="Left controller-side Z position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -764,6 +785,7 @@
                             <Button x:Name="LeftControllerPositionZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left controller-side Z position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionZIncrementCommand}" />
@@ -779,6 +801,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftControllerRotationXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left controller-side X rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationXDecrementCommand}" />
@@ -786,7 +809,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="31"
+                                     TabIndex="32"
                                      AutomationProperties.Name="Left controller-side X rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -794,6 +817,7 @@
                             <Button x:Name="LeftControllerRotationXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left controller-side X rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationXIncrementCommand}" />
@@ -805,6 +829,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftControllerRotationYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left controller-side Y rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationYDecrementCommand}" />
@@ -812,7 +837,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="32"
+                                     TabIndex="33"
                                      AutomationProperties.Name="Left controller-side Y rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -820,6 +845,7 @@
                             <Button x:Name="LeftControllerRotationYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left controller-side Y rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationYIncrementCommand}" />
@@ -831,6 +857,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="LeftControllerRotationZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease left controller-side Z rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationZDecrementCommand}" />
@@ -838,7 +865,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="33"
+                                     TabIndex="34"
                                      AutomationProperties.Name="Left controller-side Z rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -846,6 +873,7 @@
                             <Button x:Name="LeftControllerRotationZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase left controller-side Z rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationZIncrementCommand}" />
@@ -876,6 +904,7 @@
                                Text="{Binding MountAdjustments.RightHand.Title}" />
                     <Button x:Name="CalibrateRightMountButton"
                             Grid.Column="1"
+                            TabIndex="51"
                             AutomationProperties.Name="Calibrate right mount"
                             Content="Calibrate Right"
                             Command="{Binding MountAdjustments.CalibrateRightCommand}" />
@@ -893,6 +922,7 @@
                         </StackPanel>
                         <Button x:Name="RightTrackerResetButton"
                                 Grid.Column="1"
+                                TabIndex="43"
                                 AutomationProperties.Name="Reset right tracker-side adjustment"
                                 Content="Reset"
                                 Command="{Binding MountAdjustments.RightHand.TrackerSide.ResetCommand}" />
@@ -906,6 +936,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightTrackerPositionXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right tracker-side X position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionXDecrementCommand}" />
@@ -913,7 +944,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="34"
+                                     TabIndex="37"
                                      AutomationProperties.Name="Right tracker-side X position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -921,6 +952,7 @@
                             <Button x:Name="RightTrackerPositionXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right tracker-side X position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionXIncrementCommand}" />
@@ -932,6 +964,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightTrackerPositionYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right tracker-side Y position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionYDecrementCommand}" />
@@ -939,7 +972,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="35"
+                                     TabIndex="38"
                                      AutomationProperties.Name="Right tracker-side Y position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -947,6 +980,7 @@
                             <Button x:Name="RightTrackerPositionYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right tracker-side Y position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionYIncrementCommand}" />
@@ -958,6 +992,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightTrackerPositionZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right tracker-side Z position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionZDecrementCommand}" />
@@ -965,7 +1000,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="36"
+                                     TabIndex="39"
                                      AutomationProperties.Name="Right tracker-side Z position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -973,6 +1008,7 @@
                             <Button x:Name="RightTrackerPositionZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right tracker-side Z position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionZIncrementCommand}" />
@@ -988,6 +1024,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightTrackerRotationXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right tracker-side X rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationXDecrementCommand}" />
@@ -995,7 +1032,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="37"
+                                     TabIndex="40"
                                      AutomationProperties.Name="Right tracker-side X rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -1003,6 +1040,7 @@
                             <Button x:Name="RightTrackerRotationXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right tracker-side X rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationXIncrementCommand}" />
@@ -1014,6 +1052,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightTrackerRotationYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right tracker-side Y rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationYDecrementCommand}" />
@@ -1021,7 +1060,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="38"
+                                     TabIndex="41"
                                      AutomationProperties.Name="Right tracker-side Y rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -1029,6 +1068,7 @@
                             <Button x:Name="RightTrackerRotationYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right tracker-side Y rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationYIncrementCommand}" />
@@ -1040,6 +1080,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightTrackerRotationZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right tracker-side Z rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationZDecrementCommand}" />
@@ -1047,7 +1088,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="39"
+                                     TabIndex="42"
                                      AutomationProperties.Name="Right tracker-side Z rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -1055,6 +1096,7 @@
                             <Button x:Name="RightTrackerRotationZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right tracker-side Z rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationZIncrementCommand}" />
@@ -1076,6 +1118,7 @@
                         </StackPanel>
                         <Button x:Name="RightControllerResetButton"
                                 Grid.Column="1"
+                                TabIndex="50"
                                 AutomationProperties.Name="Reset right controller-side adjustment"
                                 Content="Reset"
                                 Command="{Binding MountAdjustments.RightHand.ControllerSide.ResetCommand}" />
@@ -1089,6 +1132,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightControllerPositionXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right controller-side X position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionXDecrementCommand}" />
@@ -1096,7 +1140,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="40"
+                                     TabIndex="44"
                                      AutomationProperties.Name="Right controller-side X position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -1104,6 +1148,7 @@
                             <Button x:Name="RightControllerPositionXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right controller-side X position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionXIncrementCommand}" />
@@ -1115,6 +1160,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightControllerPositionYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right controller-side Y position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionYDecrementCommand}" />
@@ -1122,7 +1168,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="41"
+                                     TabIndex="45"
                                      AutomationProperties.Name="Right controller-side Y position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -1130,6 +1176,7 @@
                             <Button x:Name="RightControllerPositionYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right controller-side Y position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionYIncrementCommand}" />
@@ -1141,6 +1188,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightControllerPositionZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right controller-side Z position"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionZDecrementCommand}" />
@@ -1148,7 +1196,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="42"
+                                     TabIndex="46"
                                      AutomationProperties.Name="Right controller-side Z position in millimeters"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
@@ -1156,6 +1204,7 @@
                             <Button x:Name="RightControllerPositionZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right controller-side Z position"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionZIncrementCommand}" />
@@ -1171,6 +1220,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightControllerRotationXDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right controller-side X rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationXDecrementCommand}" />
@@ -1178,7 +1228,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="43"
+                                     TabIndex="47"
                                      AutomationProperties.Name="Right controller-side X rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -1186,6 +1236,7 @@
                             <Button x:Name="RightControllerRotationXIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right controller-side X rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationXIncrementCommand}" />
@@ -1197,6 +1248,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightControllerRotationYDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right controller-side Y rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationYDecrementCommand}" />
@@ -1204,7 +1256,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="44"
+                                     TabIndex="48"
                                      AutomationProperties.Name="Right controller-side Y rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -1212,6 +1264,7 @@
                             <Button x:Name="RightControllerRotationYIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right controller-side Y rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationYIncrementCommand}" />
@@ -1223,6 +1276,7 @@
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <Button x:Name="RightControllerRotationZDecrementButton"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Decrease right controller-side Z rotation"
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationZDecrementCommand}" />
@@ -1230,7 +1284,7 @@
                                      Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
-                                     TabIndex="45"
+                                     TabIndex="49"
                                      AutomationProperties.Name="Right controller-side Z rotation in degrees"
                                      AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
@@ -1238,6 +1292,7 @@
                             <Button x:Name="RightControllerRotationZIncrementButton"
                                     Grid.Column="2"
                                     MinWidth="28"
+                                    IsTabStop="False"
                                     AutomationProperties.Name="Increase right controller-side Z rotation"
                                     Content="+"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationZIncrementCommand}" />
@@ -1261,6 +1316,7 @@
             <WrapPanel Orientation="Horizontal">
               <Button x:Name="CalibrateBothMountButton"
                       Margin="0,0,8,4"
+                      TabIndex="52"
                       AutomationProperties.Name="Calibrate both mounts"
                       Content="Calibrate Both"
                       Command="{Binding MountAdjustments.CalibrateBothCommand}" />
@@ -1268,7 +1324,7 @@
                       Classes="primary"
                       MinWidth="132"
                       Margin="0,0,12,4"
-                      TabIndex="48"
+                      TabIndex="53"
                       HotKey="Ctrl+S"
                       AutomationProperties.Name="Save mount adjustments"
                       Content="Save adjustments"
@@ -1276,7 +1332,7 @@
               <Button x:Name="RevertMountAdjustmentsButton"
                       MinWidth="132"
                       Margin="0,0,12,4"
-                      TabIndex="49"
+                      TabIndex="54"
                       HotKey="Ctrl+Z"
                       AutomationProperties.Name="Revert unsaved mount adjustments"
                       AutomationProperties.HelpText="Apply the last saved adjustments live without writing persistent state."

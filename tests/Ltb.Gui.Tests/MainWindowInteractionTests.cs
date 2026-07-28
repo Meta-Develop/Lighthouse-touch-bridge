@@ -75,11 +75,11 @@ public sealed class MainWindowInteractionTests
     }
 
     [AvaloniaFact]
-    public void ActionButtonMouseClickSurfacesFactoryCreationFailure()
+    public async Task ActionButtonMouseClickSurfacesFactoryCreationFailure()
     {
         var viewModel = new InternalDriverViewModel(
             new ThrowingSessionFactory(),
-            action => action());
+            action => Dispatcher.UIThread.Post(action));
         var window = new MainWindow
         {
             DataContext = viewModel,
@@ -91,6 +91,9 @@ public sealed class MainWindowInteractionTests
             var button = window.FindControl<Button>("ActionButton")!;
 
             Click(window, button);
+            await AssertUiConditionAsync(
+                () => viewModel.CurrentPhase == InternalDriverSessionState.Faulted,
+                "The asynchronous Start preflight did not surface the factory failure.");
 
             Assert.Equal("Start", button.Content);
             Assert.Equal(InternalDriverSessionState.Faulted, viewModel.CurrentPhase);

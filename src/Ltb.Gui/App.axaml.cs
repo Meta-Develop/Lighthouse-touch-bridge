@@ -30,34 +30,19 @@ public partial class App : Application
                 DataContext = viewModel,
             };
             window.Opened += async (_, _) => await viewModel.InitializeAsync();
-            var cleanupCompletedClose = false;
-            var cleanupInProgress = false;
-            window.Closing += async (_, eventArgs) =>
+            var closeCoordinator = new WindowCloseCoordinator(
+                viewModel.CloseAsync,
+                window.SavePlacementAsync,
+                window.Close);
+            window.Closing += (_, eventArgs) =>
             {
-                if (cleanupCompletedClose)
+                if (closeCoordinator.AllowFinalClose)
                 {
                     return;
                 }
 
                 eventArgs.Cancel = true;
-                if (cleanupInProgress)
-                {
-                    return;
-                }
-
-                cleanupInProgress = true;
-                await viewModel.CloseAsync();
-                try
-                {
-                    await window.SavePlacementAsync();
-                }
-                catch
-                {
-                    // Local window placement must not prevent fail-safe session cleanup.
-                }
-
-                cleanupCompletedClose = true;
-                window.Close();
+                _ = closeCoordinator.RequestCloseAsync();
             };
             desktop.MainWindow = window;
         }

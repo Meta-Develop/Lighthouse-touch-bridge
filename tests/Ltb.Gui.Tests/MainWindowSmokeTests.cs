@@ -184,8 +184,9 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<TextBlock>("FeedErrorText"));
 
             Assert.NotNull(window.FindControl<Border>("MountAdjustmentPanel"));
-            Assert.False(
-                window.FindControl<Expander>("MountAdjustmentExpander")!.IsExpanded);
+            var mountExpander =
+                window.FindControl<Expander>("MountAdjustmentExpander")!;
+            Assert.False(mountExpander.IsExpanded);
             Assert.NotNull(window.FindControl<Border>("LeftMountAdjustment"));
             Assert.NotNull(window.FindControl<Border>("RightMountAdjustment"));
             Assert.NotNull(window.FindControl<Border>("LeftTrackerSideAdjustment"));
@@ -230,23 +231,36 @@ public sealed class MainWindowSmokeTests
                 "RotationY",
                 "RotationZ",
             };
-            foreach (var prefix in prefixes)
+            var editorStarts = new[] { 22, 29, 37, 44 };
+            var resetIndices = new[] { 28, 35, 43, 50 };
+            for (var prefixIndex = 0; prefixIndex < prefixes.Length; prefixIndex++)
             {
-                Assert.NotNull(window.FindControl<Button>($"{prefix}ResetButton"));
-                foreach (var component in components)
+                var prefix = prefixes[prefixIndex];
+                Assert.Equal(
+                    resetIndices[prefixIndex],
+                    window.FindControl<Button>($"{prefix}ResetButton")!.TabIndex);
+                for (var componentIndex = 0;
+                     componentIndex < components.Length;
+                     componentIndex++)
                 {
+                    var component = components[componentIndex];
                     var editor =
                         window.FindControl<TextBox>($"{prefix}{component}TextBox");
                     Assert.NotNull(editor);
+                    Assert.Equal(
+                        editorStarts[prefixIndex] + componentIndex,
+                        editor!.TabIndex);
                     Assert.Contains("mount-editor", editor!.Classes);
                     Assert.False(string.IsNullOrWhiteSpace(
                         AutomationProperties.GetName(editor)));
                     Assert.False(string.IsNullOrWhiteSpace(
                         AutomationProperties.GetHelpText(editor)));
-                    Assert.NotNull(
-                        window.FindControl<Button>($"{prefix}{component}DecrementButton"));
-                    Assert.NotNull(
-                        window.FindControl<Button>($"{prefix}{component}IncrementButton"));
+                    Assert.False(window
+                        .FindControl<Button>($"{prefix}{component}DecrementButton")!
+                        .IsTabStop);
+                    Assert.False(window
+                        .FindControl<Button>($"{prefix}{component}IncrementButton")!
+                        .IsTabStop);
                 }
             }
 
@@ -260,6 +274,12 @@ public sealed class MainWindowSmokeTests
             Assert.NotNull(window.FindControl<Button>("CalibrateBothMountButton"));
             Assert.NotNull(window.FindControl<Button>("SaveMountAdjustmentsButton"));
             Assert.NotNull(window.FindControl<Button>("RevertMountAdjustmentsButton"));
+            Assert.Equal(19, mountExpander.TabIndex);
+            Assert.Equal(36, window.FindControl<Button>("CalibrateLeftMountButton")!.TabIndex);
+            Assert.Equal(51, window.FindControl<Button>("CalibrateRightMountButton")!.TabIndex);
+            Assert.Equal(52, window.FindControl<Button>("CalibrateBothMountButton")!.TabIndex);
+            Assert.Equal(53, window.FindControl<Button>("SaveMountAdjustmentsButton")!.TabIndex);
+            Assert.Equal(54, window.FindControl<Button>("RevertMountAdjustmentsButton")!.TabIndex);
             Assert.Equal(
                 "Ctrl+S",
                 window.FindControl<Button>("SaveMountAdjustmentsButton")!.HotKey!.ToString());

@@ -155,7 +155,7 @@ public sealed class TrackerBindingViewModelTests
     }
 
     [Fact]
-    public async Task ControlledStopQueuesBehindBusyRefreshAndRunsCleanupExactlyOnce()
+    public async Task ControlledStopCancelsBusyRefreshAndRunsCleanupExactlyOnce()
     {
         var control = new SerializedBlockingPreSessionControl(Snapshot());
         await using var viewModel = new TrackerBindingViewModel(
@@ -171,8 +171,7 @@ public sealed class TrackerBindingViewModelTests
         Assert.Equal(0, control.CleanupCalls);
         Assert.True(viewModel.IsBusy);
 
-        control.ReleaseRefresh();
-        await control.CleanupEntered;
+        await control.CleanupEntered.WaitAsync(TimeSpan.FromSeconds(5));
         await refresh;
         Assert.False(cleanup.IsCompleted);
         Assert.Equal(1, control.CleanupCalls);
@@ -232,6 +231,26 @@ public sealed class TrackerBindingViewModelTests
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(caller.Join(TimeSpan.FromSeconds(5)));
         Assert.Equal("Background refresh completed.", viewModel.StatusText);
+    }
+
+    [Fact]
+    public async Task PrepareStartEntersSynchronousControlPrefixOffTheCallerThread()
+    {
+        var control = new FakePreSessionControl(Snapshot())
+        {
+            PrepareStartSynchronousDelay = TimeSpan.FromMilliseconds(25),
+        };
+        await using var viewModel = new TrackerBindingViewModel(
+            control,
+            action => action());
+        var callerThreadId = Environment.CurrentManagedThreadId;
+
+        var prepare = viewModel.PrepareStartAsync();
+        await control.PrepareStartEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotEqual(callerThreadId, control.PrepareStartThreadId);
+        Assert.False(prepare.IsCompleted);
+        Assert.True(await prepare.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]
@@ -314,6 +333,13 @@ public sealed class TrackerBindingViewModelTests
 
         public int CleanupCalls { get; private set; }
 
+        public TimeSpan PrepareStartSynchronousDelay { get; init; }
+
+        public TaskCompletionSource PrepareStartEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int PrepareStartThreadId { get; private set; }
+
         public InternalDriverPreSessionSnapshot CurrentSnapshot { get; private set; } = snapshot;
 
         public ValueTask<InternalDriverPreSessionSnapshot> RefreshAsync(
@@ -352,8 +378,13 @@ public sealed class TrackerBindingViewModelTests
         }
 
         public ValueTask<InternalDriverPreSessionSnapshot> PrepareStartAsync(
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(CurrentSnapshot);
+            CancellationToken cancellationToken = default)
+        {
+            PrepareStartThreadId = Environment.CurrentManagedThreadId;
+            PrepareStartEntered.TrySetResult();
+            Thread.Sleep(PrepareStartSynchronousDelay);
+            return ValueTask.FromResult(CurrentSnapshot);
+        }
 
         public ValueTask<InternalDriverPreSessionSnapshot> CompleteControlledStopAsync(
             CancellationToken cancellationToken = default)
