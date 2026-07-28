@@ -63,6 +63,43 @@ public sealed class InternalDriverSettingsTests
     }
 
     [Fact]
+    public void OptionalTrackerPathObservationStoreRoundTripsInExactOrder()
+    {
+        var root = TemporaryRootPath();
+        var storePath = Path.Combine(root, "private", "tracker-paths.json");
+        var settings = Settings(
+            OpenVrPathsDiscovery.Automatic,
+            root,
+            new InternalDriverTrackerBinding("LHR-LEFT", "LHR-RIGHT"),
+            unregisterOnExit: false,
+            trackerPathObservationStorePath: storePath);
+
+        var json = InternalDriverSettingsJson.Serialize(settings);
+        var loaded = InternalDriverSettingsJson.Deserialize(json);
+        using var document = JsonDocument.Parse(json);
+
+        Assert.Equal(
+            [
+                "schema_version",
+                "openvrpaths_discovery",
+                "staged_driver_root",
+                "calibration_profile_store_path",
+                "tracker_path_observation_store_path",
+                "manual_tracker_binding",
+                "unregister_on_exit",
+            ],
+            document.RootElement.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(
+            storePath,
+            document.RootElement
+                .GetProperty("tracker_path_observation_store_path")
+                .GetString());
+        Assert.Equal(storePath, loaded.TrackerPathObservationStorePath);
+        Assert.Equal(json, InternalDriverSettingsJson.Serialize(loaded));
+        Assert.EndsWith("\n", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LegacySettingsWithoutBindingOrCleanupPolicyDefaultCleanupEnabled()
     {
         var legacy = SerializedSettingsObject();
@@ -72,6 +109,7 @@ public sealed class InternalDriverSettingsTests
         var loaded = InternalDriverSettingsJson.Deserialize(legacy.ToJsonString());
 
         Assert.Null(loaded.ManualTrackerBinding);
+        Assert.Null(loaded.TrackerPathObservationStorePath);
         Assert.True(loaded.UnregisterOnExit);
     }
 
@@ -98,7 +136,9 @@ public sealed class InternalDriverSettingsTests
             OpenVrPathsDiscovery.Automatic,
             root,
             new InternalDriverTrackerBinding("LHR-LEFT", "LHR-RIGHT"),
-            unregisterOnExit: false);
+            unregisterOnExit: false,
+            trackerPathObservationStorePath:
+                Path.Combine(root, "private", "tracker-paths.json"));
 
         var relocated = original.WithStagedDriverRoot(
             Path.Combine(root, "relocated-driver"));
@@ -106,14 +146,29 @@ public sealed class InternalDriverSettingsTests
         var optedIn = cleared.WithUnregisterOnExit(unregisterOnExit: true);
 
         Assert.Equal(original.ManualTrackerBinding, relocated.ManualTrackerBinding);
+        Assert.Equal(
+            original.TrackerPathObservationStorePath,
+            relocated.TrackerPathObservationStorePath);
         Assert.False(relocated.UnregisterOnExit);
         Assert.Null(cleared.ManualTrackerBinding);
+        Assert.Equal(
+            original.TrackerPathObservationStorePath,
+            cleared.TrackerPathObservationStorePath);
         Assert.False(cleared.UnregisterOnExit);
         Assert.True(optedIn.UnregisterOnExit);
+        Assert.Equal(
+            original.TrackerPathObservationStorePath,
+            optedIn.TrackerPathObservationStorePath);
         Assert.Equal(
             Path.Combine(root, "relocated-driver"),
             optedIn.StagedDriverRoot);
         Assert.Equal(original.CalibrationProfileStorePath, optedIn.CalibrationProfileStorePath);
+
+        var removedStore = optedIn.WithTrackerPathObservationStorePath(null);
+        Assert.Null(removedStore.TrackerPathObservationStorePath);
+        Assert.Equal(optedIn.StagedDriverRoot, removedStore.StagedDriverRoot);
+        Assert.Equal(optedIn.ManualTrackerBinding, removedStore.ManualTrackerBinding);
+        Assert.True(removedStore.UnregisterOnExit);
     }
 
     [Fact]
@@ -161,6 +216,22 @@ public sealed class InternalDriverSettingsTests
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("tracker-paths.json")]
+    [InlineData("/tmp/../tmp/tracker-paths.json")]
+    [InlineData("/")]
+    public void SettingsRejectInvalidTrackerPathObservationStorePaths(string path)
+    {
+        Assert.Throws<ArgumentException>(() => new InternalDriverSettings(
+            InternalDriverSettingsSchema.CurrentVersion,
+            OpenVrPathsDiscovery.Automatic,
+            "/tmp/ltb-staged-driver",
+            "/tmp/ltb-profiles.json",
+            trackerPathObservationStorePath: path));
+    }
+
+    [Theory]
     [InlineData("openvrpaths.vrpath")]
     [InlineData("/tmp/../tmp/openvrpaths.vrpath")]
     [InlineData("/")]
@@ -185,6 +256,13 @@ public sealed class InternalDriverSettingsTests
         var unknown = Assert.Throws<InternalDriverSettingsFormatException>(() =>
             InternalDriverSettingsJson.Deserialize(root.ToJsonString()));
         Assert.Equal(InternalDriverSettingsFormatReason.MalformedJson, unknown.Reason);
+
+        var duplicate = Assert.Throws<InternalDriverSettingsFormatException>(() =>
+            InternalDriverSettingsJson.Deserialize(
+                """{"schema_version":1,"schema_version":1}"""));
+        Assert.Equal(
+            InternalDriverSettingsFormatReason.MalformedJson,
+            duplicate.Reason);
     }
 
     [Theory]
@@ -192,6 +270,7 @@ public sealed class InternalDriverSettingsTests
     [InlineData("openvrpaths_discovery", "true")]
     [InlineData("staged_driver_root", "42")]
     [InlineData("calibration_profile_store_path", "[]")]
+    [InlineData("tracker_path_observation_store_path", "true")]
     [InlineData("manual_tracker_binding", "true")]
     [InlineData("unregister_on_exit", "\"true\"")]
     public void WrongSettingsMemberTypesAreMalformed(string property, string replacementJson)
@@ -259,6 +338,31 @@ public sealed class InternalDriverSettingsTests
             InternalDriverSettingsJson.Deserialize(root.ToJsonString()));
 
         Assert.Equal(InternalDriverSettingsFormatReason.InvalidSettingsData, exception.Reason);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("\"\"")]
+    [InlineData("\" \"")]
+    [InlineData("\"relative/tracker-paths.json\"")]
+    [InlineData("\"/tmp/../tmp/tracker-paths.json\"")]
+    [InlineData("\"/\"")]
+    public void ExplicitInvalidTrackerPathObservationStoreFailsClosed(
+        string replacementJson)
+    {
+        var root = SerializedSettingsObject();
+        root["tracker_path_observation_store_path"] =
+            JsonNode.Parse(replacementJson);
+
+        var exception = Assert.Throws<InternalDriverSettingsFormatException>(() =>
+            InternalDriverSettingsJson.Deserialize(root.ToJsonString()));
+
+        Assert.Contains(
+            exception.Reason,
+            [
+                InternalDriverSettingsFormatReason.MalformedJson,
+                InternalDriverSettingsFormatReason.InvalidSettingsData,
+            ]);
     }
 
     [Theory]
@@ -341,7 +445,8 @@ public sealed class InternalDriverSettingsTests
         OpenVrPathsDiscovery discovery,
         string? rootPath = null,
         InternalDriverTrackerBinding? manualTrackerBinding = null,
-        bool unregisterOnExit = true)
+        bool unregisterOnExit = true,
+        string? trackerPathObservationStorePath = null)
     {
         var root = rootPath ?? TemporaryRootPath();
         return new InternalDriverSettings(
@@ -350,7 +455,8 @@ public sealed class InternalDriverSettingsTests
             Path.Combine(root, "staged-driver"),
             Path.Combine(root, "profiles", "calibration-profiles.json"),
             manualTrackerBinding,
-            unregisterOnExit);
+            unregisterOnExit,
+            trackerPathObservationStorePath);
     }
 
     private static JsonObject SerializedSettingsObject() =>

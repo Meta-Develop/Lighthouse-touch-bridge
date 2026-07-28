@@ -37,6 +37,7 @@ public static class InternalDriverSettingsJson
                 },
                 StagedDriverRoot = settings.StagedDriverRoot,
                 CalibrationProfileStorePath = settings.CalibrationProfileStorePath,
+                TrackerPathObservationStorePath = settings.TrackerPathObservationStorePath,
                 ManualTrackerBinding = settings.ManualTrackerBinding is { } binding
                     ? new TrackerBindingDto
                     {
@@ -52,6 +53,7 @@ public static class InternalDriverSettingsJson
     public static InternalDriverSettings Deserialize(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
+        EnsureNoDuplicateMembers(json);
 
         SettingsDto dto;
         try
@@ -99,6 +101,12 @@ public static class InternalDriverSettingsJson
                     bindingDto.LeftTrackerSerial,
                     bindingDto.RightTrackerSerial)
                 : null;
+            var trackerPathObservationStorePath =
+                dto.HasTrackerPathObservationStorePath
+                    ? dto.TrackerPathObservationStorePath
+                        ?? throw Invalid(
+                            "'tracker_path_observation_store_path' must not be null.")
+                    : null;
             return new InternalDriverSettings(
                 dto.SchemaVersion,
                 discovery,
@@ -107,7 +115,8 @@ public static class InternalDriverSettingsJson
                 manualTrackerBinding,
                 dto.HasUnregisterOnExit
                     ? dto.UnregisterOnExit
-                    : true);
+                    : true,
+                trackerPathObservationStorePath);
         }
         catch (InternalDriverSettingsFormatException)
         {
@@ -130,10 +139,61 @@ public static class InternalDriverSettingsJson
         Exception? innerException = null) =>
         new(reason, message, innerException);
 
+    private static void EnsureNoDuplicateMembers(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(
+                json,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 64,
+                });
+            ValidateElement(document.RootElement);
+        }
+        catch (JsonException exception)
+        {
+            throw Format(
+                InternalDriverSettingsFormatReason.MalformedJson,
+                "Internal-driver settings are not valid strict JSON.",
+                exception);
+        }
+
+        static void ValidateElement(JsonElement element)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                var names = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (!names.Add(property.Name))
+                    {
+                        throw Format(
+                            InternalDriverSettingsFormatReason.MalformedJson,
+                            "Internal-driver settings contain a duplicate JSON member.");
+                    }
+
+                    ValidateElement(property.Value);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in element.EnumerateArray())
+                {
+                    ValidateElement(item);
+                }
+            }
+        }
+    }
+
     private sealed class SettingsDto
     {
         private bool unregisterOnExit;
         private bool hasUnregisterOnExit;
+        private string? trackerPathObservationStorePath;
+        private bool hasTrackerPathObservationStorePath;
 
         [JsonPropertyName("schema_version")]
         [JsonPropertyOrder(0)]
@@ -152,12 +212,29 @@ public static class InternalDriverSettingsJson
         public required string CalibrationProfileStorePath { get; init; }
 
         [JsonPropertyName("manual_tracker_binding")]
-        [JsonPropertyOrder(4)]
+        [JsonPropertyOrder(5)]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public TrackerBindingDto? ManualTrackerBinding { get; init; }
 
+        [JsonPropertyName("tracker_path_observation_store_path")]
+        [JsonPropertyOrder(4)]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? TrackerPathObservationStorePath
+        {
+            get => trackerPathObservationStorePath;
+            init
+            {
+                trackerPathObservationStorePath = value;
+                hasTrackerPathObservationStorePath = true;
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasTrackerPathObservationStorePath =>
+            hasTrackerPathObservationStorePath;
+
         [JsonPropertyName("unregister_on_exit")]
-        [JsonPropertyOrder(5)]
+        [JsonPropertyOrder(6)]
         public bool UnregisterOnExit
         {
             get => unregisterOnExit;

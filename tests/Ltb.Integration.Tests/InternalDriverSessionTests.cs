@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Text.Json;
 using Ltb.App;
+using Ltb.Configuration;
 using Ltb.Core;
 using Ltb.Driver;
 using Ltb.MetaLink;
@@ -251,6 +252,11 @@ public sealed class InternalDriverSessionTests
         await session.RunAsync();
 
         var receipt = Assert.Single(backend.Neutralized);
+        var recorded = Assert.Single(runtime.Recorded);
+        Assert.Equal(TimeSpan.Zero, recorded.ObservedAtUtc.Offset);
+        Assert.Equal(
+            receipt.TrackerPaths.Select(path => (path.Hand, path.TrackerSerial, path.DevicePath)),
+            recorded.TrackerPaths.Select(path => (path.Hand, path.TrackerSerial, path.DevicePath)));
         Assert.Equal(2, receipt.TrackerPaths.Count);
         Assert.Collection(
             receipt.TrackerPaths.OrderBy(path => path.Hand),
@@ -258,13 +264,13 @@ public sealed class InternalDriverSessionTests
             {
                 Assert.Equal(ProtocolHand.Left, left.Hand);
                 Assert.Equal("TRACKER-LEFT", left.TrackerSerial);
-                Assert.Equal("/devices/TRACKER-LEFT", left.DevicePath);
+                Assert.Equal("/devices/lighthouse/TRACKER-LEFT", left.DevicePath);
             },
             right =>
             {
                 Assert.Equal(ProtocolHand.Right, right.Hand);
                 Assert.Equal("TRACKER-RIGHT", right.TrackerSerial);
-                Assert.Equal("/devices/TRACKER-RIGHT", right.DevicePath);
+                Assert.Equal("/devices/lighthouse/TRACKER-RIGHT", right.DevicePath);
             });
         Assert.Equal(1, backend.RestoreCount);
         Assert.Contains(output.Snapshots, snapshot =>
@@ -276,6 +282,193 @@ public sealed class InternalDriverSessionTests
         Assert.Equal(
             InternalDriverTrackerNeutralizationState.Restored,
             output.Snapshots[^1].TrackerNeutralization!.State);
+    }
+
+    [Fact]
+    public async Task SelectedPairOnlyIsRecordedBeforeNeutralizationAndFeed()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var inner = new FakeRuntime(
+            WithTrackerPath(
+                ReadyObservation(
+                    additionalTrackerSerials: ["FBT-WAIST", "FBT-CHEST"]),
+                "FBT-WAIST",
+                "openvr://device/diagnostic-only"),
+            StoppedObservation());
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        var recorded = Assert.Single(runtime.Recorded);
+        Assert.Equal(
+            ["TRACKER-LEFT", "TRACKER-RIGHT"],
+            recorded.TrackerPaths
+                .OrderBy(path => path.Hand)
+                .Select(path => path.TrackerSerial));
+        Assert.Single(backend.Neutralized);
+        Assert.Equal(1, inner.CreatedFeedCount);
+    }
+
+    [Fact]
+    public async Task ObservationRecordFailureFaultsBeforeNeutralizationOrFeed()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var inner = new FakeRuntime(ReadyObservation());
+        var runtime = new NeutralizingRuntime(inner, backend)
+        {
+            RecordFailure = new IOException("scripted durable observation failure"),
+        };
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        Assert.Empty(runtime.Recorded);
+        Assert.Empty(backend.Neutralized);
+        Assert.Equal(0, inner.CreatedFeedCount);
+        Assert.Equal(InternalDriverSessionState.Faulted, output.Snapshots[^1].State);
+        Assert.Contains(
+            "could not be durably recorded",
+            output.Snapshots[^1].Diagnostic,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "scripted durable observation failure",
+            output.Snapshots[^1].Diagnostic,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SelectedRawSerialsCanonicalizeOnceAndRemainStableAcrossObservation()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var initial = WithSelectedTrackerDescriptors(
+            ReadyObservation(sampleTimeSeconds: 10d),
+            " tracker-left ",
+            "tracker-right");
+        var current = WithSelectedTrackerDescriptors(
+            ReadyObservation(sampleTimeSeconds: 11d),
+            " tracker-left ",
+            "tracker-right");
+        var inner = new FakeRuntime(initial, current, StoppedObservation());
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        var recorded = Assert.Single(runtime.Recorded);
+        Assert.Equal(
+            ["TRACKER-LEFT", "TRACKER-RIGHT"],
+            recorded.TrackerPaths
+                .OrderBy(path => path.Hand)
+                .Select(path => path.TrackerSerial));
+        Assert.Contains(output.Snapshots, snapshot =>
+            snapshot.State == InternalDriverSessionState.Active);
+        Assert.DoesNotContain(output.Snapshots, snapshot =>
+            snapshot.Diagnostic.Contains("path churn", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task CaseVariantDuplicateSelectedSerialFaultsBeforeRecordMutationOrFeed()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var ready = WithSelectedTrackerDescriptors(
+            ReadyObservation(),
+            "TRACKER-LEFT",
+            "TRACKER-RIGHT",
+            duplicateLeftRawSerial: " tracker-left ");
+        var inner = new FakeRuntime(ready);
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        Assert.Empty(runtime.Recorded);
+        Assert.Empty(backend.Neutralized);
+        Assert.Equal(0, inner.CreatedFeedCount);
+        Assert.Equal(InternalDriverSessionState.Faulted, output.Snapshots[^1].State);
+        Assert.Contains("observed 2", output.Snapshots[^1].Diagnostic, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("diagnostic_uri")]
+    [InlineData("duplicate_path")]
+    public async Task InvalidSelectedPathPairFaultsBeforeRecordMutationOrFeed(string pathCase)
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var ready = pathCase switch
+        {
+            "diagnostic_uri" => WithTrackerPath(
+                ReadyObservation(),
+                "TRACKER-LEFT",
+                "openvr://device/selected-left"),
+            "duplicate_path" => WithTrackerPath(
+                ReadyObservation(),
+                "TRACKER-RIGHT",
+                "/devices/lighthouse/TRACKER-LEFT"),
+            _ => throw new ArgumentOutOfRangeException(nameof(pathCase)),
+        };
+        var inner = new FakeRuntime(ready);
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+
+        Assert.Empty(runtime.Recorded);
+        Assert.Empty(backend.Neutralized);
+        Assert.Equal(0, inner.CreatedFeedCount);
+        Assert.Equal(InternalDriverSessionState.Faulted, output.Snapshots[^1].State);
+    }
+
+    [Fact]
+    public async Task SequentialRunsRecordIndependentUtcProvenance()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var inner = new FakeRuntime(
+            ReadyObservation(sampleTimeSeconds: 10d),
+            StoppedObservation(),
+            ReadyObservation(sampleTimeSeconds: 20d),
+            StoppedObservation());
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        await session.RunAsync();
+        await session.RunAsync();
+
+        Assert.Equal(2, runtime.Recorded.Count);
+        Assert.True(
+            runtime.Recorded[1].ObservedAtUtc >
+            runtime.Recorded[0].ObservedAtUtc);
+        Assert.Equal(2, backend.Neutralized.Count);
+        Assert.Equal(2, inner.CreatedFeedCount);
+    }
+
+    [Fact]
+    public async Task StopAfterCompletedObservationDoesNotEraseRecordedCommit()
+    {
+        var backend = new FakeTrackerNeutralizationBackend();
+        var inner = new FakeRuntime(ReadyObservation());
+        var runtime = new NeutralizingRuntime(inner, backend);
+        var output = new RecordingOutput();
+        await using var session = Session(runtime, output);
+
+        var run = session.RunAsync();
+        await output.WaitForStateAsync(
+            InternalDriverSessionState.Active,
+            TimeSpan.FromSeconds(2));
+        var committed = Assert.Single(runtime.Recorded);
+
+        await session.StopAsync();
+        await run;
+
+        Assert.Same(committed, Assert.Single(runtime.Recorded));
+        Assert.Equal(1, backend.RestoreCount);
+        Assert.Equal(InternalDriverSessionState.Stopped, output.Snapshots[^1].State);
     }
 
     [Fact]
@@ -584,7 +777,7 @@ public sealed class InternalDriverSessionTests
                 ? new SteamVrDeviceDescriptor(
                     new SteamVrDeviceIdentity(
                         "TRACKER-LEFT",
-                        "/devices/TRACKER-LEFT-CHANGED"),
+                        "/devices/lighthouse/TRACKER-LEFT-CHANGED"),
                     device.TransientDeviceIndex,
                     device.Category,
                     device.ControllerRole,
@@ -1184,9 +1377,28 @@ public sealed class InternalDriverSessionTests
         Assert.StartsWith(Path.GetFullPath(localRoot), paths.CalibrationProfileStorePath, StringComparison.Ordinal);
         Assert.StartsWith(Path.GetFullPath(localRoot), paths.StructuredLogPath, StringComparison.Ordinal);
         Assert.Equal(
+            Path.GetFullPath(Path.Combine(
+                localRoot,
+                "LighthouseTouchBridge",
+                "settings",
+                "tracker-path-observations.json")),
+            paths.EffectiveTrackerPathObservationStorePath);
+        Assert.Equal(
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "driver_ltb"))),
             paths.StagedDriverRoot);
         Assert.DoesNotContain("steamvr.vrsettings", paths.SettingsPath, StringComparison.OrdinalIgnoreCase);
+
+        var overridePath = Path.GetFullPath(
+            Path.Combine(localRoot, "private", "observed-tracker-paths.json"));
+        var overridden = InternalDriverSessionFactory.ResolvePaths(
+            new InternalDriverSessionOptions
+            {
+                LocalApplicationDataRoot = localRoot,
+                TrackerPathObservationStorePath = overridePath,
+            });
+        Assert.Equal(
+            overridePath,
+            overridden.EffectiveTrackerPathObservationStorePath);
     }
 
     private static InternalDriverSession Session(
@@ -1507,12 +1719,86 @@ public sealed class InternalDriverSessionTests
             BuildIdentity));
 
     private static SteamVrDeviceDescriptor TrackerDescriptor(string serial, uint index) =>
-        Descriptor(
-            serial,
+        new(
+            new SteamVrDeviceIdentity(
+                serial,
+                $"/devices/lighthouse/{serial}"),
             index,
             SteamVrDeviceCategory.GenericTracker,
             SteamVrControllerRole.None,
+            isConnected: true,
             new SteamVrDeviceMetadata("lighthouse", "lighthouse", "HTC", "Tracker", null));
+
+    private static InternalDriverRuntimeObservation WithTrackerPath(
+        InternalDriverRuntimeObservation observation,
+        string trackerSerial,
+        string devicePath) =>
+        observation with
+        {
+            Devices = observation.Devices
+                .Select(device =>
+                    string.Equals(
+                        device.Identity.SerialNumber,
+                        trackerSerial,
+                        StringComparison.Ordinal)
+                        ? WithIdentity(
+                            device,
+                            device.Identity.SerialNumber,
+                            devicePath)
+                        : device)
+                .ToArray(),
+        };
+
+    private static InternalDriverRuntimeObservation WithSelectedTrackerDescriptors(
+        InternalDriverRuntimeObservation observation,
+        string leftRawSerial,
+        string rightRawSerial,
+        string? duplicateLeftRawSerial = null)
+    {
+        var devices = observation.Devices
+            .Select(device => device.Identity.SerialNumber switch
+            {
+                "TRACKER-LEFT" => WithIdentity(
+                    device,
+                    leftRawSerial,
+                    device.Identity.DevicePath),
+                "TRACKER-RIGHT" => WithIdentity(
+                    device,
+                    rightRawSerial,
+                    device.Identity.DevicePath),
+                _ => device,
+            })
+            .ToList();
+        if (duplicateLeftRawSerial is not null)
+        {
+            var selectedLeft = devices.Single(device =>
+                device.Category == SteamVrDeviceCategory.GenericTracker &&
+                InternalDriverTrackerSerial.Require(
+                    device.Identity.SerialNumber,
+                    nameof(observation)) == "TRACKER-LEFT");
+            devices.Add(WithIdentity(
+                selectedLeft,
+                duplicateLeftRawSerial,
+                "/devices/lighthouse/TRACKER-LEFT-DUPLICATE",
+                transientDeviceIndex: 99));
+        }
+
+        return observation with { Devices = devices };
+    }
+
+    private static SteamVrDeviceDescriptor WithIdentity(
+        SteamVrDeviceDescriptor device,
+        string rawSerial,
+        string devicePath,
+        uint? transientDeviceIndex = null) =>
+        new(
+            new SteamVrDeviceIdentity(rawSerial, devicePath),
+            transientDeviceIndex ?? device.TransientDeviceIndex,
+            device.Category,
+            device.ControllerRole,
+            device.IsConnected,
+            device.Metadata,
+            device.Capabilities);
 
     private static SteamVrDeviceDescriptor Descriptor(
         string serial,
@@ -1757,7 +2043,8 @@ public sealed class InternalDriverSessionTests
 
     private sealed class NeutralizingRuntime :
         IInternalDriverSessionRuntime,
-        IInternalDriverTrackerNeutralizationRuntime
+        IInternalDriverTrackerNeutralizationRuntime,
+        IInternalDriverTrackerPathObservationRuntime
     {
         private readonly FakeRuntime _inner;
 
@@ -1774,6 +2061,10 @@ public sealed class InternalDriverSessionTests
             get;
         }
 
+        public List<RecordedTrackerPaths> Recorded { get; } = [];
+
+        public Exception? RecordFailure { get; init; }
+
         public InternalDriverPlatformProbe Probe() => _inner.Probe();
 
         public ValueTask<InternalDriverRegistration> EnsureDriverAsync(
@@ -1788,6 +2079,27 @@ public sealed class InternalDriverSessionTests
             CancellationToken cancellationToken) =>
             _inner.ResolveProfilesAsync(observation, progress, cancellationToken);
 
+        public void RecordSelectedTrackerPaths(
+            IReadOnlyList<InternalDriverTrackerPath> trackerPaths,
+            DateTimeOffset observedAtUtc)
+        {
+            if (RecordFailure is not null)
+            {
+                throw RecordFailure;
+            }
+
+            InternalDriverTrackerNeutralizationLifecycle.ValidateExactPair(trackerPaths);
+            _ = trackerPaths
+                .Select(path => new TrackerPathObservationCandidate(
+                    path.TrackerSerial,
+                    path.DevicePath,
+                    observedAtUtc))
+                .ToArray();
+            Recorded.Add(new RecordedTrackerPaths(
+                Array.AsReadOnly(trackerPaths.ToArray()),
+                observedAtUtc));
+        }
+
         public IDriverFeed CreateFeed() => _inner.CreateFeed();
 
         public void ResetMeta() => _inner.ResetMeta();
@@ -1801,6 +2113,10 @@ public sealed class InternalDriverSessionTests
             _inner.StopRunAsync(cancellationToken);
 
         public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+        public sealed record RecordedTrackerPaths(
+            IReadOnlyList<InternalDriverTrackerPath> TrackerPaths,
+            DateTimeOffset ObservedAtUtc);
     }
 
     private sealed class FakeTrackerNeutralizationBackend :
