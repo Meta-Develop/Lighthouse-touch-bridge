@@ -188,7 +188,8 @@ normalized `System.Numerics.Quaternion` values with components reported in
 monotonic host time in seconds, not wall-clock time and not comparable across
 host boots.
 
-At runtime the Quest-world transform is absent:
+For the unadjusted solver/base-mount contract, the Quest-world transform is
+absent:
 
 ```text
 T_L_output(t) = T_L_tracker(t) * X_mount
@@ -197,7 +198,10 @@ T_L_output(t) = T_L_tracker(t) * X_mount
 This order rotates the mount translation by the current tracker orientation
 before adding the tracker position. It therefore preserves the physical
 lever arm in a full 6DoF result; a rotation-only result fixes that translation
-to zero.
+to zero. The current first-party runtime then inserts the separately persisted
+adjustments exactly as documented above:
+`X_eff = A_tracker * X_mount * A_controller` and
+`T_output = T_tracker * X_eff`.
 
 ## Dependency direction
 
@@ -533,11 +537,13 @@ half the VMT heartbeat timeout. The effective rate is printed on activation.
 This prevents a low requested rate from making the health loop itself slower
 than the freshness limits it enforces.
 
-The legacy one-hand `bridge` keeps its original VMT-first managed-exit order:
+The legacy one-hand `legacy-bridge` keeps its original VMT-first managed-exit
+order:
 it sends the disabled Joint configuration, then attempts exact settings release
 even if VMT deactivation failed. Cleanup failures are returned and produce a
 distinct command exit code rather than being hidden. This order is specific to
-the one-hand coordinator; the production two-hand `wizard` and `daily` paths
+the one-hand coordinator; the historical two-hand `legacy-wizard` and
+`legacy-daily` paths
 use the source-preserving order described below. Touch
 disconnect, VMT device loss or identity change, stale VMT heartbeat, invalid or
 stale VMT output pose, invalid tracker pose, reported tracker staleness,
@@ -597,47 +603,50 @@ cross-platform, so the GUI is developed and headless-tested on Linux and
 cross-published to win-x64, and specification section 22 lists it among the
 candidate frameworks.
 
-The GUI lives in a separate `Ltb.Gui` project as a thin view over the existing
-UI-neutral ports: the `TwoHandCalibrationWizard` state machine, its
+The historical GUI lived in the separate `Ltb.Gui` project as a thin view over
+the existing UI-neutral ports: the `TwoHandCalibrationWizard` state machine, its
 `ICalibrationWizardOutput` events, and `ILtbLogSink` structured logs. View
 code contains rendering and binding only; sequencing, device, calibration, and
 persistence policy stay in the existing wizard, runtime, and backend types.
 `Ltb.Calibration` and `Ltb.Configuration` remain free of UI dependencies.
 
-The desktop shell defaults to the deterministic scripted-demo mode, so it can
-be opened without SteamVR, OpenVR, VMT, or host-settings access. The user can
-select production mode with the in-window radio buttons or start the executable
-with the `wizard` verb; `wizard-demo` explicitly selects the scripted path.
-The same launch values remain editable in the window. Both modes expose
-`--profiles` and optional `--log`; production additionally exposes
+The retained `GuiCommandLineOptions` parser describes the historical
+scripted-demo and VMT legacy modes, but the current `Ltb.Gui` composition root
+does not call that parser: it always builds the first-party
+internal-driver view. Therefore the GUI does not expose the retained scripted
+demo as an executable command boundary and must not be used for that checklist
+step. The historical launch values were editable in that legacy window. Both
+historical modes exposed `--profiles` and optional `--log`; the historical VMT
+mode additionally exposed
 `--left-vmt-slot`, `--right-vmt-slot`, `--steamvr-settings`, `--duration`,
-`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration is locked
-while a session runs, and Abort or a window close requests cancellation and
-waits for the session's cleanup path.
+`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration was locked
+while a session ran, and Abort or a window close requested cancellation and
+waited for the session's cleanup path.
 
 `CalibrationWizardViewModel` parses the editable values using invariant numeric
 formats and rejects invalid configuration before creating a session. The public
 `ProductionCalibrationWizardSessionOptions` contract in `Ltb.App` performs the
 authoritative range and cross-field validation, including distinct VMT slots in
-the supported `0..57` range. `ProductionCalibrationWizardSessionFactory` is the
-shared composition seam used by both the console `wizard` command and the GUI:
+the supported `0..57` range. `ProductionCalibrationWizardSessionFactory` was
+the shared composition seam used by both the console `legacy-wizard` command
+and the historical GUI:
 it owns the live runtime, file-backed profile store, UI-neutral wizard,
 post-activation watchdog, structured log, SafeDisable behavior, and native
-resource lifetime. `Ltb.Gui` adapts the completed lifecycle result to
-`ICalibrationWizardSession`; neither its view nor its view model sequences
-devices, solves calibration, applies profiles, or defines cleanup policy.
+resource lifetime. Historically, `Ltb.Gui` adapted the completed lifecycle
+result to `ICalibrationWizardSession`; that dormant legacy view path is not the
+current composition root.
 
 ```text
-Ltb.Gui arguments + editable fields
+historical Ltb.Gui arguments + editable fields
                  |
                  v
       CalibrationWizardViewModel
-       | scripted          | production
+       | scripted          | legacy VMT
        v                   v
-ScriptedCalibration  ProductionCalibrationWizardSessionFactory (Ltb.App)
+ScriptedCalibration  ProductionCalibrationWizardSessionFactory (retained type)
 WizardSession              |
                            v
-             production runtime + profile store
+             retained legacy runtime + profile store
                            |
                            v
               TwoHandCalibrationWizard
@@ -646,12 +655,13 @@ WizardSession              |
               watchdog -> SafeDisable
 ```
 
-Production validation and native-runtime failures are reported through bounded
-wizard diagnostics rather than escaping into view callbacks. Linux GUI tests
-select both modes, validate every production parameter boundary, exercise the
-shared production composition through injected fake backends, and use the
-headless Avalonia test host. They do not open live runtime resources or replace
-the Windows launch, visual, SteamVR, ALVR, VMT, and hardware checks.
+The historical VMT validation and native-runtime failures were reported
+through bounded wizard diagnostics rather than escaping into view callbacks.
+Retained GUI tests select both legacy modes, validate every historical VMT
+parameter boundary, exercise that legacy composition through injected fake
+backends, and use the headless Avalonia test host. They do not open live runtime
+resources or replace the Windows launch, visual, SteamVR, ALVR, VMT, and
+hardware checks.
 
 ## Milestone 3 two-hand wizard boundary
 
@@ -662,7 +672,7 @@ of those events. The Avalonia UI implements the same output and runtime ports
 without moving device, calibration, or persistence policy into view callbacks.
 
 ```text
-ScriptedCalibrationWizardRuntime     production OpenVR/VMT/settings adapters
+ScriptedCalibrationWizardRuntime     retained legacy OpenVR/VMT/settings adapters
                          \           /
  ICalibrationWizardRuntime (dependencies, devices, capture, apply)
                          |
@@ -717,17 +727,19 @@ path and atomically replaces the incompatible store after both new profiles
 validate; malformed JSON remains a fail-safe diagnostic. Apply remains behind
 the runtime port.
 
-Two runtime compositions now implement that port. `wizard-demo` uses
+Two retained legacy runtime compositions implement that port.
+`legacy-wizard-demo` uses
 `ScriptedCalibrationWizardRuntime` and deterministic fake streams without
-opening SteamVR, OpenVR, VMT, or host settings. The production `wizard` opens
+opening SteamVR, OpenVR, VMT, or host settings. The historical
+`legacy-wizard` opens
 the live OpenVR session, uses the Milestone 1 recorder for the original Touch
 and tracker streams, and reuses the same VMT, SteamVR settings, two-hand apply
-transaction, watchdog, and SafeDisable boundaries as `daily`.
+transaction, watchdog, and SafeDisable boundaries as `legacy-daily`.
 
-The production composition is:
+The historical legacy composition is:
 
 ```text
-wizard CLI -> TwoHandCalibrationWizard -> live OpenVR recorder
+legacy-wizard CLI -> TwoHandCalibrationWizard -> live OpenVR recorder
                                   |     -> CalibrationWizardBackend
                                   |     -> schema-1 profile store
                                   v
@@ -755,16 +767,16 @@ cleanup leaves no active hand override and preserves unrelated SteamVR
 settings; it does not reactivate a prior hand mapping that could name a stale
 source.
 
-The production command is:
+The warning-gated unsupported legacy command is:
 
 ```text
-dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+dotnet run --project src/Ltb.App -- legacy-wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
-The deterministic command remains:
+The warning-gated deterministic legacy command remains:
 
 ```bash
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
+dotnet run --project src/Ltb.App -- legacy-wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 It uses deterministic fake controllers and fake tracker serials, intentionally
@@ -772,11 +784,11 @@ reverses tracker enumeration, selects full 6DoF for the left hand and normal
 rotation-only fallback for the position-unavailable right hand, writes two
 profiles, and reloads them on the next invocation without native runtime calls.
 It is not a live hardware command. Automated fake-backed tests prove the
-production composition boundary, including release-before-capture, apply
+retained legacy composition boundary, including release-before-capture, apply
 rollback, abort cleanup, and active-HMD rejection, but real runtime timing and
 device provenance remain Windows checks.
 
-## Milestone 4 reliable daily-use boundary
+## Milestone 4 legacy reliable daily-use boundary
 
 Milestone 4 adds a UI-neutral `ReliableDailyUseCoordinator` in `Ltb.App`. It
 owns sequencing and recovery policy, while health observations, states, and
@@ -784,10 +796,10 @@ structured event contracts remain runtime-neutral. OpenVR, VMT, profile
 storage, and settings operations stay behind narrow interfaces so the complete
 transition matrix can run with deterministic fakes on Linux.
 
-The production composition is:
+The historical legacy composition is:
 
 ```text
-daily CLI -> FileCalibrationWizardBackend + JsonLinesLtbLogSink
+legacy-daily CLI -> FileCalibrationWizardBackend + JsonLinesLtbLogSink
           -> ReliableDailyUseCoordinator
           -> ProductionReliableDailyUseRuntime
           -> shared OpenVR session + one VMT client + SteamVrSettingsManager
@@ -798,15 +810,16 @@ slots. The CLI requires the complete profile store, left and right slots in
 `0..57`, and an explicit settings path:
 
 ```text
-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+legacy-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 The monitor rate defaults to `20` Hz and reconnect delay to `0.25` seconds.
 The live adapter uses an internal `0.5`-second pose-staleness threshold and a
 five-second VMT heartbeat/discovery bound.
 
-The `daily` composition proves input and active-HMD readiness with three
-independent current observations before it can become `Ready`:
+The historical `legacy-daily` composition proves input and active-HMD
+readiness with three independent current observations before it can become
+`Ready`:
 
 1. `AlvrLocalDashboardProbe` requires a successful, nonempty response from the
    loopback endpoint `http://127.0.0.1:8082/api/version`. Version 0.1 fixes this
@@ -908,7 +921,7 @@ driver-requested quit is also classified as stopped. A process-quit event for
 another client is ignored. A terminal runtime event therefore drives the
 normal `SteamVrStopped` diagnostic and SafeDisable path.
 
-SteamVR startup retry is allowed only before this `daily` invocation has
+SteamVR startup retry is allowed only before this `legacy-daily` invocation has
 acquired its OpenVR session. If SteamVR stops after acquisition, including
 while recovering from VMT loss, the stop is terminal for that invocation. The
 coordinator performs bounded cleanup, emits `SteamVrStopped`, enters `Stopped`,
@@ -968,8 +981,9 @@ The stable code vocabulary is grouped by purpose:
   `RollbackCompleted`, and `RollbackFailed`.
 
 `JsonLinesLtbLogSink` is the local append-only JSON Lines destination exposed
-by `wizard --log <events.jsonl>`, `daily --log <events.jsonl>`, and
-`wizard-demo --log <events.jsonl>`. It creates a missing parent directory,
+by `legacy-wizard --log <events.jsonl>`,
+`legacy-daily --log <events.jsonl>`, and
+`legacy-wizard-demo --log <events.jsonl>`. It creates a missing parent directory,
 appends one JSON object per event, and flushes each event. Omitting the option
 disables the JSONL sink and creates no default event file. Log-write failures
 are swallowed at the coordinator boundary so they cannot alter calibration or
@@ -980,7 +994,7 @@ the distinct calibration results `NoPositionAvailable`,
 `PoorTranslationObservability`, and `BadRotationCalibration`. These codes keep
 normal rotation-only selection separate from rejected rotation calibration.
 
-If an unexpected adapter exception escapes during active daily use, the
+If an unexpected adapter exception escapes during active legacy daily use, the
 coordinator first emits `RuntimeFailure` at error level with `exceptionType`
 and `exceptionMessage` properties. It intentionally does not serialize a stack
 trace. Only after that event does it run bounded SafeDisable across every active
@@ -1063,7 +1077,7 @@ This gives each role one explicit acceptance rule:
 | --- | --- | --- |
 | Meta Touch input controller | A connected input controller has a left/right role and matches a known Meta Touch family. When OpenVR supplies an input-profile path, it must also match that family. Orientation-only calibration may proceed when controller position is unavailable; full 6DoF still requires valid position samples. | Current controller runtime, family/model, optional input profile, role, and optional exact serial are runtime observations. A stored profile cannot make an unknown live descriptor supported. |
 | Physical Lighthouse pose source | `CanUseAsPhysicalPoseSource` is true. A connected positional `GenericTracker` can satisfy this without a Vive-specific or Tundra-specific model check. | Exact stable serial remains the profile and reconnect key. VMT registered paths are marked virtual and excluded even though VMT also enumerates as `GenericTracker`, preventing a virtual output from following itself. |
-| Lighthouse HMD | The connected `HeadMountedDisplay` at transient OpenVR index `0` must report positive Lighthouse driver, tracking-system, or actual-tracking-system evidence. No manufacturer or model allowlist is used, and LTB does not use an HMD as a physical controller-pose source. | SteamVR chooses the active display. `wizard` and `daily` reject Quest/ALVR/Meta/Oculus evidence across both tracking-system observations and fail closed on missing, duplicate, conflicting, or unknown active-HMD evidence. Windows verification must still prove each real HMD/runtime combination. |
+| Lighthouse HMD | The connected `HeadMountedDisplay` at transient OpenVR index `0` must report positive Lighthouse driver, tracking-system, or actual-tracking-system evidence. No manufacturer or model allowlist is used, and LTB does not use an HMD as a physical controller-pose source. | SteamVR chooses the active display. `legacy-wizard` and `legacy-daily` reject Quest/ALVR/Meta/Oculus evidence across both tracking-system observations and fail closed on missing, duplicate, conflicting, or unknown active-HMD evidence. Windows verification must still prove each real HMD/runtime combination. |
 
 Stable identity and capability answer different questions. The exact serial
 answers whether a re-enumerated device is the same physical mount; capability

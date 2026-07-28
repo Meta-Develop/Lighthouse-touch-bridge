@@ -379,18 +379,19 @@ capture and replacement, while structurally malformed profile JSON stops
 safely. Profile schema validation, deterministic JSON, and atomic save are
 owned by `Ltb.Configuration`.
 
-For production `daily` reuse, the runtime/model observation comes from the
-current fail-closed ALVR gate, not from the stored profile: the local ALVR
+For unsupported `legacy-daily` reuse, the runtime/model observation comes from
+the retained legacy ALVR gate, not from the stored profile: the local ALVR
 version endpoint must respond and the current OpenVR controllers must pass the
 Quest 2 Touch Miramar/`oculus_touch` tuple. Only then does the runtime report
 `ALVR` and `Quest 2 Touch` for comparison with the stored values.
 
-## Scripted wizard command
+## Legacy scripted wizard command
 
-Run the Linux-safe deterministic two-hand flow from the repository root:
+Run the warning-gated unsupported, Linux-safe deterministic two-hand legacy
+flow from the repository root:
 
 ```bash
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
+dotnet run --project src/Ltb.App -- legacy-wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 The fake session uses `CTRL-TEST-L`, `CTRL-TEST-R`, `LHR-TEST0001`, and
@@ -402,10 +403,11 @@ hand reload and the no-capture apply path. Each hand emits deterministic
 progressive coverage snapshots from growing sample prefixes, all evaluated by
 the portable analyzer.
 
-`--log` uses the same append-only JSON Lines sink as `daily`. Reusing a path
-appends a new event sequence; omitting the option creates no event file. The
-wizard records its state transitions and preserves separate codes for missing
-controller position, poor translation observability, and bad rotation:
+`--log` uses the same append-only JSON Lines sink as `legacy-daily`. Reusing a
+path appends a new event sequence; omitting the option creates no event file.
+The legacy wizard records its state transitions and preserves separate codes
+for missing controller position, poor translation observability, and bad
+rotation:
 `NoPositionAvailable`, `PoorTranslationObservability`, and
 `BadRotationCalibration`.
 
@@ -474,19 +476,22 @@ is required before a serial-to-live-path provenance boundary can be added.
 calibration, settings, or GUI test proves that an application ignores a
 neutralized physical tracker.
 
-The `wizard-demo` command remains the deterministic fake demonstration path;
-it proves orchestration, association, selection, reporting, persistence, and
-reload on Linux without a live SteamVR runtime. The production `wizard` command
-composes the live pipeline (override release -> Touch capture -> association ->
-solve -> persist -> transactional apply -> Active) and is proven end-to-end
-through injected fake production backends; its live execution still awaits
-Windows hardware verification. The production `daily` command can
+The `legacy-wizard-demo` command remains the warning-gated unsupported
+deterministic fake demonstration path; it proves orchestration, association,
+selection, reporting, persistence, and reload on Linux without a live SteamVR
+runtime. The historical `legacy-wizard` command composes the live pipeline
+(override release -> Touch capture -> association -> solve -> persist ->
+transactional apply -> Active) and is proven end-to-end through injected fake
+legacy backends; its live execution still awaits Windows hardware verification.
+The historical `legacy-daily` command can
 load an already complete two-hand store and apply it transactionally through
 live OpenVR, VMT, and SteamVR-settings adapters, including watchdog,
 SafeDisable, reconnect, and rollback policy. Automated transition tests use
 fakes, so the Windows checklist remains required hardware acceptance for that
 live later-run composition. Avalonia 11 is the selected desktop framework. The
-GUI keeps the deterministic scripted demonstration available and invokes the
-production wizard through the shared `Ltb.App` composition seam; native launch,
-visual behavior, and live SteamVR hardware operation still require the Windows
-verification checklist.
+retained scripted demonstration and VMT wizard code are dormant legacy paths
+behind `legacy-wizard-demo` and `legacy-wizard`; the current GUI composition
+root instead builds the first-party internal-driver view. Native launch, visual
+behavior, and live SteamVR hardware operation still require the applicable
+Windows checklist. None of these legacy commands defines the supported
+first-party runtime path.

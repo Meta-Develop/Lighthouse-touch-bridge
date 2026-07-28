@@ -232,13 +232,23 @@ The unknown world transform `Y` cancels. Therefore the two worlds need not
 share an origin or basis, and general Quest-to-Lighthouse playspace calibration
 is out of scope.
 
-At runtime:
+The solver and an identity-adjustment runtime use:
 
 ```text
 T_D_output(t) = T_D_tracker(t) · X
 ```
 
-No Meta pose is used in the runtime pose equation.
+The current adjusted runtime keeps that calibrated `X = X_mount` unchanged,
+derives the separate effective mount, and publishes:
+
+```text
+X_eff = A_tracker · X_mount · A_controller
+T_D_output(t) = T_D_tracker(t) · X_eff
+```
+
+No Meta pose is used in either runtime pose equation. The first equation is
+the unadjusted solver/base-mount contract, not permission to omit non-identity
+mount adjustments from current publication.
 
 ### 5.2 Representation
 
