@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Ltb.Driver;
 
 public enum SteamVrDriverReadiness
@@ -49,6 +51,8 @@ public enum SteamVrDriverDiagnosticCode
     RemovalOwnershipLost,
     StagedBuildIdMissing,
     StagedBuildIdInvalid,
+    StagedManifestInvalid,
+    StagedBinaryInvalid,
 }
 
 public sealed record SteamVrPaths(
@@ -91,14 +95,81 @@ public sealed record SteamVrDriverStartupInspection(
         get;
         init;
     } = [];
+
+    /// <summary>
+    /// Byte-exact artifact evidence for each receiptless registration that
+    /// startup inspection proved as LTB-owned. This evidence is observational
+    /// until the App adapter persists it in a new conservative receipt; the
+    /// lifecycle revalidates it before any removal mutation.
+    /// </summary>
+    public IReadOnlyList<SteamVrDriverRegistrationArtifactEvidence>
+        ReceiptlessRegistrationArtifactEvidence
+    {
+        get;
+        init;
+    } = [];
 }
+
+/// <summary>
+/// Validated build identity plus exact SHA-256 identities captured from the
+/// three authority-bearing driver artifact byte sequences.
+/// </summary>
+public sealed record SteamVrDriverArtifactIdentity(
+    string BuildId,
+    string ManifestSha256,
+    string BinarySha256,
+    string BuildIdSha256)
+{
+    private static readonly Regex BuildIdPattern = new(
+        @"\Adriver_ltb-[0-9]+\.[0-9]+\.[0-9]+-ipc-[0-9]+\.[0-9]+\z",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+
+    public string BuildId { get; } = RequireBuildId(BuildId);
+
+    public string ManifestSha256 { get; } =
+        NormalizeSha256(ManifestSha256, nameof(ManifestSha256));
+
+    public string BinarySha256 { get; } =
+        NormalizeSha256(BinarySha256, nameof(BinarySha256));
+
+    public string BuildIdSha256 { get; } =
+        NormalizeSha256(BuildIdSha256, nameof(BuildIdSha256));
+
+    private static string RequireBuildId(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return BuildIdPattern.IsMatch(value)
+            ? value
+            : throw new ArgumentException(
+                "The driver build identity is blank or malformed.",
+                nameof(value));
+    }
+
+    private static string NormalizeSha256(string value, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(value, parameterName);
+        if (value.Length != 64 || value.Any(character => !Uri.IsHexDigit(character)))
+        {
+            throw new ArgumentException(
+                "The artifact identity must be a 64-character SHA-256 value.",
+                parameterName);
+        }
+
+        return value.ToLowerInvariant();
+    }
+}
+
+public sealed record SteamVrDriverRegistrationArtifactEvidence(
+    string CanonicalDriverRoot,
+    SteamVrDriverArtifactIdentity ArtifactIdentity);
 
 public sealed record SteamVrDriverRegistrationReceipt(
     string CanonicalDriverRoot,
     SteamVrActivateMultipleDriversState PriorActivateMultipleDrivers,
     bool ActivateMultipleDriversChanged,
     bool SteamVrSectionWasPresent,
-    Guid OwnershipToken);
+    Guid OwnershipToken,
+    SteamVrDriverArtifactIdentity? ArtifactIdentity = null);
 
 public sealed record SteamVrDriverLifecycleResult(
     bool Changed,
@@ -158,6 +229,22 @@ public interface ISteamVrDriverReceiptStore
             Delete(canonicalDriverRoot);
         }
     }
+
+    /// <summary>
+    /// Deletes only the complete expected receipt generation. Implementations
+    /// that provide only compatibility root deletion fail closed here.
+    /// </summary>
+    bool Delete(SteamVrDriverRegistrationReceipt expectedReceipt) =>
+        throw new NotSupportedException(
+            "This receipt store does not provide conditional expected-record deletion.");
+
+    /// <summary>
+    /// Deletes a complete expected receipt set atomically. Implementations
+    /// that provide only compatibility root deletion fail closed here.
+    /// </summary>
+    int DeleteAll(IReadOnlyList<SteamVrDriverRegistrationReceipt> expectedReceipts) =>
+        throw new NotSupportedException(
+            "This receipt store does not provide conditional expected-record batch deletion.");
 }
 
 /// <summary>
@@ -186,6 +273,14 @@ public sealed class NullSteamVrDriverReceiptStore : ISteamVrDriverReceiptStore
 
     public void DeleteAll(IReadOnlyList<string> canonicalDriverRoots)
     {
+    }
+
+    public bool Delete(SteamVrDriverRegistrationReceipt expectedReceipt) => true;
+
+    public int DeleteAll(IReadOnlyList<SteamVrDriverRegistrationReceipt> expectedReceipts)
+    {
+        ArgumentNullException.ThrowIfNull(expectedReceipts);
+        return expectedReceipts.Count;
     }
 }
 

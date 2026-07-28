@@ -68,10 +68,28 @@ public sealed class ConfigurationSteamVrDriverReceiptStore : ISteamVrDriverRecei
         _store.SaveAll(receipts.Select(ToStoredRecord).ToArray());
     }
 
+    /// <summary>
+    /// Compatibility-only root deletion. Authority-sensitive lifecycle paths
+    /// use the complete expected-receipt overload below.
+    /// </summary>
     public void Delete(string canonicalDriverRoot) => _store.Delete(canonicalDriverRoot);
 
+    /// <summary>Compatibility-only root batch deletion.</summary>
     public void DeleteAll(IReadOnlyList<string> canonicalDriverRoots) =>
         _store.DeleteAll(canonicalDriverRoots);
+
+    public bool Delete(SteamVrDriverRegistrationReceipt expectedReceipt)
+    {
+        ArgumentNullException.ThrowIfNull(expectedReceipt);
+        return _store.Delete(ToStoredRecord(expectedReceipt));
+    }
+
+    public int DeleteAll(
+        IReadOnlyList<SteamVrDriverRegistrationReceipt> expectedReceipts)
+    {
+        ArgumentNullException.ThrowIfNull(expectedReceipts);
+        return _store.DeleteAll(expectedReceipts.Select(ToStoredRecord).ToArray());
+    }
 
     private static string ToStoredState(SteamVrActivateMultipleDriversState state) => state switch
     {
@@ -102,7 +120,14 @@ public sealed class ConfigurationSteamVrDriverReceiptStore : ISteamVrDriverRecei
         FromStoredState(record.PriorActivateMultipleDrivers),
         record.ActivateMultipleDriversChanged,
         record.SteamVrSectionWasPresent,
-        record.OwnershipToken);
+        record.OwnershipToken,
+        record.BuildId is null
+            ? null
+            : new SteamVrDriverArtifactIdentity(
+                record.BuildId,
+                record.ManifestSha256!,
+                record.BinarySha256!,
+                record.BuildIdSha256!));
 
     private static DriverRegistrationReceiptRecord ToStoredRecord(
         SteamVrDriverRegistrationReceipt receipt) => new(
@@ -110,7 +135,11 @@ public sealed class ConfigurationSteamVrDriverReceiptStore : ISteamVrDriverRecei
         ToStoredState(receipt.PriorActivateMultipleDrivers),
         receipt.ActivateMultipleDriversChanged,
         receipt.SteamVrSectionWasPresent,
-        receipt.OwnershipToken);
+        receipt.OwnershipToken,
+        receipt.ArtifactIdentity?.BuildId,
+        receipt.ArtifactIdentity?.ManifestSha256,
+        receipt.ArtifactIdentity?.BinarySha256,
+        receipt.ArtifactIdentity?.BuildIdSha256);
 }
 
 /// <summary>
@@ -187,12 +216,25 @@ public sealed class InternalDriverRemoval : IInternalDriverRegistrationMaintenan
             // layout, build identity, and canonical root. Without a
             // pre-registration snapshot this conservative adoption deliberately
             // claims no activateMultipleDrivers restoration authority.
+            var artifactEvidence = inspection.ReceiptlessRegistrationArtifactEvidence
+                .SingleOrDefault(evidence => string.Equals(
+                    evidence.CanonicalDriverRoot,
+                    canonicalRoot,
+                    StringComparison.OrdinalIgnoreCase));
+            if (artifactEvidence is null)
+            {
+                throw OwnershipLost(
+                    $"Startup inspection did not provide byte-exact artifact evidence for " +
+                    $"receiptless LTB root '{canonicalRoot}'.");
+            }
+
             var adopted = new SteamVrDriverRegistrationReceipt(
                 canonicalRoot,
                 inspection.ActivateMultipleDrivers,
                 ActivateMultipleDriversChanged: false,
                 SteamVrSectionWasPresent: true,
-                Guid.NewGuid());
+                Guid.NewGuid(),
+                artifactEvidence.ArtifactIdentity);
             receipts.Add(adopted);
             adoptedReceipts.Add(adopted);
         }

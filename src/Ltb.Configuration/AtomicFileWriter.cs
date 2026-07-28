@@ -10,6 +10,18 @@ internal static class AtomicFileWriter
 
     internal static void Write(string path, string contents)
     {
+        Write(path, contents, afterStaging: null);
+    }
+
+    /// <summary>
+    /// Test seam at the exact post-stage/pre-rename boundary. Production
+    /// callers use the two-argument overload and cannot inject behavior.
+    /// </summary>
+    internal static void Write(
+        string path,
+        string contents,
+        Action<string>? afterStaging)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(contents);
 
@@ -37,6 +49,7 @@ internal static class AtomicFileWriter
                 stream.Flush(flushToDisk: true);
             }
 
+            afterStaging?.Invoke(temporaryPath);
             File.Move(temporaryPath, fullPath, overwrite: true);
         }
         finally

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Ltb.Configuration.Tests")]
 
@@ -10,7 +11,9 @@ namespace Ltb.Configuration;
 /// <summary>Schema constants for the durable driver-registration receipt store.</summary>
 public static class DriverRegistrationReceiptSchema
 {
-    public const int CurrentVersion = 1;
+    public const int LegacyVersion = 1;
+
+    public const int CurrentVersion = 2;
 
     public const string PriorStateAbsent = "absent";
 
@@ -29,8 +32,16 @@ public sealed record DriverRegistrationReceiptRecord(
     string PriorActivateMultipleDrivers,
     bool ActivateMultipleDriversChanged,
     bool SteamVrSectionWasPresent,
-    Guid OwnershipToken)
+    Guid OwnershipToken,
+    string? BuildId = null,
+    string? ManifestSha256 = null,
+    string? BinarySha256 = null,
+    string? BuildIdSha256 = null)
 {
+    private static readonly Regex BuildIdPattern = new(
+        @"\Adriver_ltb-[0-9]+\.[0-9]+\.[0-9]+-ipc-[0-9]+\.[0-9]+\z",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+
     public string CanonicalDriverRoot { get; } =
         Require(CanonicalDriverRoot, nameof(CanonicalDriverRoot));
 
@@ -38,6 +49,33 @@ public sealed record DriverRegistrationReceiptRecord(
         RequirePriorState(PriorActivateMultipleDrivers);
 
     public Guid OwnershipToken { get; init; } = RequireOwnershipToken(OwnershipToken);
+
+    public string? BuildId { get; } = RequireBuildId(
+        BuildId,
+        ManifestSha256,
+        BinarySha256,
+        BuildIdSha256);
+
+    public string? ManifestSha256 { get; } = RequireSha256(
+        ManifestSha256,
+        BuildId,
+        BinarySha256,
+        BuildIdSha256,
+        nameof(ManifestSha256));
+
+    public string? BinarySha256 { get; } = RequireSha256(
+        BinarySha256,
+        BuildId,
+        ManifestSha256,
+        BuildIdSha256,
+        nameof(BinarySha256));
+
+    public string? BuildIdSha256 { get; } = RequireSha256(
+        BuildIdSha256,
+        BuildId,
+        ManifestSha256,
+        BinarySha256,
+        nameof(BuildIdSha256));
 
     private static string Require(string value, string parameterName)
     {
@@ -66,6 +104,82 @@ public sealed record DriverRegistrationReceiptRecord(
             : throw new ArgumentException(
                 "The ownership token must not be empty.",
                 nameof(value));
+
+    private static string? RequireBuildId(
+        string? buildId,
+        string? manifestSha256,
+        string? binarySha256,
+        string? buildIdSha256)
+    {
+        if (AllArtifactIdentityFieldsAreNull(
+                buildId,
+                manifestSha256,
+                binarySha256,
+                buildIdSha256))
+        {
+            return null;
+        }
+
+        if (buildId is null ||
+            manifestSha256 is null ||
+            binarySha256 is null ||
+            buildIdSha256 is null)
+        {
+            throw new ArgumentException(
+                "Driver artifact identity fields must be either all present or all null.");
+        }
+
+        return BuildIdPattern.IsMatch(buildId)
+            ? buildId
+            : throw new ArgumentException(
+                "The driver build identity is blank or malformed.",
+                nameof(buildId));
+    }
+
+    private static string? RequireSha256(
+        string? value,
+        string? buildId,
+        string? firstOtherSha256,
+        string? secondOtherSha256,
+        string parameterName)
+    {
+        if (AllArtifactIdentityFieldsAreNull(
+                buildId,
+                value,
+                firstOtherSha256,
+                secondOtherSha256))
+        {
+            return null;
+        }
+
+        if (buildId is null ||
+            value is null ||
+            firstOtherSha256 is null ||
+            secondOtherSha256 is null)
+        {
+            throw new ArgumentException(
+                "Driver artifact identity fields must be either all present or all null.");
+        }
+
+        if (value.Length != 64 || value.Any(character => !Uri.IsHexDigit(character)))
+        {
+            throw new ArgumentException(
+                "The artifact identity must be a 64-character SHA-256 value.",
+                parameterName);
+        }
+
+        return value.ToLowerInvariant();
+    }
+
+    private static bool AllArtifactIdentityFieldsAreNull(
+        string? buildId,
+        string? manifestSha256,
+        string? binarySha256,
+        string? buildIdSha256) =>
+        buildId is null &&
+        manifestSha256 is null &&
+        binarySha256 is null &&
+        buildIdSha256 is null;
 }
 
 /// <summary>
@@ -396,11 +510,14 @@ public sealed class DriverRegistrationReceiptStore
                 exception);
         }
 
-        if (dto.SchemaVersion != DriverRegistrationReceiptSchema.CurrentVersion)
+        if (dto.SchemaVersion is not
+            (DriverRegistrationReceiptSchema.LegacyVersion or
+                DriverRegistrationReceiptSchema.CurrentVersion))
         {
             throw new InvalidDataException(
                 $"Unsupported driver-registration receipt 'schema_version' {dto.SchemaVersion}; " +
-                $"expected {DriverRegistrationReceiptSchema.CurrentVersion}.");
+                $"expected {DriverRegistrationReceiptSchema.LegacyVersion} or " +
+                $"{DriverRegistrationReceiptSchema.CurrentVersion}.");
         }
 
         try
@@ -414,13 +531,36 @@ public sealed class DriverRegistrationReceiptStore
                     "Driver-registration receipt store 'receipts' must not contain null.");
             }
 
+            if (dto.SchemaVersion == DriverRegistrationReceiptSchema.LegacyVersion &&
+                receipts.Any(receipt =>
+                    receipt!.BuildId is not null ||
+                    receipt.ManifestSha256 is not null ||
+                    receipt.BinarySha256 is not null ||
+                    receipt.BuildIdSha256 is not null))
+            {
+                throw new InvalidDataException(
+                    "Schema-v1 receipts must not contain artifact identity fields.");
+            }
+
             var records = receipts
                 .Select(receipt => new DriverRegistrationReceiptRecord(
                     receipt!.CanonicalDriverRoot,
                     receipt.PriorActivateMultipleDrivers,
                     receipt.ActivateMultipleDriversChanged,
                     receipt.SteamVrSectionWasPresent,
-                    receipt.OwnershipToken))
+                    receipt.OwnershipToken,
+                    dto.SchemaVersion == DriverRegistrationReceiptSchema.LegacyVersion
+                        ? null
+                        : receipt.BuildId,
+                    dto.SchemaVersion == DriverRegistrationReceiptSchema.LegacyVersion
+                        ? null
+                        : receipt.ManifestSha256,
+                    dto.SchemaVersion == DriverRegistrationReceiptSchema.LegacyVersion
+                        ? null
+                        : receipt.BinarySha256,
+                    dto.SchemaVersion == DriverRegistrationReceiptSchema.LegacyVersion
+                        ? null
+                        : receipt.BuildIdSha256))
                 .ToArray();
             var duplicate = records
                 .GroupBy(record => record.CanonicalDriverRoot, StringComparer.OrdinalIgnoreCase)
@@ -458,6 +598,10 @@ public sealed class DriverRegistrationReceiptStore
                     ActivateMultipleDriversChanged = record.ActivateMultipleDriversChanged,
                     SteamVrSectionWasPresent = record.SteamVrSectionWasPresent,
                     OwnershipToken = record.OwnershipToken,
+                    BuildId = record.BuildId,
+                    ManifestSha256 = record.ManifestSha256,
+                    BinarySha256 = record.BinarySha256,
+                    BuildIdSha256 = record.BuildIdSha256,
                 })
                 .ToArray(),
         };
@@ -602,5 +746,21 @@ public sealed class DriverRegistrationReceiptStore
         [JsonPropertyName("ownership_token")]
         [JsonPropertyOrder(4)]
         public required Guid OwnershipToken { get; init; }
+
+        [JsonPropertyName("build_id")]
+        [JsonPropertyOrder(5)]
+        public string? BuildId { get; init; }
+
+        [JsonPropertyName("manifest_sha256")]
+        [JsonPropertyOrder(6)]
+        public string? ManifestSha256 { get; init; }
+
+        [JsonPropertyName("binary_sha256")]
+        [JsonPropertyOrder(7)]
+        public string? BinarySha256 { get; init; }
+
+        [JsonPropertyName("build_id_sha256")]
+        [JsonPropertyOrder(8)]
+        public string? BuildIdSha256 { get; init; }
     }
 }

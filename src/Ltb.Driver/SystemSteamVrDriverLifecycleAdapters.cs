@@ -42,6 +42,11 @@ public sealed class SystemSteamVrFileSystem : ISteamVrFileSystem
         CancellationToken cancellationToken) =>
         new(File.ReadAllTextAsync(path, cancellationToken));
 
+    public ValueTask<byte[]> ReadAllBytesAsync(
+        string path,
+        CancellationToken cancellationToken) =>
+        new(File.ReadAllBytesAsync(path, cancellationToken));
+
     /// <summary>
     /// Replaces the file at <paramref name="path"/> with
     /// <paramref name="replacementText"/> only when its current content equals

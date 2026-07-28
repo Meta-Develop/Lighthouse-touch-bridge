@@ -15,6 +15,8 @@ public interface ISteamVrFileSystem
 
     ValueTask<string> ReadAllTextAsync(string path, CancellationToken cancellationToken);
 
+    ValueTask<byte[]> ReadAllBytesAsync(string path, CancellationToken cancellationToken);
+
     ValueTask<bool> TryReplaceTextAtomicallyAsync(
         string path,
         string expectedText,

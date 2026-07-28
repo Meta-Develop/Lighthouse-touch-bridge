@@ -24,6 +24,7 @@ public sealed class SteamVrDriverLifecycleReceiptPersistenceTests
         }
 
         Assert.Equal(issued, store.TryLoad(issued.CanonicalDriverRoot));
+        Assert.NotNull(issued.ArtifactIdentity);
 
         using var restartedLifecycle = NewLifecycle(fixture, store);
         var persisted = store.TryLoad(issued.CanonicalDriverRoot);
@@ -253,6 +254,41 @@ public sealed class SteamVrDriverLifecycleReceiptPersistenceTests
 
         public void Delete(string canonicalDriverRoot) =>
             _receipts.Remove(canonicalDriverRoot);
+
+        public bool Delete(SteamVrDriverRegistrationReceipt expectedReceipt)
+        {
+            if (!_receipts.TryGetValue(expectedReceipt.CanonicalDriverRoot, out var current))
+            {
+                return false;
+            }
+
+            if (current != expectedReceipt)
+            {
+                throw new InvalidOperationException(
+                    "A different receipt generation occupies the expected root.");
+            }
+
+            return _receipts.Remove(expectedReceipt.CanonicalDriverRoot);
+        }
+
+        public int DeleteAll(
+            IReadOnlyList<SteamVrDriverRegistrationReceipt> expectedReceipts)
+        {
+            foreach (var expectedReceipt in expectedReceipts)
+            {
+                if (_receipts.TryGetValue(
+                        expectedReceipt.CanonicalDriverRoot,
+                        out var current) &&
+                    current != expectedReceipt)
+                {
+                    throw new InvalidOperationException(
+                        "A different receipt generation occupies an expected root.");
+                }
+            }
+
+            return expectedReceipts.Count(expectedReceipt =>
+                _receipts.Remove(expectedReceipt.CanonicalDriverRoot));
+        }
 
         public void SaveUnderRoot(string root, SteamVrDriverRegistrationReceipt receipt) =>
             _receipts[root] = receipt;

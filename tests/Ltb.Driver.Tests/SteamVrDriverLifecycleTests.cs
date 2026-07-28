@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Ltb.Driver;
 
@@ -18,6 +19,13 @@ public sealed class SteamVrDriverLifecycleTests
         Assert.Equal(SteamVrDriverReadiness.RestartRequired, result.Readiness);
         Assert.Contains("restart SteamVR", result.Diagnostic, StringComparison.Ordinal);
         Assert.Contains(SteamVrLifecycleFixture.BuildId, result.Diagnostic, StringComparison.Ordinal);
+        Assert.Equal(
+            new SteamVrDriverArtifactIdentity(
+                SteamVrLifecycleFixture.BuildId,
+                Sha256(fixture.FileSystem.ReadBytes(fixture.ManifestFile)),
+                Sha256(fixture.FileSystem.ReadBytes(fixture.BinaryFile)),
+                Sha256(fixture.FileSystem.ReadBytes(fixture.BuildIdFile))),
+            result.Receipt.ArtifactIdentity);
         Assert.Equal(
             [fixture.OtherDriverRoot, Path.GetFullPath(fixture.StagedDriverRoot)],
             fixture.ExternalDrivers());
@@ -278,7 +286,7 @@ public sealed class SteamVrDriverLifecycleTests
     }
 
     [Fact]
-    public async Task StartupInspectionTrustsExactReceiptOwnedRootWithMissingArtifacts()
+    public async Task StartupInspectionRefusesReceiptOwnedRootWithMissingArtifacts()
     {
         var store = new MemorySteamVrDriverReceiptStore();
         using var fixture = new SteamVrLifecycleFixture(receiptStore: store);
@@ -293,11 +301,12 @@ public sealed class SteamVrDriverLifecycleTests
             fixture.StagedDriverRoot);
 
         Assert.Equal(
-            SteamVrDriverStartupState.ReceiptOwnedRegistration,
+            SteamVrDriverStartupState.StaleReceiptRegistrationMismatch,
             inspection.State);
-        Assert.Equal([relocatedRoot], inspection.CanonicalLtbDriverRoots);
-        Assert.Equal(receipt, inspection.MatchingReceipt);
-        Assert.True(inspection.CanRemoveAutomatically);
+        Assert.Empty(inspection.CanonicalLtbDriverRoots);
+        Assert.Null(inspection.MatchingReceipt);
+        Assert.False(inspection.CanRemoveAutomatically);
+        Assert.Empty(fixture.ProcessRunner.Calls);
     }
 
     [Fact]
@@ -357,6 +366,58 @@ public sealed class SteamVrDriverLifecycleTests
         Assert.False(inspection.CanRemoveAutomatically);
         Assert.Null(inspection.MatchingReceipt);
         Assert.Empty(fixture.ProcessRunner.Calls);
+    }
+
+    [Fact]
+    public async Task StartupInspectionRefusesByteDriftAgainstIdentityBoundReceipt()
+    {
+        var store = new MemorySteamVrDriverReceiptStore();
+        using var fixture = new SteamVrLifecycleFixture(receiptStore: store);
+        var registration = await fixture.Lifecycle.RegisterAsync(fixture.StagedDriverRoot);
+        fixture.ProcessRunner.Calls.Clear();
+        fixture.FileSystem.Write(fixture.BinaryFile, "drifted driver bytes");
+
+        var inspection = await fixture.Lifecycle.InspectStartupAsync(
+            fixture.StagedDriverRoot);
+
+        Assert.Equal(
+            SteamVrDriverStartupState.StaleReceiptRegistrationMismatch,
+            inspection.State);
+        Assert.False(inspection.CanRemoveAutomatically);
+        Assert.Null(inspection.MatchingReceipt);
+        Assert.Equal(
+            registration.Receipt,
+            Assert.Single(inspection.DurableReceipts));
+        Assert.Empty(fixture.ProcessRunner.Calls);
+    }
+
+    [Fact]
+    public async Task LegacyForeignManifestRefusesRemovalWithoutMutation()
+    {
+        var store = new MemorySteamVrDriverReceiptStore();
+        using var fixture = new SteamVrLifecycleFixture(receiptStore: store);
+        var legacyReceipt = Receipt(fixture.StagedDriverRoot);
+        store.Save(legacyReceipt);
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson([fixture.OtherDriverRoot, fixture.StagedDriverRoot]));
+        fixture.FileSystem.Write(
+            fixture.ManifestFile,
+            SteamVrLifecycleFixture.DriverManifestJson.Replace(
+                "\"name\": \"ltb\"",
+                "\"name\": \"foreign\"",
+                StringComparison.Ordinal));
+        var originalOpenVr = fixture.FileSystem.Read(fixture.OpenVrPathsFile);
+        var originalSettings = fixture.FileSystem.Read(fixture.SettingsFile);
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.RemoveAsync(legacyReceipt).AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.RemovalOwnershipLost, failure.DiagnosticCode);
+        Assert.Equal(originalOpenVr, fixture.FileSystem.Read(fixture.OpenVrPathsFile));
+        Assert.Equal(originalSettings, fixture.FileSystem.Read(fixture.SettingsFile));
+        Assert.Empty(fixture.ProcessRunner.Calls);
+        Assert.Equal(legacyReceipt, store.TryLoad(fixture.StagedDriverRoot));
     }
 
     [Fact]
@@ -435,6 +496,7 @@ public sealed class SteamVrDriverLifecycleTests
             SteamVrActivateMultipleDriversState.Enabled,
             receiptStore: store);
         var relocatedRoot = Path.Combine(fixture.Root, "old-package", "driver_ltb");
+        fixture.AddCompleteLtbDriver(relocatedRoot);
         var currentReceipt = Receipt(fixture.StagedDriverRoot);
         var relocatedReceipt = Receipt(relocatedRoot);
         store.Save(currentReceipt);
@@ -465,6 +527,7 @@ public sealed class SteamVrDriverLifecycleTests
             SteamVrActivateMultipleDriversState.Enabled,
             receiptStore: store);
         var relocatedRoot = Path.Combine(fixture.Root, "old-package", "driver_ltb");
+        fixture.AddCompleteLtbDriver(relocatedRoot);
         var currentReceipt = Receipt(fixture.StagedDriverRoot);
         var relocatedReceipt = new SteamVrDriverRegistrationReceipt(
             relocatedRoot,
@@ -535,6 +598,7 @@ public sealed class SteamVrDriverLifecycleTests
             SteamVrActivateMultipleDriversState.Enabled,
             receiptStore: store);
         var relocatedRoot = Path.Combine(fixture.Root, "old-package", "driver_ltb");
+        fixture.AddCompleteLtbDriver(relocatedRoot);
         var currentReceipt = Receipt(fixture.StagedDriverRoot);
         var relocatedReceipt = new SteamVrDriverRegistrationReceipt(
             relocatedRoot,
@@ -1020,6 +1084,151 @@ public sealed class SteamVrDriverLifecycleTests
     }
 
     [Fact]
+    public async Task PostRemovalArtifactDriftRollsBackAndRetainsReceipt()
+    {
+        var store = new MemorySteamVrDriverReceiptStore();
+        using var fixture = new SteamVrLifecycleFixture(receiptStore: store);
+        var registration = await fixture.Lifecycle.RegisterAsync(fixture.StagedDriverRoot);
+        var registeredOpenVr = fixture.FileSystem.Read(fixture.OpenVrPathsFile);
+        var registeredSettings = fixture.FileSystem.Read(fixture.SettingsFile);
+        fixture.ProcessRunner.AfterMutation = (fileSystem, verb, _) =>
+        {
+            if (verb == "removedriver")
+            {
+                fileSystem.Write(fixture.BinaryFile, "drifted driver bytes");
+            }
+        };
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.RemoveAsync(registration.Receipt).AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.RemovalOwnershipLost, failure.DiagnosticCode);
+        Assert.Equal(registeredOpenVr, fixture.FileSystem.Read(fixture.OpenVrPathsFile));
+        Assert.Equal(registeredSettings, fixture.FileSystem.Read(fixture.SettingsFile));
+        Assert.Equal(
+            registration.Receipt,
+            store.TryLoad(registration.Receipt.CanonicalDriverRoot));
+    }
+
+    [Fact]
+    public async Task LegacyReceiptComparesExactEphemeralProofAfterRemoval()
+    {
+        var store = new MemorySteamVrDriverReceiptStore();
+        using var fixture = new SteamVrLifecycleFixture(
+            SteamVrActivateMultipleDriversState.Enabled,
+            receiptStore: store);
+        var legacyReceipt = new SteamVrDriverRegistrationReceipt(
+            fixture.StagedDriverRoot,
+            SteamVrActivateMultipleDriversState.Enabled,
+            ActivateMultipleDriversChanged: false,
+            SteamVrSectionWasPresent: true,
+            Guid.NewGuid());
+        store.Save(legacyReceipt);
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson([fixture.OtherDriverRoot, fixture.StagedDriverRoot]));
+        fixture.ProcessRunner.AfterMutation = (fileSystem, verb, _) =>
+        {
+            if (verb == "removedriver")
+            {
+                fileSystem.Write(fixture.BinaryFile, "different valid binary bytes");
+            }
+        };
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.RemoveAsync(legacyReceipt).AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.RemovalOwnershipLost, failure.DiagnosticCode);
+        Assert.Equal(
+            [fixture.OtherDriverRoot, fixture.StagedDriverRoot],
+            fixture.ExternalDrivers());
+        Assert.Equal(legacyReceipt, store.TryLoad(fixture.StagedDriverRoot));
+        Assert.Null(legacyReceipt.ArtifactIdentity);
+    }
+
+    [Fact]
+    public async Task LegacyBatchComparesEveryExactEphemeralProofAfterRemoval()
+    {
+        var store = new MemorySteamVrDriverReceiptStore();
+        using var fixture = new SteamVrLifecycleFixture(
+            SteamVrActivateMultipleDriversState.Enabled,
+            receiptStore: store);
+        var relocatedRoot = Path.Combine(fixture.Root, "old-package", "driver_ltb");
+        fixture.AddCompleteLtbDriver(relocatedRoot);
+        var currentReceipt = Receipt(fixture.StagedDriverRoot);
+        var relocatedReceipt = new SteamVrDriverRegistrationReceipt(
+            relocatedRoot,
+            SteamVrActivateMultipleDriversState.Enabled,
+            ActivateMultipleDriversChanged: false,
+            SteamVrSectionWasPresent: true,
+            Guid.NewGuid());
+        store.Save(currentReceipt);
+        store.Save(relocatedReceipt);
+        var originalDrivers = new[]
+        {
+            fixture.OtherDriverRoot,
+            fixture.StagedDriverRoot,
+            relocatedRoot,
+        };
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson(originalDrivers));
+        fixture.ProcessRunner.AfterMutation = (fileSystem, verb, driverRoot) =>
+        {
+            if (verb == "removedriver" &&
+                string.Equals(
+                    driverRoot,
+                    fixture.StagedDriverRoot,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                fileSystem.Write(fixture.BinaryFile, "different valid binary bytes");
+            }
+        };
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.RemoveOwnedAsync(
+                [currentReceipt, relocatedReceipt]).AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.RemovalOwnershipLost, failure.DiagnosticCode);
+        Assert.Equal(originalDrivers, fixture.ExternalDrivers());
+        Assert.Equal([currentReceipt, relocatedReceipt], store.LoadAll());
+        Assert.All(store.LoadAll(), receipt => Assert.Null(receipt.ArtifactIdentity));
+    }
+
+    [Fact]
+    public async Task BatchValidatesEveryArtifactBeforeFirstExternalCall()
+    {
+        var store = new MemorySteamVrDriverReceiptStore();
+        using var fixture = new SteamVrLifecycleFixture(
+            SteamVrActivateMultipleDriversState.Enabled,
+            receiptStore: store);
+        var missingRoot = Path.Combine(fixture.Root, "missing-package", "driver_ltb");
+        var first = Receipt(fixture.StagedDriverRoot);
+        var missing = new SteamVrDriverRegistrationReceipt(
+            missingRoot,
+            SteamVrActivateMultipleDriversState.Enabled,
+            ActivateMultipleDriversChanged: false,
+            SteamVrSectionWasPresent: true,
+            Guid.NewGuid());
+        store.Save(first);
+        store.Save(missing);
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson(
+                [fixture.OtherDriverRoot, fixture.StagedDriverRoot, missingRoot]));
+
+        var failure = await Assert.ThrowsAsync<SteamVrDriverLifecycleException>(
+            () => fixture.Lifecycle.RemoveOwnedAsync([first, missing]).AsTask());
+
+        Assert.Equal(SteamVrDriverDiagnosticCode.RemovalOwnershipLost, failure.DiagnosticCode);
+        Assert.Empty(fixture.ProcessRunner.Calls);
+        Assert.Equal(
+            [fixture.OtherDriverRoot, fixture.StagedDriverRoot, missingRoot],
+            fixture.ExternalDrivers());
+        Assert.Equal([first, missing], store.LoadAll());
+    }
+
+    [Fact]
     public async Task ConcurrentDriverAddedBetweenRegistrationProcessAndRereadSurvivesRollback()
     {
         using var fixture = new SteamVrLifecycleFixture();
@@ -1131,4 +1340,7 @@ public sealed class SteamVrDriverLifecycleTests
         ActivateMultipleDriversChanged: true,
         SteamVrSectionWasPresent: true,
         Guid.NewGuid());
+
+    private static string Sha256(byte[] bytes) =>
+        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 }
