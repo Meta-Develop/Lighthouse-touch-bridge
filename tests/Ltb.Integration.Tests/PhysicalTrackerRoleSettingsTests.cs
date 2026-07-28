@@ -232,6 +232,142 @@ public sealed class PhysicalTrackerRoleSettingsTests
     }
 
     [Fact]
+    public void DriftInspectionReportsUnchangedNeutralTargetsWithoutWriting()
+    {
+        using var sandbox = SettingsSandbox.FromText(
+            $$"""
+            {
+              "trackers": {
+                "{{LeftTrackerPath}}": "TrackerRole_LeftFoot",
+                "{{RightTrackerPath}}": "TrackerRole_RightFoot",
+                "{{UnrelatedTrackerPath}}": "TrackerRole_Waist"
+              },
+              "keep": true
+            }
+            """);
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+        var neutralization = manager.NeutralizePhysicalTrackerRoles(Targets());
+        var filesBeforeInspection = ReadAllFiles(sandbox.DirectoryPath);
+        var backupsBeforeInspection = manager.FindRecoveryBackups().ToArray();
+
+        var drift = manager.InspectPhysicalTrackerRoleDrift(neutralization);
+
+        Assert.False(drift.HasDrift);
+        Assert.Same(
+            neutralization.PhysicalTrackerRoleState!.Targets,
+            drift.Targets);
+        Assert.Equal(LeftTrackerPath, drift.LeftTracker.RegisteredDevicePath);
+        Assert.Equal(
+            TrackerRoleDriftStatus.UnchangedNeutral,
+            drift.LeftTracker.Status);
+        Assert.Equal("TrackerRole_None", drift.LeftTracker.ObservedRole);
+        Assert.False(drift.LeftTracker.HasDrift);
+        Assert.Equal(RightTrackerPath, drift.RightTracker.RegisteredDevicePath);
+        Assert.Equal(
+            TrackerRoleDriftStatus.UnchangedNeutral,
+            drift.RightTracker.Status);
+        Assert.Equal("TrackerRole_None", drift.RightTracker.ObservedRole);
+        Assert.False(drift.RightTracker.HasDrift);
+        Assert.Equal(
+            backupsBeforeInspection,
+            manager.FindRecoveryBackups());
+        AssertFileSetEqual(
+            filesBeforeInspection,
+            ReadAllFiles(sandbox.DirectoryPath));
+        AssertNoTransientResidue(sandbox);
+    }
+
+    [Fact]
+    public void DriftInspectionReportsPerHandChangedAndMissingWithoutRewriting()
+    {
+        using var sandbox = SettingsSandbox.FromText(
+            $$"""
+            {
+              "trackers": {
+                "{{LeftTrackerPath}}": "TrackerRole_LeftFoot",
+                "{{RightTrackerPath}}": "TrackerRole_RightFoot",
+                "{{UnrelatedTrackerPath}}": "TrackerRole_Waist"
+              },
+              "keep": true
+            }
+            """);
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+        var neutralization = manager.NeutralizePhysicalTrackerRoles(Targets());
+        var current = ReadRoot(sandbox.SettingsPath);
+        current["trackers"]![LeftTrackerPath] = "TrackerRole_LeftShoulder";
+        _ = current["trackers"]!.AsObject().Remove(RightTrackerPath);
+        current["trackers"]![UnrelatedTrackerPath] = "TrackerRole_Chest";
+        current["externalWriter"] = "preserve";
+        WriteRoot(sandbox.SettingsPath, current);
+        var filesBeforeInspection = ReadAllFiles(sandbox.DirectoryPath);
+
+        var drift = manager.InspectPhysicalTrackerRoleDrift(neutralization);
+
+        Assert.True(drift.HasDrift);
+        Assert.Equal(TrackerRoleDriftStatus.Changed, drift.LeftTracker.Status);
+        Assert.Equal("TrackerRole_LeftShoulder", drift.LeftTracker.ObservedRole);
+        Assert.True(drift.LeftTracker.HasDrift);
+        Assert.Equal(TrackerRoleDriftStatus.Missing, drift.RightTracker.Status);
+        Assert.Null(drift.RightTracker.ObservedRole);
+        Assert.True(drift.RightTracker.HasDrift);
+        AssertFileSetEqual(
+            filesBeforeInspection,
+            ReadAllFiles(sandbox.DirectoryPath));
+        var unchanged = ReadRoot(sandbox.SettingsPath);
+        Assert.Equal(
+            "TrackerRole_Chest",
+            unchanged["trackers"]![UnrelatedTrackerPath]!.GetValue<string>());
+        Assert.Equal(
+            "preserve",
+            unchanged["externalWriter"]!.GetValue<string>());
+        AssertNoTransientResidue(sandbox);
+    }
+
+    [Fact]
+    public void DriftInspectionDoesNotExposeNonStringSettingsContent()
+    {
+        using var sandbox = SettingsSandbox.FromText("{\n  \"keep\": 1\n}\n");
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+        var neutralization = manager.NeutralizePhysicalTrackerRoles(Targets());
+        var current = ReadRoot(sandbox.SettingsPath);
+        current["trackers"]![LeftTrackerPath] = new JsonObject
+        {
+            ["private"] = new JsonArray("not", "presentation", "data"),
+        };
+        WriteRoot(sandbox.SettingsPath, current);
+        var bytesBeforeInspection = File.ReadAllBytes(sandbox.SettingsPath);
+
+        var drift = manager.InspectPhysicalTrackerRoleDrift(neutralization);
+
+        Assert.Equal(TrackerRoleDriftStatus.Changed, drift.LeftTracker.Status);
+        Assert.Null(drift.LeftTracker.ObservedRole);
+        Assert.Equal(
+            TrackerRoleDriftStatus.UnchangedNeutral,
+            drift.RightTracker.Status);
+        Assert.Equal(bytesBeforeInspection, File.ReadAllBytes(sandbox.SettingsPath));
+        AssertNoTransientResidue(sandbox);
+    }
+
+    [Fact]
+    public void DriftInspectionRejectsRecoveryPointFromAnotherSettingsPath()
+    {
+        using var first = SettingsSandbox.FromText("{\n  \"first\": true\n}\n");
+        using var second = SettingsSandbox.FromText("{\n  \"second\": true\n}\n");
+        var firstManager = new SteamVrSettingsManager(first.SettingsPath);
+        var secondManager = new SteamVrSettingsManager(second.SettingsPath);
+        var neutralization = firstManager.NeutralizePhysicalTrackerRoles(Targets());
+        var secondBytes = File.ReadAllBytes(second.SettingsPath);
+
+        Assert.Throws<ArgumentException>(() =>
+            secondManager.InspectPhysicalTrackerRoleDrift(neutralization));
+
+        Assert.Equal(secondBytes, File.ReadAllBytes(second.SettingsPath));
+        Assert.Empty(secondManager.FindRecoveryBackups());
+        AssertNoTransientResidue(first);
+        AssertNoTransientResidue(second);
+    }
+
+    [Fact]
     public void ApplyAndRestoreAreIdempotentWithoutExtraBackups()
     {
         using var sandbox = SettingsSandbox.FromText("{\n  \"other\": true\n}\n");
@@ -580,6 +716,127 @@ public sealed class PhysicalTrackerRoleSettingsTests
         AssertNoTransientResidue(sandbox);
     }
 
+    [Fact]
+    public void RecoveryDiscoveryReturnsOrderedMetadataWithoutReadingContents()
+    {
+        using var sandbox = SettingsSandbox.FromText(
+            "{\n  \"current\": \"must-not-change\"\n}\n");
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+        var settingsBytes = File.ReadAllBytes(sandbox.SettingsPath);
+        var prefix = sandbox.SettingsPath + ".ltb-backup";
+        var backupBytes = new Dictionary<string, byte[]>
+        {
+            [prefix] = Array.Empty<byte>(),
+            [prefix + ".1"] = Encoding.UTF8.GetBytes("{\"malformed\":"),
+            [prefix + ".10"] = Encoding.UTF8.GetBytes("not json"),
+            [prefix + ".2"] = Encoding.UTF8.GetBytes(
+                "{\n  \"candidate\": \"never-auto-restored\"\n}\n"),
+        };
+        foreach (var pair in backupBytes)
+        {
+            File.WriteAllBytes(pair.Key, pair.Value);
+        }
+
+        var expectedWriteTime = new DateTime(
+            2026,
+            7,
+            28,
+            3,
+            4,
+            5,
+            DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(prefix + ".1", expectedWriteTime);
+
+        SteamVrSettingsRecoveryDiscovery discovery;
+        using (var contentLock = new FileStream(
+                   prefix + ".1",
+                   FileMode.Open,
+                   FileAccess.ReadWrite,
+                   FileShare.None))
+        {
+            discovery = manager.DiscoverRecoveryBackups();
+        }
+
+        Assert.Equal(sandbox.SettingsPath, discovery.SettingsFilePath);
+        Assert.Equal(
+            [
+                "steamvr.vrsettings.ltb-backup",
+                "steamvr.vrsettings.ltb-backup.1",
+                "steamvr.vrsettings.ltb-backup.10",
+                "steamvr.vrsettings.ltb-backup.2",
+            ],
+            discovery.Candidates.Select(candidate => candidate.FileName));
+        Assert.Equal(
+            [0, 1, 10, 2],
+            discovery.Candidates.Select(candidate => candidate.SequenceNumber));
+        foreach (var candidate in discovery.Candidates)
+        {
+            Assert.Equal(
+                backupBytes[candidate.BackupFilePath].LongLength,
+                candidate.LengthBytes);
+        }
+
+        Assert.Equal(
+            new DateTimeOffset(expectedWriteTime),
+            discovery.Candidates.Single(candidate =>
+                candidate.SequenceNumber == 1).LastWriteTimeUtc);
+        Assert.Equal(settingsBytes, File.ReadAllBytes(sandbox.SettingsPath));
+        foreach (var pair in backupBytes)
+        {
+            Assert.Equal(pair.Value, File.ReadAllBytes(pair.Key));
+        }
+
+        Assert.Equal(
+            discovery.Candidates.Select(candidate => candidate.BackupFilePath),
+            manager.FindRecoveryBackups());
+    }
+
+    [Fact]
+    public void RecoveryDiscoveryExcludesInvalidNamesStagingAndNonFiles()
+    {
+        using var sandbox = SettingsSandbox.FromText("{\n  \"keep\": true\n}\n");
+        var manager = new SteamVrSettingsManager(sandbox.SettingsPath);
+        var prefix = sandbox.SettingsPath + ".ltb-backup";
+        File.WriteAllText(prefix, "recognized", Encoding.UTF8);
+        foreach (var invalidPath in new[]
+                 {
+                     sandbox.SettingsPath + ".ltb-backup-write",
+                     sandbox.SettingsPath + ".ltb-backup-write.1",
+                     sandbox.SettingsPath + ".ltb-write",
+                     prefix + ".0",
+                     prefix + ".-1",
+                     prefix + ".+1",
+                     prefix + ".01",
+                     prefix + ".1.tmp",
+                     prefix + "x",
+                 })
+        {
+            File.WriteAllText(invalidPath, "not a candidate", Encoding.UTF8);
+        }
+
+        Directory.CreateDirectory(prefix + ".2");
+        var symlinkPath = prefix + ".3";
+        var symlinkCreated = TryCreateFileSymbolicLink(symlinkPath, prefix);
+
+        var discovery = manager.DiscoverRecoveryBackups();
+
+        var candidate = Assert.Single(discovery.Candidates);
+        Assert.Equal(prefix, candidate.BackupFilePath);
+        Assert.Equal(0, candidate.SequenceNumber);
+        Assert.Equal(
+            [prefix],
+            manager.FindRecoveryBackups());
+        if (symlinkCreated)
+        {
+            Assert.Throws<ArgumentException>(() =>
+                manager.RecoverFromBackup(symlinkPath));
+        }
+
+        Assert.Equal(
+            "{\n  \"keep\": true\n}\n",
+            File.ReadAllText(sandbox.SettingsPath, Encoding.UTF8));
+    }
+
     private static PhysicalTrackerRoleTargets Targets() =>
         new(LeftTrackerPath, RightTrackerPath);
 
@@ -591,6 +848,45 @@ public sealed class PhysicalTrackerRoleSettingsTests
             path,
             root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n",
             new UTF8Encoding(false));
+
+    private static IReadOnlyDictionary<string, byte[]> ReadAllFiles(
+        string directoryPath) =>
+        Directory
+            .EnumerateFiles(directoryPath)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToDictionary(
+                path => path,
+                File.ReadAllBytes,
+                StringComparer.Ordinal);
+
+    private static void AssertFileSetEqual(
+        IReadOnlyDictionary<string, byte[]> expected,
+        IReadOnlyDictionary<string, byte[]> actual)
+    {
+        Assert.Equal(expected.Keys, actual.Keys);
+        foreach (var pair in expected)
+        {
+            Assert.Equal(pair.Value, actual[pair.Key]);
+        }
+    }
+
+    private static bool TryCreateFileSymbolicLink(
+        string symbolicLinkPath,
+        string targetPath)
+    {
+        try
+        {
+            _ = File.CreateSymbolicLink(symbolicLinkPath, targetPath);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is PlatformNotSupportedException or
+                UnauthorizedAccessException or
+                IOException)
+        {
+            return false;
+        }
+    }
 
     private static void AssertNoTransientResidue(SettingsSandbox sandbox)
     {

@@ -190,23 +190,7 @@ public sealed class SteamVrSettingsManager
     public SteamVrSettingsRecoveryPoint RestorePhysicalTrackerRoles(
         SteamVrSettingsRecoveryPoint recoveryPoint)
     {
-        ArgumentNullException.ThrowIfNull(recoveryPoint);
-        if (!PathsEqual(recoveryPoint.SettingsFilePath, SettingsFilePath))
-        {
-            throw new ArgumentException(
-                "The recovery point belongs to a different SteamVR settings file.",
-                nameof(recoveryPoint));
-        }
-
-        if (recoveryPoint.Operation is not
-                SteamVrSettingsOperation.NeutralizePhysicalTrackerRoles ||
-            recoveryPoint.PhysicalTrackerRoleState is not { } priorState)
-        {
-            throw new ArgumentException(
-                "The recovery point was not created by a physical tracker role " +
-                "neutralization operation.",
-                nameof(recoveryPoint));
-        }
+        var priorState = RequirePhysicalTrackerRoleState(recoveryPoint);
 
         using var operationLock = AcquireOperationLock();
         return ApplyJsonMutation(
@@ -214,6 +198,37 @@ public sealed class SteamVrSettingsManager
             binding: null,
             root => RestorePhysicalTrackerRoles(root, priorState),
             root => ValidatePhysicalTrackerRolesRestored(root, priorState));
+    }
+
+    /// <summary>
+    /// Reads the current roles for the exact two paths captured by a completed
+    /// physical-tracker neutralization and reports whether either path drifted.
+    /// This inspection does not acquire the settings-operation lock, create a
+    /// backup, restore, neutralize, or otherwise write any file.
+    /// </summary>
+    public TrackerRoleDrift InspectPhysicalTrackerRoleDrift(
+        SteamVrSettingsRecoveryPoint neutralizationRecoveryPoint)
+    {
+        var priorState = RequirePhysicalTrackerRoleState(
+            neutralizationRecoveryPoint);
+        var root = ParseRoot(ReadSettingsBytes(), SettingsFilePath);
+        var trackersSectionIsPresent = root.TryGetPropertyValue(
+            TrackersSectionName,
+            out var trackersNode);
+        var trackers = trackersNode as JsonObject;
+        var invalidTrackersSection =
+            trackersSectionIsPresent && trackers is null;
+
+        return new TrackerRoleDrift(
+            priorState.Targets,
+            InspectPhysicalTrackerRole(
+                trackers,
+                invalidTrackersSection,
+                priorState.Targets.LeftTrackerDevicePath),
+            InspectPhysicalTrackerRole(
+                trackers,
+                invalidTrackersSection,
+                priorState.Targets.RightTrackerDevicePath));
     }
 
     /// <summary>
@@ -322,22 +337,57 @@ public sealed class SteamVrSettingsManager
         }
     }
 
-    /// <summary>Lists manager-created sibling backups in ordinal name order.</summary>
-    public IReadOnlyList<string> FindRecoveryBackups()
+    /// <summary>
+    /// Discovers recognized regular-file sibling backups in ordinal name
+    /// order. Discovery reads only filesystem metadata and never backup
+    /// contents.
+    /// </summary>
+    public SteamVrSettingsRecoveryDiscovery DiscoverRecoveryBackups()
     {
         var directory = GetSettingsDirectory();
         if (!Directory.Exists(directory))
         {
-            return Array.Empty<string>();
+            return new SteamVrSettingsRecoveryDiscovery(
+                SettingsFilePath,
+                Array.Empty<SteamVrSettingsRecoveryCandidate>());
         }
 
         var backupPrefix = Path.GetFileName(SettingsFilePath) + BackupMarker;
-        return Directory
-            .EnumerateFiles(directory, backupPrefix + "*")
-            .Where(path => IsRecognizedBackupName(Path.GetFileName(path), backupPrefix))
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .ToArray();
+        var candidates = new List<SteamVrSettingsRecoveryCandidate>();
+        foreach (var path in Directory.EnumerateFileSystemEntries(
+                     directory,
+                     backupPrefix + "*"))
+        {
+            var fileName = Path.GetFileName(path);
+            if (!TryParseRecognizedBackupName(
+                    fileName,
+                    backupPrefix,
+                    out var sequenceNumber) ||
+                !TryGetSafeRecoveryCandidate(
+                    path,
+                    fileName,
+                    sequenceNumber,
+                    out var candidate))
+            {
+                continue;
+            }
+
+            candidates.Add(candidate);
+        }
+
+        return new SteamVrSettingsRecoveryDiscovery(
+            SettingsFilePath,
+            candidates.OrderBy(
+                candidate => candidate.BackupFilePath,
+                StringComparer.Ordinal));
     }
+
+    /// <summary>Lists manager-created sibling backups in ordinal name order.</summary>
+    public IReadOnlyList<string> FindRecoveryBackups()
+        => DiscoverRecoveryBackups()
+            .Candidates
+            .Select(candidate => candidate.BackupFilePath)
+            .ToArray();
 
     private SteamVrSettingsRecoveryPoint ApplyJsonMutation(
         SteamVrSettingsOperation operation,
@@ -427,6 +477,73 @@ public sealed class SteamVrSettingsManager
             CapturePhysicalTrackerRoleSnapshot(
                 trackers,
                 targets.RightTrackerDevicePath));
+    }
+
+    private PhysicalTrackerRoleState RequirePhysicalTrackerRoleState(
+        SteamVrSettingsRecoveryPoint recoveryPoint)
+    {
+        ArgumentNullException.ThrowIfNull(recoveryPoint);
+        if (!PathsEqual(recoveryPoint.SettingsFilePath, SettingsFilePath))
+        {
+            throw new ArgumentException(
+                "The recovery point belongs to a different SteamVR settings file.",
+                nameof(recoveryPoint));
+        }
+
+        if (recoveryPoint.Operation is not
+                SteamVrSettingsOperation.NeutralizePhysicalTrackerRoles ||
+            recoveryPoint.PhysicalTrackerRoleState is not { } priorState)
+        {
+            throw new ArgumentException(
+                "The recovery point was not created by a physical tracker role " +
+                "neutralization operation.",
+                nameof(recoveryPoint));
+        }
+
+        return priorState;
+    }
+
+    private static TrackerRoleDriftEntry InspectPhysicalTrackerRole(
+        JsonObject? trackers,
+        bool invalidTrackersSection,
+        string registeredDevicePath)
+    {
+        if (invalidTrackersSection)
+        {
+            return new TrackerRoleDriftEntry(
+                registeredDevicePath,
+                TrackerRoleDriftStatus.Changed,
+                observedRole: null);
+        }
+
+        if (trackers is null ||
+            !trackers.TryGetPropertyValue(
+                registeredDevicePath,
+                out var currentValue))
+        {
+            return new TrackerRoleDriftEntry(
+                registeredDevicePath,
+                TrackerRoleDriftStatus.Missing,
+                observedRole: null);
+        }
+
+        if (IsNeutralPhysicalTrackerRole(currentValue))
+        {
+            return new TrackerRoleDriftEntry(
+                registeredDevicePath,
+                TrackerRoleDriftStatus.UnchangedNeutral,
+                NeutralTrackerRole);
+        }
+
+        var observedRole =
+            currentValue is JsonValue value &&
+            value.TryGetValue<string>(out var stringRole)
+                ? stringRole
+                : null;
+        return new TrackerRoleDriftEntry(
+            registeredDevicePath,
+            TrackerRoleDriftStatus.Changed,
+            observedRole);
     }
 
     private static PhysicalTrackerRoleSnapshot CapturePhysicalTrackerRoleSnapshot(
@@ -1213,18 +1330,34 @@ public sealed class SteamVrSettingsManager
         }
 
         var backupPrefix = Path.GetFileName(SettingsFilePath) + BackupMarker;
-        if (!IsRecognizedBackupName(Path.GetFileName(fullBackupPath), backupPrefix))
+        if (!TryParseRecognizedBackupName(
+                Path.GetFileName(fullBackupPath),
+                backupPrefix,
+                out _))
         {
             throw new ArgumentException(
                 "The file is not a recovery backup created for this settings path.",
                 nameof(backupFilePath));
         }
 
+        var attributes = File.GetAttributes(fullBackupPath);
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+        {
+            throw new ArgumentException(
+                "The recovery backup must be a regular sibling file, not a " +
+                "directory, symbolic link, or reparse point.",
+                nameof(backupFilePath));
+        }
+
         return fullBackupPath;
     }
 
-    private static bool IsRecognizedBackupName(string fileName, string backupPrefix)
+    private static bool TryParseRecognizedBackupName(
+        string fileName,
+        string backupPrefix,
+        out int sequenceNumber)
     {
+        sequenceNumber = 0;
         if (string.Equals(fileName, backupPrefix, StringComparison.Ordinal))
         {
             return true;
@@ -1236,7 +1369,49 @@ public sealed class SteamVrSettingsManager
         }
 
         var suffix = fileName[(backupPrefix.Length + 1)..];
-        return int.TryParse(suffix, out var number) && number > 0;
+        return int.TryParse(suffix, out sequenceNumber) &&
+            sequenceNumber > 0 &&
+            string.Equals(
+                sequenceNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                suffix,
+                StringComparison.Ordinal);
+    }
+
+    private static bool TryGetSafeRecoveryCandidate(
+        string path,
+        string fileName,
+        int sequenceNumber,
+        out SteamVrSettingsRecoveryCandidate candidate)
+    {
+        candidate = null!;
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes &
+                    (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+            {
+                return false;
+            }
+
+            var file = new FileInfo(path);
+            candidate = new SteamVrSettingsRecoveryCandidate(
+                file.FullName,
+                fileName,
+                sequenceNumber,
+                file.Length,
+                new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero));
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is FileNotFoundException or
+                DirectoryNotFoundException or
+                UnauthorizedAccessException or
+                IOException)
+        {
+            // A candidate that disappeared or whose safe metadata cannot be
+            // read is omitted. Discovery never opens it to inspect content.
+            return false;
+        }
     }
 
     private string GetSettingsDirectory() =>
