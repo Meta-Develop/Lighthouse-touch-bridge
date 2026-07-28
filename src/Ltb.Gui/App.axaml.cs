@@ -25,12 +25,13 @@ public partial class App : Application
                 action => Dispatcher.UIThread.Post(action),
                 mountAdjustmentPort: mountAdjustmentPort,
                 preSessionControl: preSessionControl);
-            var window = new MainWindow
+            var window = new MainWindow(JsonWindowPlacementStore.CreateDefault())
             {
                 DataContext = viewModel,
             };
             window.Opened += async (_, _) => await viewModel.InitializeAsync();
             var cleanupCompletedClose = false;
+            var cleanupInProgress = false;
             window.Closing += async (_, eventArgs) =>
             {
                 if (cleanupCompletedClose)
@@ -39,7 +40,22 @@ public partial class App : Application
                 }
 
                 eventArgs.Cancel = true;
+                if (cleanupInProgress)
+                {
+                    return;
+                }
+
+                cleanupInProgress = true;
                 await viewModel.CloseAsync();
+                try
+                {
+                    await window.SavePlacementAsync();
+                }
+                catch
+                {
+                    // Local window placement must not prevent fail-safe session cleanup.
+                }
+
                 cleanupCompletedClose = true;
                 window.Close();
             };

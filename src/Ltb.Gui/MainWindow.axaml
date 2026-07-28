@@ -58,6 +58,8 @@
                   Classes="primary"
                   MinWidth="188"
                   Margin="0,0,8,4"
+                  TabIndex="0"
+                  HotKey="Alt+C"
                   AutomationProperties.Name="Calibrate or recalibrate"
                   AutomationProperties.HelpText="Start a fresh two-hand calibration capture without reusing saved profiles."
                   Content="Calibrate / Recalibrate"
@@ -67,12 +69,15 @@
                   MinWidth="112"
                   MinHeight="38"
                   Margin="0,0,16,4"
+                  TabIndex="1"
+                  HotKey="Alt+S"
                   AutomationProperties.Name="{Binding ActionButtonText}"
                   Content="{Binding ActionButtonText}"
                   Command="{Binding ActionCommand}" />
           <ToggleSwitch x:Name="ReducedMotionToggle"
                         Margin="0,0,16,4"
                         VerticalAlignment="Center"
+                        TabIndex="2"
                         AutomationProperties.Name="Reduce motion"
                         AutomationProperties.HelpText="Stops decorative motion in the calibration guide."
                         Content="Reduce motion"
@@ -80,6 +85,7 @@
           <ToggleSwitch x:Name="DebugToggle"
                         VerticalAlignment="Center"
                         Margin="0,0,0,4"
+                        TabIndex="3"
                         AutomationProperties.Name="Debug diagnostics"
                         AutomationProperties.HelpText="Retains up to 60 seconds of session-local diagnostic samples while enabled."
                         Content="Debug diagnostics"
@@ -132,6 +138,8 @@
               </StackPanel>
               <Button x:Name="RefreshTrackerBindingButton"
                       Grid.Column="1"
+                      TabIndex="10"
+                      HotKey="F5"
                       AutomationProperties.Name="Refresh paired Lighthouse trackers"
                       Content="Refresh"
                       Command="{Binding TrackerBinding.RefreshCommand}" />
@@ -144,6 +152,7 @@
                 <TextBlock FontWeight="SemiBold"
                            Text="Left mounted tracker" />
                 <ComboBox x:Name="LeftTrackerBindingComboBox"
+                          TabIndex="11"
                           AutomationProperties.Name="Left mounted Lighthouse tracker"
                           ItemsSource="{Binding TrackerBinding.Trackers}"
                           SelectedItem="{Binding TrackerBinding.SelectedLeftTracker, Mode=TwoWay}">
@@ -159,6 +168,7 @@
                 <TextBlock FontWeight="SemiBold"
                            Text="Right mounted tracker" />
                 <ComboBox x:Name="RightTrackerBindingComboBox"
+                          TabIndex="12"
                           AutomationProperties.Name="Right mounted Lighthouse tracker"
                           ItemsSource="{Binding TrackerBinding.Trackers}"
                           SelectedItem="{Binding TrackerBinding.SelectedRightTracker, Mode=TwoWay}">
@@ -176,12 +186,14 @@
                       Classes="primary"
                       MinWidth="150"
                       Margin="0,0,8,4"
+                      TabIndex="13"
                       AutomationProperties.Name="Save distinct left and right tracker binding"
                       Content="Save binding"
                       Command="{Binding TrackerBinding.SaveBindingCommand}" />
               <Button x:Name="ClearTrackerBindingButton"
                       MinWidth="160"
                       Margin="0,0,8,4"
+                      TabIndex="14"
                       AutomationProperties.Name="Use automatic motion association"
                       Content="Use automatic association"
                       Command="{Binding TrackerBinding.ClearBindingCommand}" />
@@ -206,6 +218,7 @@
                   <Button x:Name="RetainManualBindingButton"
                           MinWidth="170"
                           Margin="0,0,8,4"
+                          TabIndex="15"
                           AutomationProperties.Name="Retain authoritative manual tracker binding"
                           Content="Retain manual binding"
                           Command="{Binding TrackerBinding.RetainManualBindingCommand}" />
@@ -213,6 +226,7 @@
                           Classes="primary"
                           MinWidth="160"
                           Margin="0,0,8,4"
+                          TabIndex="16"
                           AutomationProperties.Name="Accept motion-correlation tracker binding correction"
                           Content="Accept correction"
                           Command="{Binding TrackerBinding.AcceptCorrectionCommand}" />
@@ -223,6 +237,7 @@
             <Border Classes="raised">
               <StackPanel Spacing="6">
                 <ToggleSwitch x:Name="UnregisterOnExitToggle"
+                              TabIndex="17"
                               AutomationProperties.Name="Unregister driver_ltb on Stop or exit"
                               AutomationProperties.HelpText="Enabled by default. Controlled Stop or exit removes only receipt-owned driver_ltb registration."
                               Content="Unregister driver_ltb on Stop or exit"
@@ -233,6 +248,7 @@
                            TextWrapping="Wrap" />
                 <Button x:Name="SaveUnregisterOnExitButton"
                         HorizontalAlignment="Left"
+                        TabIndex="18"
                         AutomationProperties.Name="Save unregister-on-exit policy"
                         Content="Save lifecycle policy"
                         Command="{Binding TrackerBinding.SaveLifecyclePolicyCommand}" />
@@ -384,44 +400,77 @@
 
         <Border x:Name="MountAdjustmentPanel"
                 Classes="panel">
-          <StackPanel Spacing="10">
-            <Grid ColumnDefinitions="*,Auto"
-                  ColumnSpacing="12">
-              <StackPanel>
-                <TextBlock Classes="section-title"
-                           Text="Per-hand mount adjustment" />
-                <TextBlock x:Name="MountAdjustmentStatusText"
-                           Text="{Binding MountAdjustments.StatusText}"
+          <Expander x:Name="MountAdjustmentExpander"
+                    AutomationProperties.Name="Per-hand mount adjustment tuning"
+                    IsExpanded="False">
+            <Expander.Header>
+              <StackPanel Spacing="6">
+                <Grid ColumnDefinitions="*,Auto"
+                      ColumnSpacing="12">
+                  <StackPanel>
+                    <TextBlock Classes="section-title"
+                               Text="Per-hand mount adjustment" />
+                    <TextBlock x:Name="MountAdjustmentStatusText"
+                               Text="{Binding MountAdjustments.StatusText}"
+                               TextWrapping="Wrap" />
+                  </StackPanel>
+                  <Border x:Name="MountAdjustmentDirtyIndicator"
+                          Grid.Column="1"
+                          Classes="raised"
+                          Padding="9,5">
+                    <TextBlock x:Name="MountAdjustmentDirtyText"
+                               FontWeight="Bold"
+                               Text="{Binding MountAdjustments.DirtyStatusText}"
+                               TextWrapping="Wrap" />
+                  </Border>
+                </Grid>
+                <Border x:Name="MountAdjustmentRestoreFailureWarning"
+                        Background="{DynamicResource LtbWarningBrush}"
+                        CornerRadius="6"
+                        IsVisible="{Binding MountAdjustments.HasRestoreFailureWarning}"
+                        Padding="10">
+                  <TextBlock x:Name="MountAdjustmentRestoreFailureWarningText"
+                             Foreground="Black"
+                             FontWeight="Bold"
+                             Text="{Binding MountAdjustments.RestoreFailureWarningText}"
+                             TextWrapping="Wrap" />
+                </Border>
+                <TextBlock x:Name="TrackerNeutralizationStatusText"
+                           Text="{Binding MountAdjustments.TrackerNeutralizationStatusText}"
                            TextWrapping="Wrap" />
               </StackPanel>
-              <Border x:Name="MountAdjustmentDirtyIndicator"
-                      Grid.Column="1"
-                      Classes="raised"
-                      Padding="9,5"
-                      IsVisible="{Binding MountAdjustments.IsDirty}">
-                <TextBlock x:Name="MountAdjustmentDirtyText"
-                           FontWeight="Bold"
-                           Text="{Binding MountAdjustments.DirtyStatusText}"
-                           TextWrapping="Wrap" />
-              </Border>
-            </Grid>
+            </Expander.Header>
+
+          <StackPanel Margin="0,8,0,0"
+                      Spacing="10">
 
             <TextBlock x:Name="MountAdjustmentAxisOrderHelpText"
                        Classes="muted"
                        Text="{Binding MountAdjustments.AxisOrderHelpText}"
                        TextWrapping="Wrap" />
 
-            <Border x:Name="MountAdjustmentRestoreFailureWarning"
-                    Background="{DynamicResource LtbWarningBrush}"
-                    CornerRadius="6"
-                    IsVisible="{Binding MountAdjustments.HasRestoreFailureWarning}"
-                    Padding="10">
-              <TextBlock x:Name="MountAdjustmentRestoreFailureWarningText"
-                         Foreground="Black"
-                         FontWeight="Bold"
-                         Text="{Binding MountAdjustments.RestoreFailureWarningText}"
-                         TextWrapping="Wrap" />
-            </Border>
+            <Grid ColumnDefinitions="Auto,140,20,Auto,140,*"
+                  ColumnSpacing="8">
+              <TextBlock VerticalAlignment="Center"
+                         Text="Position step (mm)" />
+              <ComboBox x:Name="PositionStepPresetComboBox"
+                        Grid.Column="1"
+                        TabIndex="20"
+                        AutomationProperties.Name="Mount position adjustment step in millimeters"
+                        AutomationProperties.HelpText="Select the step used by position plus and minus controls."
+                        ItemsSource="{Binding MountAdjustments.PositionStepPresetsMillimeters}"
+                        SelectedItem="{Binding MountAdjustments.SelectedPositionStepMillimeters, Mode=TwoWay}" />
+              <TextBlock Grid.Column="3"
+                         VerticalAlignment="Center"
+                         Text="Rotation step (degrees)" />
+              <ComboBox x:Name="RotationStepPresetComboBox"
+                        Grid.Column="4"
+                        TabIndex="21"
+                        AutomationProperties.Name="Mount rotation adjustment step in degrees"
+                        AutomationProperties.HelpText="Select the step used by rotation plus and minus controls."
+                        ItemsSource="{Binding MountAdjustments.RotationStepPresetsDegrees}"
+                        SelectedItem="{Binding MountAdjustments.SelectedRotationStepDegrees, Mode=TwoWay}" />
+            </Grid>
 
             <StackPanel Spacing="12">
               <Border x:Name="LeftMountAdjustment"
@@ -469,8 +518,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionXDecrementCommand}" />
                             <TextBox x:Name="LeftTrackerPositionXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="22"
+                                     AutomationProperties.Name="Left tracker-side X position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.TrackerSide.PositionXMillimeters, Mode=TwoWay}" />
                             <Button x:Name="LeftTrackerPositionXIncrementButton"
@@ -491,8 +544,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionYDecrementCommand}" />
                             <TextBox x:Name="LeftTrackerPositionYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="23"
+                                     AutomationProperties.Name="Left tracker-side Y position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.TrackerSide.PositionYMillimeters, Mode=TwoWay}" />
                             <Button x:Name="LeftTrackerPositionYIncrementButton"
@@ -513,8 +570,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.PositionZDecrementCommand}" />
                             <TextBox x:Name="LeftTrackerPositionZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="24"
+                                     AutomationProperties.Name="Left tracker-side Z position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.TrackerSide.PositionZMillimeters, Mode=TwoWay}" />
                             <Button x:Name="LeftTrackerPositionZIncrementButton"
@@ -539,8 +600,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationXDecrementCommand}" />
                             <TextBox x:Name="LeftTrackerRotationXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="25"
+                                     AutomationProperties.Name="Left tracker-side X rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.TrackerSide.RotationXDegrees, Mode=TwoWay}" />
                             <Button x:Name="LeftTrackerRotationXIncrementButton"
@@ -561,8 +626,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationYDecrementCommand}" />
                             <TextBox x:Name="LeftTrackerRotationYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="26"
+                                     AutomationProperties.Name="Left tracker-side Y rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.TrackerSide.RotationYDegrees, Mode=TwoWay}" />
                             <Button x:Name="LeftTrackerRotationYIncrementButton"
@@ -583,8 +652,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.TrackerSide.RotationZDecrementCommand}" />
                             <TextBox x:Name="LeftTrackerRotationZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="27"
+                                     AutomationProperties.Name="Left tracker-side Z rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.TrackerSide.RotationZDegrees, Mode=TwoWay}" />
                             <Button x:Name="LeftTrackerRotationZIncrementButton"
@@ -628,8 +701,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionXDecrementCommand}" />
                             <TextBox x:Name="LeftControllerPositionXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="28"
+                                     AutomationProperties.Name="Left controller-side X position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.ControllerSide.PositionXMillimeters, Mode=TwoWay}" />
                             <Button x:Name="LeftControllerPositionXIncrementButton"
@@ -650,8 +727,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionYDecrementCommand}" />
                             <TextBox x:Name="LeftControllerPositionYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="29"
+                                     AutomationProperties.Name="Left controller-side Y position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.ControllerSide.PositionYMillimeters, Mode=TwoWay}" />
                             <Button x:Name="LeftControllerPositionYIncrementButton"
@@ -672,8 +753,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.PositionZDecrementCommand}" />
                             <TextBox x:Name="LeftControllerPositionZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="30"
+                                     AutomationProperties.Name="Left controller-side Z position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.ControllerSide.PositionZMillimeters, Mode=TwoWay}" />
                             <Button x:Name="LeftControllerPositionZIncrementButton"
@@ -698,8 +783,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationXDecrementCommand}" />
                             <TextBox x:Name="LeftControllerRotationXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="31"
+                                     AutomationProperties.Name="Left controller-side X rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.ControllerSide.RotationXDegrees, Mode=TwoWay}" />
                             <Button x:Name="LeftControllerRotationXIncrementButton"
@@ -720,8 +809,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationYDecrementCommand}" />
                             <TextBox x:Name="LeftControllerRotationYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="32"
+                                     AutomationProperties.Name="Left controller-side Y rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.ControllerSide.RotationYDegrees, Mode=TwoWay}" />
                             <Button x:Name="LeftControllerRotationYIncrementButton"
@@ -742,8 +835,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.LeftHand.ControllerSide.RotationZDecrementCommand}" />
                             <TextBox x:Name="LeftControllerRotationZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="33"
+                                     AutomationProperties.Name="Left controller-side Z rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.LeftHand.ControllerSide.RotationZDegrees, Mode=TwoWay}" />
                             <Button x:Name="LeftControllerRotationZIncrementButton"
@@ -813,8 +910,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionXDecrementCommand}" />
                             <TextBox x:Name="RightTrackerPositionXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="34"
+                                     AutomationProperties.Name="Right tracker-side X position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.TrackerSide.PositionXMillimeters, Mode=TwoWay}" />
                             <Button x:Name="RightTrackerPositionXIncrementButton"
@@ -835,8 +936,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionYDecrementCommand}" />
                             <TextBox x:Name="RightTrackerPositionYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="35"
+                                     AutomationProperties.Name="Right tracker-side Y position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.TrackerSide.PositionYMillimeters, Mode=TwoWay}" />
                             <Button x:Name="RightTrackerPositionYIncrementButton"
@@ -857,8 +962,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.PositionZDecrementCommand}" />
                             <TextBox x:Name="RightTrackerPositionZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="36"
+                                     AutomationProperties.Name="Right tracker-side Z position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.TrackerSide.PositionZMillimeters, Mode=TwoWay}" />
                             <Button x:Name="RightTrackerPositionZIncrementButton"
@@ -883,8 +992,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationXDecrementCommand}" />
                             <TextBox x:Name="RightTrackerRotationXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="37"
+                                     AutomationProperties.Name="Right tracker-side X rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.TrackerSide.RotationXDegrees, Mode=TwoWay}" />
                             <Button x:Name="RightTrackerRotationXIncrementButton"
@@ -905,8 +1018,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationYDecrementCommand}" />
                             <TextBox x:Name="RightTrackerRotationYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="38"
+                                     AutomationProperties.Name="Right tracker-side Y rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.TrackerSide.RotationYDegrees, Mode=TwoWay}" />
                             <Button x:Name="RightTrackerRotationYIncrementButton"
@@ -927,8 +1044,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.TrackerSide.RotationZDecrementCommand}" />
                             <TextBox x:Name="RightTrackerRotationZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="39"
+                                     AutomationProperties.Name="Right tracker-side Z rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.TrackerSide.RotationZDegrees, Mode=TwoWay}" />
                             <Button x:Name="RightTrackerRotationZIncrementButton"
@@ -972,8 +1093,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionXDecrementCommand}" />
                             <TextBox x:Name="RightControllerPositionXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="40"
+                                     AutomationProperties.Name="Right controller-side X position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.ControllerSide.PositionXMillimeters, Mode=TwoWay}" />
                             <Button x:Name="RightControllerPositionXIncrementButton"
@@ -994,8 +1119,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionYDecrementCommand}" />
                             <TextBox x:Name="RightControllerPositionYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="41"
+                                     AutomationProperties.Name="Right controller-side Y position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.ControllerSide.PositionYMillimeters, Mode=TwoWay}" />
                             <Button x:Name="RightControllerPositionYIncrementButton"
@@ -1016,8 +1145,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.PositionZDecrementCommand}" />
                             <TextBox x:Name="RightControllerPositionZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="42"
+                                     AutomationProperties.Name="Right controller-side Z position in millimeters"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected position step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.ControllerSide.PositionZMillimeters, Mode=TwoWay}" />
                             <Button x:Name="RightControllerPositionZIncrementButton"
@@ -1042,8 +1175,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationXDecrementCommand}" />
                             <TextBox x:Name="RightControllerRotationXTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="43"
+                                     AutomationProperties.Name="Right controller-side X rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.ControllerSide.RotationXDegrees, Mode=TwoWay}" />
                             <Button x:Name="RightControllerRotationXIncrementButton"
@@ -1064,8 +1201,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationYDecrementCommand}" />
                             <TextBox x:Name="RightControllerRotationYTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="44"
+                                     AutomationProperties.Name="Right controller-side Y rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.ControllerSide.RotationYDegrees, Mode=TwoWay}" />
                             <Button x:Name="RightControllerRotationYIncrementButton"
@@ -1086,8 +1227,12 @@
                                     Content="−"
                                     Command="{Binding MountAdjustments.RightHand.ControllerSide.RotationZDecrementCommand}" />
                             <TextBox x:Name="RightControllerRotationZTextBox"
+                                     Classes="mount-editor"
                                      Grid.Column="1"
                                      MinWidth="50"
+                                     TabIndex="45"
+                                     AutomationProperties.Name="Right controller-side Z rotation in degrees"
+                                     AutomationProperties.HelpText="Focused Control-plus and Control-minus keys adjust this value by the selected rotation step."
                                      HorizontalContentAlignment="Center"
                                      Text="{Binding MountAdjustments.RightHand.ControllerSide.RotationZDegrees, Mode=TwoWay}" />
                             <Button x:Name="RightControllerRotationZIncrementButton"
@@ -1123,17 +1268,23 @@
                       Classes="primary"
                       MinWidth="132"
                       Margin="0,0,12,4"
+                      TabIndex="48"
+                      HotKey="Ctrl+S"
                       AutomationProperties.Name="Save mount adjustments"
                       Content="Save adjustments"
                       Command="{Binding MountAdjustments.SaveCommand}" />
-              <TextBlock x:Name="TrackerNeutralizationStatusText"
-                         MaxWidth="650"
-                         Margin="0,4,0,0"
-                         VerticalAlignment="Center"
-                         Text="{Binding MountAdjustments.TrackerNeutralizationStatusText}"
-                         TextWrapping="Wrap" />
+              <Button x:Name="RevertMountAdjustmentsButton"
+                      MinWidth="132"
+                      Margin="0,0,12,4"
+                      TabIndex="49"
+                      HotKey="Ctrl+Z"
+                      AutomationProperties.Name="Revert unsaved mount adjustments"
+                      AutomationProperties.HelpText="Apply the last saved adjustments live without writing persistent state."
+                      Content="Revert unsaved"
+                      Command="{Binding MountAdjustments.RevertCommand}" />
             </WrapPanel>
           </StackPanel>
+          </Expander>
         </Border>
 
         <Grid ColumnDefinitions="*,12,*">
@@ -1488,6 +1639,7 @@
 
         <Border Classes="panel">
           <Expander x:Name="MaintenanceExpander"
+                    AutomationProperties.Name="Maintenance and legacy migration notice"
                     Header="Maintenance and legacy migration notice"
                     IsExpanded="False">
             <StackPanel Margin="0,8,0,0"
@@ -1502,6 +1654,8 @@
                 <Button x:Name="RemoveDriverButton"
                         MinWidth="140"
                         Margin="0,0,12,4"
+                        TabIndex="60"
+                        HotKey="Alt+M"
                         AutomationProperties.Name="Remove first-party driver registration"
                         Content="Remove driver"
                         Command="{Binding RemoveDriverCommand}" />

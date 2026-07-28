@@ -620,11 +620,20 @@ public sealed class InternalDriverViewModelTests
                 null,
                 0.9d,
                 DateTimeOffset.UnixEpoch));
+        var stableEmptySeries = diagnostics.LeftTrackerAge;
+        var changedProperties = new List<string?>();
+        diagnostics.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
 
+        Assert.False(diagnostics.HasAllocatedBuffers);
+        Assert.Same(stableEmptySeries, diagnostics.RightTrackerAge);
         Assert.False(diagnostics.TrySample(snapshot, force: true));
         Assert.Equal(0, diagnostics.RetainedSampleCount);
 
         diagnostics.IsEnabled = true;
+        Assert.True(diagnostics.HasAllocatedBuffers);
+        Assert.NotSame(stableEmptySeries, diagnostics.LeftTrackerAge);
+        Assert.Contains(nameof(DebugDiagnosticsViewModel.LeftTrackerAge), changedProperties);
+        Assert.Contains(nameof(DebugDiagnosticsViewModel.IterationInterval), changedProperties);
         Assert.True(diagnostics.TrySample(snapshot, force: true));
         time.Advance(DebugDiagnosticsViewModel.SampleInterval);
         Assert.True(diagnostics.TrySample(
@@ -655,7 +664,10 @@ public sealed class InternalDriverViewModelTests
         Assert.Equal(1, diagnostics.RetainedSampleCount);
 
         diagnostics.IsEnabled = false;
+        Assert.False(diagnostics.HasAllocatedBuffers);
         Assert.Equal(0, diagnostics.RetainedSampleCount);
+        Assert.Same(stableEmptySeries, diagnostics.LeftTrackerAge);
+        Assert.Same(stableEmptySeries, diagnostics.IterationInterval);
         Assert.Empty(diagnostics.LeftFrozenLag);
         Assert.Empty(diagnostics.LeftTrackerHostIngressAge);
     }
@@ -769,6 +781,176 @@ public sealed class InternalDriverViewModelTests
             4,
             fastTelemetryOnly with { State = InternalDriverSessionState.Faulted }));
         Assert.True(coalescer.ShouldPresent(8, 5, fastTelemetryOnly));
+    }
+
+    [Fact]
+    public void ActiveIdentityUsesStructuralNeutralizationAndVerificationEvidence()
+    {
+        var time = new ManualGuiTimeSource();
+        var scheduler = new ManualGuiDelayScheduler(time);
+        using var coalescer = new SnapshotPresentationCoalescer(
+            time,
+            scheduler,
+            (_, _, _) => { });
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready) with
+        {
+            TrackerNeutralization = Neutralization(
+                InternalDriverTrackerNeutralizationState.Active,
+                "Neutralized exact pair."),
+            ManualBindingVerification = Verification(
+                InternalDriverManualBindingVerificationState.Agreement,
+                "Correlation agrees."),
+        };
+        coalescer.Reset(1, active);
+
+        var equivalentNewCollections = active with
+        {
+            TrackerNeutralization = Neutralization(
+                InternalDriverTrackerNeutralizationState.Active,
+                "Neutralized exact pair."),
+            ManualBindingVerification = Verification(
+                InternalDriverManualBindingVerificationState.Agreement,
+                "Correlation agrees."),
+            Feed = active.Feed with { LastSuccessfulSequence = 43 },
+        };
+        Assert.False(coalescer.ShouldPresent(1, 1, equivalentNewCollections));
+
+        var neutralizationChanged = equivalentNewCollections with
+        {
+            TrackerNeutralization = Neutralization(
+                InternalDriverTrackerNeutralizationState.Restoring,
+                "Restoring exact pair."),
+        };
+        Assert.True(coalescer.ShouldPresent(1, 2, neutralizationChanged));
+
+        var verificationChanged = neutralizationChanged with
+        {
+            ManualBindingVerification = Verification(
+                InternalDriverManualBindingVerificationState.MismatchCorrectionCandidate,
+                "Correlation suggests a swap.",
+                "LHR-RIGHT",
+                "LHR-LEFT"),
+        };
+        Assert.True(coalescer.ShouldPresent(1, 3, verificationChanged));
+    }
+
+    [Fact]
+    public void EquivalentActiveIdentityHotPathAllocatesNoHeapMemoryAfterWarmup()
+    {
+        const int measurementCount = 2_000;
+        var time = new ManualGuiTimeSource();
+        var scheduler = new ManualGuiDelayScheduler(time);
+        using var coalescer = new SnapshotPresentationCoalescer(
+            time,
+            scheduler,
+            (_, _, _) => { });
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready) with
+        {
+            TrackerNeutralization = Neutralization(
+                InternalDriverTrackerNeutralizationState.Active,
+                "Neutralized exact pair."),
+            ManualBindingVerification = Verification(
+                InternalDriverManualBindingVerificationState.Agreement,
+                "Correlation agrees."),
+        };
+        var inputs = Enumerable
+            .Range(0, measurementCount)
+            .Select(index => active with
+            {
+                Feed = active.Feed with
+                {
+                    LastSuccessfulSequence = (ulong)(43 + index),
+                },
+                Timing = TimingSnapshot(11d, 2d, 3d, 4d, 5d),
+            })
+            .ToArray();
+        coalescer.Reset(1, active);
+        for (var index = 0; index < 20; index++)
+        {
+            _ = coalescer.ShouldPresent(1, index + 1, inputs[index]);
+        }
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var presented = 0;
+        for (var index = 0; index < inputs.Length; index++)
+        {
+            if (coalescer.ShouldPresent(1, index + 100, inputs[index]))
+            {
+                presented++;
+            }
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(0, presented);
+        Assert.Equal(0, allocated);
+        Assert.Equal(1, scheduler.ActiveCount);
+    }
+
+    [Fact]
+    public async Task TelemetryPresentationUpdatesAgesAndSequenceWithoutSemanticBindingChurn()
+    {
+        var time = new ManualGuiTimeSource();
+        var scheduler = new ManualGuiDelayScheduler(time);
+        var active = Snapshot(
+            InternalDriverSessionState.Active,
+            allReady: true,
+            feedReadiness: DriverFeedReadiness.Ready);
+        var session = new ControlledSession(active);
+        await using var viewModel = new InternalDriverViewModel(
+            new QueueSessionFactory(session),
+            action => action(),
+            timeSource: time,
+            delayScheduler: scheduler);
+        var run = viewModel.StartAsync();
+        await session.Started;
+        var mainChanges = new List<string?>();
+        var leftChanges = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => mainChanges.Add(args.PropertyName);
+        viewModel.LeftHand.PropertyChanged += (_, args) => leftChanges.Add(args.PropertyName);
+
+        session.Publish(active with
+        {
+            Left = active.Left with { PoseAge = TimeSpan.FromMilliseconds(8) },
+            Feed = active.Feed with
+            {
+                LastSuccessfulSequence = 43,
+                LastSuccessfulSendAge = TimeSpan.FromMilliseconds(13),
+                LastSuccessfulHeartbeatAge = TimeSpan.FromMilliseconds(26),
+            },
+            Timing = TimingSnapshot(11d, 2d, 3d, 4d, 5d),
+        });
+        time.Advance(SnapshotPresentationCoalescer.ActivePresentationInterval);
+        scheduler.RunDue();
+
+        Assert.Equal("8.0 ms", viewModel.LeftHand.PoseAge);
+        Assert.Equal("43", viewModel.FeedSequence);
+        Assert.Equal("13.0 ms", viewModel.FeedSendAge);
+        Assert.Equal("26.0 ms", viewModel.FeedHeartbeatAge);
+        Assert.Contains(nameof(InternalDriverViewModel.FeedSequence), mainChanges);
+        Assert.Contains(
+            nameof(InternalDriverViewModel.InternalDriverHandViewModel.PoseAge),
+            leftChanges);
+        Assert.DoesNotContain(nameof(InternalDriverViewModel.PhaseText), mainChanges);
+        Assert.DoesNotContain(nameof(InternalDriverViewModel.Diagnostic), mainChanges);
+        Assert.DoesNotContain(
+            nameof(InternalDriverViewModel.InternalDriverHandViewModel.InputStatus),
+            leftChanges);
+        Assert.DoesNotContain(
+            nameof(InternalDriverViewModel.InternalDriverHandViewModel.ProfileStatus),
+            leftChanges);
+
+        session.AllowStop();
+        await viewModel.StopAsync();
+        await run;
     }
 
     [Fact]
@@ -981,6 +1163,37 @@ public sealed class InternalDriverViewModelTests
         "lighthouse",
         "HTC",
         "Vive Pro");
+
+    private static InternalDriverTrackerNeutralizationSnapshot Neutralization(
+        InternalDriverTrackerNeutralizationState state,
+        string diagnostic) => new(
+        state,
+        new[]
+        {
+            new InternalDriverTrackerPath(
+                ProtocolHand.Left,
+                "LHR-LEFT",
+                "/devices/lighthouse/LHR-LEFT"),
+            new InternalDriverTrackerPath(
+                ProtocolHand.Right,
+                "LHR-RIGHT",
+                "/devices/lighthouse/LHR-RIGHT"),
+        },
+        "snapshot-1",
+        diagnostic,
+        Array.Empty<string>());
+
+    private static InternalDriverManualBindingVerificationEvidence Verification(
+        InternalDriverManualBindingVerificationState state,
+        string diagnostic,
+        string? correctionLeft = null,
+        string? correctionRight = null) => new(
+        state,
+        "LHR-LEFT",
+        "LHR-RIGHT",
+        diagnostic,
+        correctionLeft,
+        correctionRight);
 
     private static InternalDriverCalibrationEvidence CalibrationEvidence(
         InternalDriverCalibrationMode mode,

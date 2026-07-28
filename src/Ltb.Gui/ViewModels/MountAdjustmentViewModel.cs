@@ -27,6 +27,8 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     private bool _isDirty;
     private bool _isBusy;
     private bool _disposed;
+    private double _selectedPositionStepMillimeters = PositionStepMillimeters;
+    private double _selectedRotationStepDegrees = RotationStepDegrees;
     private string _dirtyStatusText = "No unsaved mount adjustments.";
     private string _statusText = "Mount adjustment is unavailable.";
     private string _trackerNeutralizationStatusText = "Inactive: Tracker output is not neutralized.";
@@ -47,15 +49,22 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
             "Left hand",
             MountAdjustmentHand.Left,
             OnSlotEdited,
-            PresentInvalidInput);
+            PresentInvalidInput,
+            () => SelectedPositionStepMillimeters,
+            () => SelectedRotationStepDegrees);
         RightHand = new MountAdjustmentHandViewModel(
             "Right hand",
             MountAdjustmentHand.Right,
             OnSlotEdited,
-            PresentInvalidInput);
+            PresentInvalidInput,
+            () => SelectedPositionStepMillimeters,
+            () => SelectedRotationStepDegrees);
         SaveCommand = new RelayCommand(
             () => _ = SaveAsync(),
             () => CanSave);
+        RevertCommand = new RelayCommand(
+            () => _ = RevertAsync(),
+            () => CanRevert);
         CalibrateLeftCommand = new RelayCommand(
             () => _ = RequestCalibrationAsync(MountAdjustmentCalibrationTarget.Left),
             () => CanRequestCalibration(MountAdjustmentCalibrationTarget.Left));
@@ -76,6 +85,8 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
 
     public RelayCommand SaveCommand { get; }
 
+    public RelayCommand RevertCommand { get; }
+
     public RelayCommand CalibrateLeftCommand { get; }
 
     public RelayCommand CalibrateRightCommand { get; }
@@ -85,6 +96,44 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     public string AxisOrderHelpText { get; } =
         "Right-handed axes: +X right, +Y up, -Z forward. " +
         "Intrinsic local rotation order is X then Y then Z (q = Qx * Qy * Qz).";
+
+    public IReadOnlyList<double> PositionStepPresetsMillimeters { get; } =
+        Array.AsReadOnly([0.1d, 1d, 5d, 10d]);
+
+    public IReadOnlyList<double> RotationStepPresetsDegrees { get; } =
+        Array.AsReadOnly([0.1d, 1d, 5d, 15d]);
+
+    public double SelectedPositionStepMillimeters
+    {
+        get => _selectedPositionStepMillimeters;
+        set
+        {
+            if (PositionStepPresetsMillimeters.Contains(value))
+            {
+                SetProperty(ref _selectedPositionStepMillimeters, value);
+            }
+            else
+            {
+                PresentInvalidInput("position step must be one of the available presets");
+            }
+        }
+    }
+
+    public double SelectedRotationStepDegrees
+    {
+        get => _selectedRotationStepDegrees;
+        set
+        {
+            if (RotationStepPresetsDegrees.Contains(value))
+            {
+                SetProperty(ref _selectedRotationStepDegrees, value);
+            }
+            else
+            {
+                PresentInvalidInput("rotation step must be one of the available presets");
+            }
+        }
+    }
 
     public bool IsAvailable
     {
@@ -130,6 +179,8 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
 
     private bool CanSave => IsAvailable && IsDirty && !_isBusy && !_disposed;
 
+    private bool CanRevert => IsAvailable && IsDirty && !_isBusy && !_disposed;
+
     public void NotifyLifecycleAvailabilityChanged()
     {
         RaiseCommandAvailability();
@@ -142,7 +193,17 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await _operationGate.WaitAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+        try
+        {
+            await _operationGate
+                .WaitAsync(_lifetimeCancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
         try
         {
             if (_disposed || !IsAvailable)
@@ -173,6 +234,83 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
             }
 
             _dispatch(() => PresentSaveResult(request, result));
+        }
+        finally
+        {
+            _operationGate.Release();
+            DispatchBusy(false);
+        }
+    }
+
+    public async Task RevertAsync()
+    {
+        if (!CanRevert)
+        {
+            return;
+        }
+
+        try
+        {
+            await _operationGate
+                .WaitAsync(_lifetimeCancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_disposed || !IsAvailable || !IsDirty)
+            {
+                return;
+            }
+
+            var revision = Interlocked.Increment(ref _revision);
+            var savedLeft = _savedLeft;
+            var savedRight = _savedRight;
+            DispatchBusy(true, $"Reverting unsaved mount adjustment revision {revision} live...");
+
+            MountAdjustmentPortResult leftResult;
+            MountAdjustmentPortResult rightResult;
+            try
+            {
+                leftResult = await _port.ApplyLiveAsync(
+                    new MountAdjustmentLiveApplyRequest(
+                        revision,
+                        MountAdjustmentHand.Left,
+                        savedLeft),
+                    _lifetimeCancellation.Token).ConfigureAwait(false);
+                if (!IsExactSuccessfulAcknowledgement(leftResult, revision))
+                {
+                    DispatchFailure(RevertFailureMessage("left hand", revision, leftResult));
+                    return;
+                }
+
+                rightResult = await _port.ApplyLiveAsync(
+                    new MountAdjustmentLiveApplyRequest(
+                        revision,
+                        MountAdjustmentHand.Right,
+                        savedRight),
+                    _lifetimeCancellation.Token).ConfigureAwait(false);
+                if (!IsExactSuccessfulAcknowledgement(rightResult, revision))
+                {
+                    DispatchFailure(RevertFailureMessage("right hand", revision, rightResult));
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                DispatchFailure($"Reverting unsaved mount adjustments failed: {exception.Message}");
+                return;
+            }
+
+            _dispatch(() => PresentRevertResult(revision, rightResult));
         }
         finally
         {
@@ -355,6 +493,56 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
             $"Saved revision {result.AcknowledgedRevision}; newer edits remain unsaved.";
     }
 
+    private void PresentRevertResult(long revision, MountAdjustmentPortResult result)
+    {
+        if (!TryNormalizeSnapshot(result.Snapshot, out var normalized, out var error))
+        {
+            StatusText = $"Reverted mount adjustment snapshot was rejected: {error}";
+            RefreshDirty();
+            return;
+        }
+
+        if (normalized.Revision != revision)
+        {
+            StatusText =
+                $"Reverted mount adjustment snapshot revision mismatch (requested {revision}, " +
+                $"received {normalized.Revision}); unsaved values remain visible.";
+            RefreshDirty();
+            return;
+        }
+
+        Interlocked.Exchange(ref _revision, revision);
+        IsAvailable = normalized.IsAvailable;
+        _savedLeft = normalized.Left.SavedAdjustments;
+        _savedRight = normalized.Right.SavedAdjustments;
+        LeftHand.Load(normalized.Left);
+        RightHand.Load(normalized.Right);
+        ApplyNeutralization(normalized);
+        ApplyRestoreWarning(normalized.RestoreWarning);
+        RefreshDirty();
+        StatusText = "Reverted unsaved mount adjustments to the last saved values live.";
+    }
+
+    private static bool IsExactSuccessfulAcknowledgement(
+        MountAdjustmentPortResult result,
+        long revision) =>
+        result.Succeeded && result.AcknowledgedRevision == revision;
+
+    private static string RevertFailureMessage(
+        string hand,
+        long revision,
+        MountAdjustmentPortResult result)
+    {
+        if (!result.Succeeded)
+        {
+            return $"Reverting the {hand} mount adjustment failed: {result.Diagnostic}";
+        }
+
+        return $"Reverting the {hand} mount adjustment acknowledgement mismatch " +
+            $"(requested {revision}, received {result.AcknowledgedRevision}); " +
+            "unsaved values remain visible.";
+    }
+
     private void OnSnapshotChanged(object? sender, MountAdjustmentSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -369,14 +557,14 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        ApplyNeutralization(normalized);
-        ApplyRestoreWarning(normalized.RestoreWarning);
-
         var currentRevision = Volatile.Read(ref _revision);
         if (normalized.Revision < currentRevision)
         {
             return;
         }
+
+        ApplyNeutralization(normalized);
+        ApplyRestoreWarning(normalized.RestoreWarning);
 
         if (normalized.Revision == currentRevision && IsDirty)
         {
@@ -477,6 +665,7 @@ public sealed class MountAdjustmentViewModel : ObservableObject, IDisposable
     private void RaiseCommandAvailability()
     {
         SaveCommand.RaiseCanExecuteChanged();
+        RevertCommand.RaiseCanExecuteChanged();
         CalibrateLeftCommand.RaiseCanExecuteChanged();
         CalibrateRightCommand.RaiseCanExecuteChanged();
         CalibrateBothCommand.RaiseCanExecuteChanged();
@@ -682,18 +871,24 @@ public sealed class MountAdjustmentHandViewModel : ObservableObject
         string title,
         MountAdjustmentHand hand,
         Action<MountAdjustmentHand> changed,
-        Action<string> invalid)
+        Action<string> invalid,
+        Func<double> positionStep,
+        Func<double> rotationStep)
     {
         Title = title;
         Hand = hand;
         TrackerSide = new MountAdjustmentSlotViewModel(
             "Tracker-side adjustment",
             () => changed(hand),
-            invalid);
+            invalid,
+            positionStep,
+            rotationStep);
         ControllerSide = new MountAdjustmentSlotViewModel(
             "Controller-side adjustment",
             () => changed(hand),
-            invalid);
+            invalid,
+            positionStep,
+            rotationStep);
     }
 
     public string Title { get; }
@@ -747,6 +942,8 @@ public sealed class MountAdjustmentSlotViewModel : ObservableObject
 {
     private readonly Action _changed;
     private readonly Action<string> _invalid;
+    private readonly Func<double> _positionStep;
+    private readonly Func<double> _rotationStep;
     private bool _loading;
     private double _positionXMillimeters;
     private double _positionYMillimeters;
@@ -758,23 +955,27 @@ public sealed class MountAdjustmentSlotViewModel : ObservableObject
     internal MountAdjustmentSlotViewModel(
         string title,
         Action changed,
-        Action<string> invalid)
+        Action<string> invalid,
+        Func<double> positionStep,
+        Func<double> rotationStep)
     {
         Title = title;
         _changed = changed;
         _invalid = invalid;
-        PositionXDecrementCommand = Step(() => PositionXMillimeters -= 1d);
-        PositionXIncrementCommand = Step(() => PositionXMillimeters += 1d);
-        PositionYDecrementCommand = Step(() => PositionYMillimeters -= 1d);
-        PositionYIncrementCommand = Step(() => PositionYMillimeters += 1d);
-        PositionZDecrementCommand = Step(() => PositionZMillimeters -= 1d);
-        PositionZIncrementCommand = Step(() => PositionZMillimeters += 1d);
-        RotationXDecrementCommand = Step(() => RotationXDegrees -= 1d);
-        RotationXIncrementCommand = Step(() => RotationXDegrees += 1d);
-        RotationYDecrementCommand = Step(() => RotationYDegrees -= 1d);
-        RotationYIncrementCommand = Step(() => RotationYDegrees += 1d);
-        RotationZDecrementCommand = Step(() => RotationZDegrees -= 1d);
-        RotationZIncrementCommand = Step(() => RotationZDegrees += 1d);
+        _positionStep = positionStep;
+        _rotationStep = rotationStep;
+        PositionXDecrementCommand = Step(() => PositionXMillimeters -= _positionStep());
+        PositionXIncrementCommand = Step(() => PositionXMillimeters += _positionStep());
+        PositionYDecrementCommand = Step(() => PositionYMillimeters -= _positionStep());
+        PositionYIncrementCommand = Step(() => PositionYMillimeters += _positionStep());
+        PositionZDecrementCommand = Step(() => PositionZMillimeters -= _positionStep());
+        PositionZIncrementCommand = Step(() => PositionZMillimeters += _positionStep());
+        RotationXDecrementCommand = Step(() => RotationXDegrees -= _rotationStep());
+        RotationXIncrementCommand = Step(() => RotationXDegrees += _rotationStep());
+        RotationYDecrementCommand = Step(() => RotationYDegrees -= _rotationStep());
+        RotationYIncrementCommand = Step(() => RotationYDegrees += _rotationStep());
+        RotationZDecrementCommand = Step(() => RotationZDegrees -= _rotationStep());
+        RotationZIncrementCommand = Step(() => RotationZDegrees += _rotationStep());
         ResetCommand = new RelayCommand(Reset);
     }
 

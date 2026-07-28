@@ -1,4 +1,7 @@
 using Ltb.App;
+using Ltb.Driver;
+using Ltb.MetaLink;
+using Ltb.Protocol;
 
 namespace Ltb.Gui.ViewModels;
 
@@ -17,7 +20,8 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
     private readonly Action<long, long, InternalDriverSessionSnapshot> _trailingFlush;
     private long _generation;
     private long _lastPresentationTimestamp;
-    private ActiveIdentity? _lastActiveIdentity;
+    private ActiveIdentity _lastActiveIdentity;
+    private bool _hasLastActiveIdentity;
     private bool _hasPresented;
     private PendingSnapshot? _pending;
     private IDisposable? _scheduledFlush;
@@ -63,12 +67,12 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
             }
 
             var now = _timeSource.GetTimestamp();
-            var identity = ActiveIdentity.From(snapshot);
+            var hasActiveIdentity = ActiveIdentity.TryCreate(snapshot, out var identity);
             var immediate =
                 !_hasPresented ||
                 generation != _generation ||
-                identity is null ||
-                _lastActiveIdentity is null ||
+                !hasActiveIdentity ||
+                !_hasLastActiveIdentity ||
                 identity != _lastActiveIdentity;
             var elapsed = _hasPresented
                 ? _timeSource.GetElapsedTime(_lastPresentationTimestamp, now)
@@ -189,16 +193,25 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
     {
         _generation = generation;
         _lastPresentationTimestamp = timestamp;
-        _lastActiveIdentity = ActiveIdentity.From(snapshot);
+        _hasLastActiveIdentity = ActiveIdentity.TryCreate(
+            snapshot,
+            out _lastActiveIdentity);
         _hasPresented = true;
     }
 
-    private sealed record PendingSnapshot(
+    internal static bool HasEquivalentActivePresentationState(
+        InternalDriverSessionSnapshot left,
+        InternalDriverSessionSnapshot right) =>
+        ActiveIdentity.TryCreate(left, out var leftIdentity) &&
+        ActiveIdentity.TryCreate(right, out var rightIdentity) &&
+        leftIdentity == rightIdentity;
+
+    private readonly record struct PendingSnapshot(
         long Generation,
         long Sequence,
         InternalDriverSessionSnapshot Snapshot);
 
-    private sealed record ActiveIdentity(
+    private readonly record struct ActiveIdentity(
         InternalDriverSessionReadiness Readiness,
         bool RestartRequired,
         string Diagnostic,
@@ -207,28 +220,42 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
         HandIdentity Right,
         FeedIdentity Feed,
         InternalDriverDriverEvidence? Driver,
-        InternalDriverLighthouseHmdEvidence? LighthouseHmd)
+        InternalDriverLighthouseHmdEvidence? LighthouseHmd,
+        TrackerNeutralizationIdentity? TrackerNeutralization,
+        ManualBindingVerificationIdentity? ManualBindingVerification)
     {
-        public static ActiveIdentity? From(InternalDriverSessionSnapshot snapshot) =>
-            snapshot.State == InternalDriverSessionState.Active
-                ? new ActiveIdentity(
-                    snapshot.Readiness,
-                    snapshot.RestartRequired,
-                    snapshot.Diagnostic,
-                    snapshot.Remediation,
-                    HandIdentity.From(snapshot.Left),
-                    HandIdentity.From(snapshot.Right),
-                    FeedIdentity.From(snapshot.Feed),
-                    snapshot.Driver,
-                    snapshot.LighthouseHmd)
-                : null;
+        public static bool TryCreate(
+            InternalDriverSessionSnapshot snapshot,
+            out ActiveIdentity identity)
+        {
+            if (snapshot.State != InternalDriverSessionState.Active)
+            {
+                identity = default;
+                return false;
+            }
+
+            identity = new ActiveIdentity(
+                snapshot.Readiness,
+                snapshot.RestartRequired,
+                snapshot.Diagnostic,
+                snapshot.Remediation,
+                HandIdentity.From(snapshot.Left),
+                HandIdentity.From(snapshot.Right),
+                FeedIdentity.From(snapshot.Feed),
+                snapshot.Driver,
+                snapshot.LighthouseHmd,
+                TrackerNeutralizationIdentity.From(snapshot.TrackerNeutralization),
+                ManualBindingVerificationIdentity.From(
+                    snapshot.ManualBindingVerification));
+            return true;
+        }
     }
 
-    private sealed record HandIdentity(
+    private readonly record struct HandIdentity(
         string? TrackerSerial,
         bool TrackerConnected,
         bool TrackerTracked,
-        object MetaReadiness,
+        MetaLinkReadiness MetaReadiness,
         bool MetaInputsValid,
         InternalDriverProfileReadiness ProfileReadiness,
         bool IsPublishing,
@@ -251,9 +278,9 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
             hand.Capture);
     }
 
-    private sealed record FeedIdentity(
-        object Readiness,
-        object? SessionId,
+    private readonly record struct FeedIdentity(
+        DriverFeedReadiness Readiness,
+        ProtocolSessionId? SessionId,
         int ReconnectAttempts,
         string? LastError)
     {
@@ -262,5 +289,144 @@ internal sealed class SnapshotPresentationCoalescer : IDisposable
             feed.SessionId,
             feed.ReconnectAttempts,
             feed.LastError);
+    }
+
+    private readonly record struct ManualBindingVerificationIdentity(
+        InternalDriverManualBindingVerificationState State,
+        string LeftTrackerSerial,
+        string RightTrackerSerial,
+        string? CorrectionLeftTrackerSerial,
+        string? CorrectionRightTrackerSerial,
+        string Diagnostic)
+    {
+        public static ManualBindingVerificationIdentity? From(
+            InternalDriverManualBindingVerificationEvidence? verification) =>
+            verification is null
+                ? null
+                : new ManualBindingVerificationIdentity(
+                    verification.State,
+                    verification.LeftTrackerSerial,
+                    verification.RightTrackerSerial,
+                    verification.CorrectionLeftTrackerSerial,
+                    verification.CorrectionRightTrackerSerial,
+                    verification.Diagnostic);
+    }
+
+    /// <summary>
+    /// Retains the immutable App snapshot and compares its list members by
+    /// content. The lists contain at most the exact controlled tracker pair
+    /// plus restoration diagnostics, so this avoids both identity allocations
+    /// and reference-only list equality.
+    /// </summary>
+    private readonly struct TrackerNeutralizationIdentity :
+        IEquatable<TrackerNeutralizationIdentity>
+    {
+        private readonly InternalDriverTrackerNeutralizationSnapshot _snapshot;
+
+        private TrackerNeutralizationIdentity(
+            InternalDriverTrackerNeutralizationSnapshot snapshot)
+        {
+            _snapshot = snapshot;
+        }
+
+        public static TrackerNeutralizationIdentity? From(
+            InternalDriverTrackerNeutralizationSnapshot? snapshot) =>
+            snapshot is null ? null : new TrackerNeutralizationIdentity(snapshot);
+
+        public bool Equals(TrackerNeutralizationIdentity other)
+        {
+            if (ReferenceEquals(_snapshot, other._snapshot))
+            {
+                return true;
+            }
+
+            return
+                _snapshot.State == other._snapshot.State &&
+                string.Equals(
+                    _snapshot.BackendSnapshotId,
+                    other._snapshot.BackendSnapshotId,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    _snapshot.Diagnostic,
+                    other._snapshot.Diagnostic,
+                    StringComparison.Ordinal) &&
+                TrackerPathsEqual(
+                    _snapshot.TrackerPaths,
+                    other._snapshot.TrackerPaths) &&
+                StringsEqual(
+                    _snapshot.RestoreFailures,
+                    other._snapshot.RestoreFailures);
+        }
+
+        public override bool Equals(object? obj) =>
+            obj is TrackerNeutralizationIdentity other && Equals(other);
+
+        public override int GetHashCode() =>
+            HashCode.Combine(
+                _snapshot.State,
+                _snapshot.BackendSnapshotId,
+                _snapshot.Diagnostic,
+                _snapshot.TrackerPaths.Count,
+                _snapshot.RestoreFailures.Count);
+
+        public static bool operator ==(
+            TrackerNeutralizationIdentity left,
+            TrackerNeutralizationIdentity right) =>
+            left.Equals(right);
+
+        public static bool operator !=(
+            TrackerNeutralizationIdentity left,
+            TrackerNeutralizationIdentity right) =>
+            !left.Equals(right);
+
+        private static bool TrackerPathsEqual(
+            IReadOnlyList<InternalDriverTrackerPath> left,
+            IReadOnlyList<InternalDriverTrackerPath> right)
+        {
+            if (left.Count != right.Count)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < left.Count; index++)
+            {
+                var leftPath = left[index];
+                var rightPath = right[index];
+                if (leftPath.Hand != rightPath.Hand ||
+                    !string.Equals(
+                        leftPath.TrackerSerial,
+                        rightPath.TrackerSerial,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(
+                        leftPath.DevicePath,
+                        rightPath.DevicePath,
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool StringsEqual(
+            IReadOnlyList<string> left,
+            IReadOnlyList<string> right)
+        {
+            if (left.Count != right.Count)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < left.Count; index++)
+            {
+                if (!string.Equals(left[index], right[index], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
     }
 }

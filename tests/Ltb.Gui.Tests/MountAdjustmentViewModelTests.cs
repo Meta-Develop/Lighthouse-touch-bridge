@@ -49,6 +49,32 @@ public sealed class MountAdjustmentViewModelTests
     }
 
     [Fact]
+    public void SelectableBoundedPresetsDrivePositionAndRotationCommands()
+    {
+        var port = new FakeMountAdjustmentPort(AvailableSnapshot());
+        using var viewModel = NewViewModel(port);
+        var slot = viewModel.LeftHand.TrackerSide;
+
+        Assert.Equal([0.1d, 1d, 5d, 10d], viewModel.PositionStepPresetsMillimeters);
+        Assert.Equal([0.1d, 1d, 5d, 15d], viewModel.RotationStepPresetsDegrees);
+
+        viewModel.SelectedPositionStepMillimeters = 5d;
+        viewModel.SelectedRotationStepDegrees = 15d;
+        slot.PositionXIncrementCommand.Execute(null);
+        slot.RotationZDecrementCommand.Execute(null);
+
+        Assert.Equal(5d, slot.PositionXMillimeters, 6);
+        Assert.Equal(-15d, slot.RotationZDegrees, 6);
+
+        viewModel.SelectedPositionStepMillimeters = 2d;
+        viewModel.SelectedRotationStepDegrees = double.PositiveInfinity;
+
+        Assert.Equal(5d, viewModel.SelectedPositionStepMillimeters);
+        Assert.Equal(15d, viewModel.SelectedRotationStepDegrees);
+        Assert.Contains("preset", viewModel.StatusText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void EulerEditsUseIntrinsicLocalXThenYThenZQuaternionOrder()
     {
         var port = new FakeMountAdjustmentPort(AvailableSnapshot());
@@ -146,6 +172,40 @@ public sealed class MountAdjustmentViewModelTests
 
         Assert.True(viewModel.IsDirty);
         Assert.Contains("failed", viewModel.StatusText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RevertAppliesLastSavedValuesLiveWithoutPersistence()
+    {
+        var savedTracker = new MountAdjustmentTransform(
+            new Vector3(0.003f, 0f, 0f),
+            Quaternion.Identity);
+        var savedLeft = new MountAdjustmentPair(
+            savedTracker,
+            MountAdjustmentTransform.Identity);
+        var left = HandSnapshot(
+            MountAdjustmentTransform.Identity,
+            applied: savedLeft,
+            saved: savedLeft);
+        var port = new FakeMountAdjustmentPort(
+            AvailableSnapshot() with { Left = left });
+        using var viewModel = NewViewModel(port);
+
+        viewModel.LeftHand.TrackerSide.PositionXMillimeters = 12d;
+        viewModel.RightHand.ControllerSide.RotationYDegrees = 7d;
+        Assert.True(viewModel.IsDirty);
+        Assert.True(viewModel.RevertCommand.CanExecute(null));
+        var applyCount = port.ApplyRequests.Count;
+
+        await viewModel.RevertAsync();
+
+        Assert.Equal(3d, viewModel.LeftHand.TrackerSide.PositionXMillimeters, 6);
+        Assert.Equal(0d, viewModel.RightHand.ControllerSide.RotationYDegrees, 6);
+        Assert.False(viewModel.IsDirty);
+        Assert.False(viewModel.RevertCommand.CanExecute(null));
+        Assert.Equal(applyCount + 2, port.ApplyRequests.Count);
+        Assert.Empty(port.SaveRequests);
+        Assert.Contains("last saved", viewModel.StatusText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

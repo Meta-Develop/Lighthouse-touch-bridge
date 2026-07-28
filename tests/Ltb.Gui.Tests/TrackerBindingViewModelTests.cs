@@ -201,6 +201,94 @@ public sealed class TrackerBindingViewModelTests
         Assert.False(viewModel.CanEdit);
     }
 
+    [Fact]
+    public async Task RefreshEntersSynchronousControlPrefixOffTheCallerThread()
+    {
+        var control = new SequencedSynchronousRefreshControl(
+            Snapshot(),
+            Snapshot() with { Diagnostic = "Background refresh completed." });
+        await using var viewModel = new TrackerBindingViewModel(
+            control,
+            action => action());
+        Task? refresh = null;
+        var invocationReturned = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var callerThreadId = 0;
+        var caller = new Thread(() =>
+        {
+            callerThreadId = Environment.CurrentManagedThreadId;
+            refresh = viewModel.RefreshAsync();
+            invocationReturned.TrySetResult();
+        });
+
+        caller.Start();
+        await invocationReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await control.WaitForEntryAsync(0);
+        Assert.NotNull(refresh);
+        Assert.NotEqual(callerThreadId, control.EntryThreadId(0));
+        Assert.False(refresh!.IsCompleted);
+
+        control.Release(0);
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(caller.Join(TimeSpan.FromSeconds(5)));
+        Assert.Equal("Background refresh completed.", viewModel.StatusText);
+    }
+
+    [Fact]
+    public async Task ReplacementRefreshCancelsPriorGenerationAndOnlyLatestResultApplies()
+    {
+        var initial = Snapshot() with { Diagnostic = "Initial." };
+        var control = new SequencedSynchronousRefreshControl(
+            initial,
+            initial with { Diagnostic = "Stale first result." },
+            initial with { Diagnostic = "Latest second result." });
+        await using var viewModel = new TrackerBindingViewModel(
+            control,
+            action => action());
+
+        var first = viewModel.RefreshAsync();
+        await control.WaitForEntryAsync(0);
+        var second = viewModel.RefreshAsync();
+        await control.WaitForCancellationAsync(0);
+        control.Release(0);
+        await control.WaitForEntryAsync(1);
+
+        Assert.Equal("Initial.", viewModel.StatusText);
+        Assert.False(second.IsCompleted);
+
+        control.Release(1);
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal("Latest second result.", viewModel.StatusText);
+        Assert.Equal(2, control.RefreshCalls);
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task DisposalCancelsAndDrainsRefreshBeforeDisposingControl()
+    {
+        var control = new SequencedSynchronousRefreshControl(
+            Snapshot(),
+            Snapshot() with { Diagnostic = "Ignored after disposal." });
+        var viewModel = new TrackerBindingViewModel(
+            control,
+            action => action());
+
+        var refresh = viewModel.RefreshAsync();
+        await control.WaitForEntryAsync(0);
+        var dispose = viewModel.DisposeAsync().AsTask();
+        await control.WaitForCancellationAsync(0);
+
+        Assert.False(dispose.IsCompleted);
+        Assert.Equal(0, control.DisposeCalls);
+
+        control.Release(0);
+        await Task.WhenAll(refresh, dispose).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, control.DisposeCalls);
+        Assert.False(viewModel.CanEdit);
+    }
+
     private static InternalDriverPreSessionSnapshot Snapshot(
         string? left = null,
         string? right = null) => new(
@@ -275,6 +363,105 @@ public sealed class TrackerBindingViewModelTests
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class SequencedSynchronousRefreshControl :
+        IInternalDriverPreSessionControl
+    {
+        private readonly InternalDriverPreSessionSnapshot[] _results;
+        private readonly TaskCompletionSource[] _entered;
+        private readonly TaskCompletionSource[] _canceled;
+        private readonly TaskCompletionSource[] _release;
+        private readonly int[] _entryThreadIds;
+        private int _refreshCalls;
+        private int _disposeCalls;
+
+        public SequencedSynchronousRefreshControl(
+            InternalDriverPreSessionSnapshot initial,
+            params InternalDriverPreSessionSnapshot[] results)
+        {
+            CurrentSnapshot = initial;
+            _results = results;
+            _entered = CreateSignals(results.Length);
+            _canceled = CreateSignals(results.Length);
+            _release = CreateSignals(results.Length);
+            _entryThreadIds = new int[results.Length];
+        }
+
+        public InternalDriverPreSessionSnapshot CurrentSnapshot { get; private set; }
+
+        public int RefreshCalls => Volatile.Read(ref _refreshCalls);
+
+        public int DisposeCalls => Volatile.Read(ref _disposeCalls);
+
+        public ValueTask<InternalDriverPreSessionSnapshot> RefreshAsync(
+            CancellationToken cancellationToken = default)
+        {
+            var index = Interlocked.Increment(ref _refreshCalls) - 1;
+            if ((uint)index >= (uint)_results.Length)
+            {
+                throw new InvalidOperationException("Unexpected refresh call.");
+            }
+
+            _entryThreadIds[index] = Environment.CurrentManagedThreadId;
+            using var registration = cancellationToken.Register(
+                () => _canceled[index].TrySetResult());
+            _entered[index].TrySetResult();
+            _release[index].Task.GetAwaiter().GetResult();
+            CurrentSnapshot = _results[index];
+            return ValueTask.FromResult(CurrentSnapshot);
+        }
+
+        public Task WaitForEntryAsync(int index) =>
+            _entered[index].Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        public Task WaitForCancellationAsync(int index) =>
+            _canceled[index].Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        public int EntryThreadId(int index) => _entryThreadIds[index];
+
+        public void Release(int index) => _release[index].TrySetResult();
+
+        public ValueTask<InternalDriverPreSessionSnapshot> SaveManualBindingAsync(
+            string leftTrackerSerial,
+            string rightTrackerSerial,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(CurrentSnapshot);
+
+        public ValueTask<InternalDriverPreSessionSnapshot> ClearManualBindingAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(CurrentSnapshot);
+
+        public ValueTask<InternalDriverPreSessionSnapshot> SetUnregisterOnExitAsync(
+            bool enabled,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(CurrentSnapshot);
+
+        public ValueTask<InternalDriverPreSessionSnapshot> ApplyManualBindingDecisionAsync(
+            InternalDriverManualBindingVerificationEvidence verification,
+            InternalDriverManualBindingDecision decision,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(CurrentSnapshot);
+
+        public ValueTask<InternalDriverPreSessionSnapshot> PrepareStartAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(CurrentSnapshot);
+
+        public ValueTask<InternalDriverPreSessionSnapshot> CompleteControlledStopAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(CurrentSnapshot);
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref _disposeCalls);
+            return ValueTask.CompletedTask;
+        }
+
+        private static TaskCompletionSource[] CreateSignals(int count) =>
+            Enumerable.Range(0, count)
+                .Select(_ => new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously))
+                .ToArray();
     }
 
     private sealed class SerializedBlockingPreSessionControl(
