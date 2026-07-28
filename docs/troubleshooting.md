@@ -50,10 +50,13 @@ setting was written.
 
 If the diagnostic says the registered-device path is unresolved, do not enter
 or derive `/devices/lighthouse/<serial>`. Paired `config.json` proves only the
-uppercase serial and model, not the live registered path/key. The current
-pre-session boundary intentionally blocks until Windows evidence establishes
-the real serial/model-to-live-path relationship across restart and device-index
-churn. It has no trusted path cache.
+uppercase serial and model, not the live registered path/key. Clear the manual
+binding, complete one normal live first-party session so OpenVR enumeration
+records the selected exact pair, then stop SteamVR, refresh, review current and
+prior-path evidence, and restore the intended manual binding. If **Pending
+reconciliation** is `yes`, the displayed last-committed values are read-only
+evidence; another complete newer normal live session must reconcile them
+before they can authorize a write. LTB has no serial-derived path cache.
 
 If paired discovery itself fails, use its typed missing, unreadable, malformed,
 duplicate, or empty diagnostic. The paired-device directory name is exactly
@@ -61,6 +64,50 @@ lowercase `lighthouse`; an uppercase-only `Lighthouse` directory does not
 satisfy that contract on a case-sensitive filesystem. A config-array entry
 without `lighthouse` does not veto another applicable root; missing means no
 configured root contains it. Save only a complete distinct left/right pair.
+
+### A manual-binding decision disappeared after Refresh
+
+This is intentional. Motion-verification evidence is bound to the exact
+left/right values and the SHA-256 generation of `internal-driver.json`.
+Refresh clears a pending correction/retain choice even when the visible pair
+looks unchanged. A value or generation change before commit also reloads the
+newer settings and writes nothing. Review the refreshed pair, rerun motion
+verification, and make a new explicit decision; do not expect automatic retry.
+
+### An external registration warning appears
+
+The warning means a recognized unrelated root is registered, not that it is
+loaded, running, or publishing. LTB does not remove, reorder, repair, or
+otherwise modify that registration. Inspect the named integration separately
+after SteamVR has restarted if runtime behavior needs confirmation.
+
+### Recovery candidates or tracker-role drift appear
+
+Recovery candidates are recognized sibling-backup metadata only: file path,
+sequence, byte length, and UTC write time. No backup content was read, and no
+automatic restore will occur. Inspect current settings and a candidate
+manually before taking any recovery action outside this panel.
+
+Tracker-role drift is a read-only comparison for the exact paths in a retained
+LTB receipt. LTB does not rewrite, restore, or re-neutralize a drifted role
+from this report. Preserve the typed status and investigate the external
+writer before deciding whether a controlled recovery is appropriate.
+
+### Calibration quality says a hand is worth recapturing
+
+The desktop uses an inclusive `20 mm` position-RMS guidance boundary for
+full-6DoF profiles. At or above it, recapture that hand before headset use.
+A stored pair whose lever-arm magnitudes differ by at least `20 mm` also merits
+mount inspection. Rotation-only or missing position metrics are insufficient
+evidence, not poor calibration and not a solver failure.
+
+### Rapid mount edits finish out of order or remain dirty
+
+Each edit, Save, Revert, and Reset is queued with the exact value and revision
+captured when requested. LTB does not discard intermediate edits. Wait for the
+queue to report each acknowledgement or error. An older Save can complete
+while newer edits correctly remain dirty; **Revert unsaved** uses the saved
+values captured when that revert request entered the queue.
 
 ### Stop or exit removed registration unexpectedly
 

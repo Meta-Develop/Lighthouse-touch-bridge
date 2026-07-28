@@ -51,6 +51,21 @@ candidate during separate left- and right-hand motion prompts and fails closed
 unless one distinct pair wins unambiguously, so unrelated trackers may remain
 connected.
 
+Before putting on the headset, review the stopped/pre-session evidence panel.
+It shows current and bounded prior live-observed tracker paths, any pending
+path reconciliation, stored per-hand calibration quality, recognized unrelated
+SteamVR registrations, metadata-only settings-backup candidates, and
+receipt-bound tracker-role drift. Registration alone does not mean another
+integration is loaded, running, or publishing. LTB does not modify those
+registrations, read or automatically restore backup contents, or rewrite a
+drifted tracker role.
+
+The quality panel also stays visible for newly completed calibration. A
+full-6DoF hand with position RMS at or above `20 mm` is plainly marked as
+worth recapturing, and a stored pair whose lever-arm magnitudes differ by at
+least `20 mm` is marked material. Rotation-only or missing position metrics
+are insufficient position evidence, not poor calibration.
+
 See [Internal driver operations](docs/internal-drivers.md) for discovery,
 readiness, calibration, paths, keep-awake guidance, and failure behavior.
 

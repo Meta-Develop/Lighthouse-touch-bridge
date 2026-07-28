@@ -458,6 +458,13 @@ explicit choice. Correlation failure shall not silently clear or reassign a
 complete manual binding. When no manual binding exists, the automatic
 association behavior above remains authoritative.
 
+Verification evidence shall include the exact canonical pair and the SHA-256
+generation of the authoritative `internal-driver.json` bytes. Any explicit
+pre-session refresh shall clear a pending decision. The save boundary shall
+compare both value and generation under the shared settings lock; drift at any
+stage shall reload the newer state, clear the decision, perform no write, and
+require a new refresh and motion-verification run.
+
 ---
 
 ## 10. Stream Time Alignment
@@ -572,6 +579,13 @@ sufficient, translation is observable and plausible, held-out position improves
 by the configured margin, and resampling or split tests are stable. Thresholds
 shall be configurable and tuned from recorded hardware evidence rather than
 declared permanent before measurement.
+
+Separate operator guidance shall assess stored and newly completed results
+before headset use without changing solver acceptance. Full-6DoF position RMS
+at or above `20 mm` shall say the hand is worth recapturing. For a stored pair,
+a difference of at least `20 mm` between the two lever-arm magnitudes shall be
+called material. Rotation-only or absent position metrics shall be presented
+as insufficient position or lever-arm evidence, not poor calibration.
 
 The profile and structured log shall record the selected mode and reason:
 
@@ -742,6 +756,12 @@ of unrelated registrations. The operation shall never modify unrelated
 external drivers, including `01spacecalibrator`, `bigscreenbeyond`, `vmt`, and
 `alvr_server`.
 
+Recognized unrelated registration roots shall also be surfaced as typed
+read-only warnings. The presentation shall state that registration is not
+evidence that an integration is loaded, running, or publishing and that LTB
+will not modify it. This warning surface shall grant no cleanup or removal
+authority.
+
 A SteamVR restart may be required after registration or driver replacement.
 LTB shall report that requirement explicitly and shall not claim readiness
 until SteamVR loads the expected driver build and exposes exactly the two LTB
@@ -874,12 +894,17 @@ It does not prove that relationship, shall not authorize a settings write, and
 shall never be converted into a synthesized
 `/devices/lighthouse/<serial>` path or an unproven cache.
 
-The present offline pre-session boundary has no such authoritative
-serial-to-live-path evidence. It therefore reports a typed
-registered-device-path-unresolved state and blocks manual-binding Start without
-writing `steamvr.vrsettings`. Windows evidence establishing the real
-serial/model-to-live-path relationship across restart and device-index churn
-is required before that boundary can be extended.
+Each normal live session shall record the selected serials and exact OpenVR
+registered paths with UTC provenance before tracker-role mutation or feed
+creation. Storage shall retain one current path and a bounded prior-path
+history per serial. A path change shall use a pending marker around the atomic
+replacement. If that marker survives interruption, presentation may show the
+last committed values but they shall grant no mutation authority; a complete
+newer normal live observation of every affected serial is required to
+reconcile it. Missing, malformed, ambiguous, or pending evidence shall report a
+typed registered-device-path-unresolved state and block manual-binding Start
+without writing `steamvr.vrsettings`. A prior-history path shall never
+substitute for the current path.
 
 Once exact path authority exists, the production tracker-path control
 capability shall capture and neutralize exactly the two selected physical
@@ -907,6 +932,13 @@ The intended neutral value is `TrackerRole_None`, but its behavior remains
 unverified on the target Windows SteamVR runtime. Neither the setting write nor
 portable tests prove that applications ignore a neutralized tracker. Those are
 separate unchecked Windows gates.
+
+Pre-session recovery discovery shall enumerate only recognized sibling-backup
+metadata: path, sequence, byte length, and UTC write time. It shall not read
+backup contents or restore automatically. When an applicable retained receipt
+exists, role-drift inspection shall compare exactly the two receipt-bound paths
+and report their current status without rewriting, restoring, or
+re-neutralizing either role.
 
 ---
 
@@ -1002,8 +1034,9 @@ requested concurrently.
    explicitly retain automatic association.
 2. If a manual pair exists, require both `vrserver` and `vrmonitor` stopped and
    complete the exact-path neutralization preflight before creating a session.
-   The current implementation blocks here because paired config lacks
-   authoritative live registered-path evidence.
+   If current evidence is absent or pending, clear the binding, run one normal
+   live session to record the exact pair, then stop SteamVR and retry; paired
+   config alone never authorizes the write.
 3. Inspect stale receipts, registrations, duplicate roots, and restart state;
    repair only independently proven LTB-owned state.
 4. Detect SteamVR and the official Meta Quest Link installation.
@@ -1027,7 +1060,9 @@ requested concurrently.
    excitation coverage. For a selected-hand request, capture only that hand and
    retain the reusable opposite-hand profile unchanged.
 13. Associate, align, solve, and validate each hand.
-14. Display `Full 6DoF` or `Rotation-only`, the reason, and quality evidence.
+14. Display `Full 6DoF` or `Rotation-only`, the reason, quality evidence, and
+    the inclusive `20 mm` recapture/material-lever-arm guidance before headset
+    use; insufficient position evidence is not poor quality.
 15. Save profiles, start a new IPC session, and verify exactly two live LTB
     controllers in SteamVR.
 
@@ -1044,6 +1079,20 @@ slots, display the App-authoritative effective transform, apply edits live,
 persist only on **Save**, and retain visible dirty state across unrelated
 same-revision lifecycle events. Stopped-state actions shall route left-only,
 right-only, and both-hand calibration intents end to end.
+
+Mount edits, Save, Revert, and Reset shall enter one exact-order queue with
+immutable request values. The GUI shall not coalesce away an intermediate
+mutation; each error and acknowledgement shall remain attributable, an older
+save shall not clear newer dirty edits, and revert shall use the last-saved
+values captured for that request.
+
+The common Start/state/Stop path shall remain immediate. Every property and
+collection notification shall be dispatched to the UI thread without making
+lifecycle cleanup wait on UI work. Close shall be cancel-first and
+single-flight, attempt cleanup once, treat placement persistence as best
+effort, and dispatch final close even when either step fails. Diagnostics shall
+be opt-in, consume only typed snapshots, sample no faster than `10 Hz`, retain
+the newest `600` samples, and leave unavailable values as gaps.
 
 ### 20.2 Later runs
 
@@ -1201,15 +1250,27 @@ run build and test coverage for:
   ranges, quaternion norm, zero/new/retired sessions, replay/order, and
   per-stream timestamp regression;
 - atomic rejection, session rollover, heartbeat, 500 ms timeout,
-  neutralization, reconnect, and fake-pipe failures; and
+  neutralization, reconnect, and fake-pipe failures;
 - coordinate axes, quaternion order, raw-driver-space pose, zero translation,
   full translation under rotation, mount-adjustment slot validation,
   single-snapshot pose/lever-arm velocity, schema-2 identity reuse, and
   `T_tracker · (A_tracker · X_mount · A_controller)` composition;
 - exact-path tracker-role neutralization, durable owned-backup recovery,
-  external-writer refusal, and already-restored receipt cleanup; and
+  external-writer refusal, and already-restored receipt cleanup;
 - left-only/right-only staged replacement, unrelated-record preservation, and
-  cancellation-versus-commit linearization.
+  cancellation-versus-commit linearization;
+- bounded current/history tracker-path persistence, interrupted-change
+  reconciliation, and fail-closed prior-history exclusion;
+- value-and-generation manual-decision CAS, typed external-registration
+  warnings, metadata-only recovery discovery, and exact-path read-only role
+  drift;
+- inclusive per-hand/pair `20 mm` quality guidance, with rotation-only and
+  missing evidence kept distinct from poor quality;
+- exact-order immutable mount mutations with error, dirty, Save, Revert, and
+  Reset semantics; and
+- headless GUI tests for immediate lifecycle actions, UI-thread presentation,
+  single-flight fail-open close, opt-in `10 Hz`/`600`-sample diagnostics, and
+  normalized placement persistence.
 
 ### 23.2 Native portable tests
 
@@ -1237,7 +1298,7 @@ Windows CI or a controlled Windows test host shall additionally prove:
 - cross-language ABI/golden-packet compatibility;
 - transactional `vrpathreg` registration, exact-path verification, unrelated
   driver preservation, rollback, removal, and restoration of
-  `activateMultipleDrivers`; and
+  `activateMultipleDrivers`;
 - SteamVR loading the intended `driver_ltb` binary and exposing exactly two
   correctly profiled controller roles with no HMD or extra device;
 - stopped/pre-session paired-tracker enumeration, settings compatibility,
@@ -1245,13 +1306,22 @@ Windows CI or a controlled Windows test host shall additionally prove:
   unregister-on-exit, opt-out, and typed no-throw failures;
 - next-start stale receipt/registration inspection, independently authorized
   duplicate-root cleanup, ambiguous-ownership refusal, default Stop/exit
-  cleanup, and preservation of unrelated external drivers;
+  cleanup, preservation of unrelated external drivers, and conspicuous typed
+  registration warnings that do not imply loaded/running/publishing state;
 - the exact two associated physical tracker registered paths becoming
   `TrackerRole_None` only after serial-to-live-path authority is established,
   with both SteamVR host processes stopped, no serial-derived path guesses, no
-  write on unresolved evidence, and no unrelated role changes; and
+  prior-history substitution, no write on unresolved or pending evidence, and
+  no unrelated role changes;
 - Stop, window close, activation failure, crash recovery, and restore-failure
-  warning behavior for the tracker-role transaction.
+  warning behavior for the tracker-role transaction;
+- metadata-only recognized recovery candidates and exact-path read-only role
+  drift without automatic restore or role rewrite;
+- stale manual-binding decision clearing/reload/rerun behavior when either
+  settings value or generation changes; and
+- GUI first-paint, ordered onboarding and pre-press gates, immediate
+  Start/state/Stop, exact-order mount mutation semantics, opt-in diagnostic
+  bounds, accessibility, DPI, and fail-open UI-thread close behavior.
 
 ### 23.4 Windows Meta/SteamVR hardware exit gates
 

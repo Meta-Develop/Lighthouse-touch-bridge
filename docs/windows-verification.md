@@ -7,7 +7,12 @@
 > the first-party desktop **Start** path and is not a release gate for it. Use
 > [First-party internal driver operations](internal-drivers.md) and the
 > [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
-> instead.
+> instead. In particular, this legacy checklist cannot verify the current
+> desktop's live-observed tracker-path reconciliation, settings-generation
+> decision CAS, read-only external-registration/recovery/role-drift surfaces,
+> per-hand `20 mm` quality guidance, ordered mount-mutation queue, immediate
+> Start/state/Stop path, UI-thread close safety, diagnostics bound, normalized
+> placement, first paint, accessibility, or DPI behavior.
 
 The automated suite has deterministic Linux tests for calibration, recording,
 replay, capability-based device enumeration and matching, one-hand legacy

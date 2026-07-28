@@ -141,7 +141,11 @@ still does not replace the connected-hardware gates.
   agreement and mismatch. Confirm agreement is verification only; a mismatch
   presents a complete correction candidate and changes the pair only after an
   explicit **Accept correction** decision, while **Retain manual pair** keeps
-  the saved binding.
+  the saved binding. Before each decision, change the saved pair and separately
+  change only the authoritative settings generation from another process.
+  Confirm each stale decision is cleared, newer settings are reloaded and not
+  overwritten, and Refresh requires a new motion-verification run even when
+  the visible pair is unchanged.
 - [ ] Clear the manual binding and confirm the existing automatic association
   behavior, ambiguity rejection, and saved-profile selection remain unchanged.
 - [ ] With a manual binding present, run `vrserver` alone and then `vrmonitor`
@@ -155,17 +159,23 @@ still does not replace the connected-hardware gates.
 - [ ] Establish the real relationship from each paired `config.json`
   `device_serial_number` and `model_number` to the live OpenVR registered-
   device path/key. Repeat across SteamVR restart and transient device-index
-  churn and retain provenance strong enough to distinguish observation from a
-  serial-derived guess.
+  churn. Confirm one normal live LTB session records the exact current paths,
+  last-observed UTC, and bounded prior-path history before any tracker-role
+  mutation or feed creation, with provenance strong enough to distinguish
+  observation from a serial-derived guess.
 - [ ] Before that relationship is available to LTB, press **Start** with a
   manual pair and confirm the typed registered-path-unresolved diagnostic,
   zero `steamvr.vrsettings` writes, no treatment of the exact lowercase
   `lighthouse` pairing directory as path-key evidence, no
   `/devices/lighthouse/<serial>` synthesis, and no invented path cache.
-- [ ] After authoritative serial-to-live-path evidence is integrated, confirm
-  preflight writes exactly the two bound registered paths in one transactional
-  operation, preserves every unrelated tracker role/setting, and retains the
-  existing backup, receipt, rollback, and crash-recovery authority.
+- [ ] Using the integrated authoritative serial-to-live-path store, confirm
+  preflight writes exactly the two bound current paths in one transactional
+  operation, never substitutes prior history, preserves every unrelated
+  tracker role/setting, and retains the existing backup, receipt, rollback,
+  and crash-recovery authority. Interrupt a path-change replacement and
+  confirm the last committed current/history values remain visible as
+  read-only evidence with **Pending reconciliation** set, authorize no write,
+  and require one complete newer normal live session to reconcile.
 - [ ] With the exact two physical trackers intentionally neutralized, prove in
   VRChat and at least one other representative application that neither
   tracker is consumed while both LTB controllers remain current. Record this
@@ -240,6 +250,9 @@ still does not replace the connected-hardware gates.
   `bigscreenbeyond`, `vmt`, and `alvr_server` registered through default
   cleanup, duplicate cleanup, rollback, and next-start re-registration.
   Confirm their exact paths, order, and unrelated settings remain unchanged.
+  Confirm each recognized warning states that registration is not evidence the
+  integration is loaded, running, or publishing and that LTB will not modify
+  the registration.
 - [ ] After default Stop/exit cleanup, press **Start** with SteamVR stopped,
   confirm `driver_ltb` is re-registered from the exact staged root, restart
   SteamVR once when requested, and verify the exact two staged-build
@@ -263,7 +276,9 @@ still does not replace the connected-hardware gates.
   creation time from the retained schema-3 profile evidence.
 - [ ] For each full-6DoF result, also record position RMS in millimeters and
   translation condition number. Confirm full 6DoF is not reported without
-  both metrics.
+  both metrics. Confirm `19.999 mm` is below the operator recapture boundary
+  while `20.000 mm` and `20.001 mm` plainly say the hand is worth recapturing
+  before headset use.
 - [ ] Produce missing/unreliable Meta position or poor translation
   observability and confirm a valid result selects rotation-only with zero
   translation and a direct reason rather than claiming full 6DoF.
@@ -274,6 +289,11 @@ still does not replace the connected-hardware gates.
   schema-3 profiles are reused with their original selected mode, lag, quality,
   tracker identity, and `ltb_touch` driver profile. For a schema-2 fixture,
   confirm identity adjustment evidence and byte-for-byte no-rewrite reuse.
+  Confirm stored per-hand quality is prominent before headset use, a lever-arm
+  magnitude difference of `19.999 mm` is below the material boundary while
+  `20.000 mm` and `20.001 mm` are material, mirrored equal-magnitude mounts do
+  not trigger it, and rotation-only/missing metrics say insufficient rather
+  than poor.
 - [ ] Move or swap a mount, stop the session, and press **Calibrate /
   Recalibrate** with the two mounted trackers and three unrelated trackers
   connected; confirm both hands are captured instead of reusing the saved pair,
@@ -297,12 +317,16 @@ still does not replace the connected-hardware gates.
 - [ ] Edit noncommuting per-hand tracker-side and controller-side trim in
   millimeters/degrees and confirm the live pose plus rotating lever-arm linear
   velocity change from one coherent effective-transform snapshot, with no
-  torn generation or discontinuity.
+  torn generation or discontinuity. Queue delayed A/B/C edits and confirm
+  immutable request values apply in exact order with no lossy coalescing, and
+  every acknowledgement or error remains attributable.
 - [ ] Confirm unsaved trim remains visibly dirty and survives unrelated
   same-revision status updates without changing profile bytes. Press **Save**,
   restart LTB, and confirm schema-3 persistence and the exact effective
   transform; separately confirm normal schema-2 reuse stays identity and
-  byte-exact until Save.
+  byte-exact until Save. Interleave delayed edits, **Save**, **Revert
+  unsaved**, and per-slot **Reset**; confirm exact order, newer-edit dirty
+  state after an older save, and revert-to-the-captured-saved-values semantics.
 - [ ] In separate controlled runs, confirm **Stop**, desktop window close, and
   activation failure restore both exact original tracker-role entries and
   leave unrelated roles/settings unchanged.
@@ -310,11 +334,16 @@ still does not replace the connected-hardware gates.
   and confirm startup processes the durable owned receipt and restores the
   exact original settings before a new activation. Also exercise the
   restore-completed/receipt-delete crash window and confirm startup clears the
-  already-restored receipt safely.
+  already-restored receipt safely. Confirm recognized recovery candidates are
+  shown only as path/sequence/byte-length/UTC metadata, no content is read, and
+  no automatic restore is offered.
 - [ ] Force settings to differ from the transaction-owned neutral post-image
   and confirm automatic recovery refuses to overwrite the external writer,
   retains the receipt, and keeps an explicit visible restore-failure warning
   through generic stopped/status updates until successful restore/recovery.
+  Change and remove the exact receipt-bound tracker-role entries and confirm
+  the GUI reports exact-path drift read-only without rewriting, restoring, or
+  re-neutralizing either role.
 - [ ] Run left-only and right-only calibration separately. For each, confirm
   only the requested hand is captured and committed, a new selected hand need
   not have a prior profile, and the retained opposite profile plus unrelated
@@ -358,8 +387,10 @@ still does not replace the connected-hardware gates.
   separate runs. Confirm bounded cleanup, neutral output, retired runtime
   resources, and no reuse of the stopped session.
 - [ ] Close the desktop window during readiness waiting, calibration, and
-  active use in separate runs. Confirm close waits for the same fail-safe stop
-  before the process exits and leaves no frozen controller state.
+  active use in separate runs. Repeatedly request close and confirm one
+  cancel-first cleanup attempt, no Start/close deadlock, UI-thread
+  notifications and final close, and fail-open process exit after forced
+  cleanup or placement-save failure, with no frozen controller state.
 - [ ] Terminate the process without managed cleanup in a controlled non-worn
   test and confirm the driver watchdog neutralizes stale state within its
   bound. Record that the process made no false clean-stop claim.
@@ -369,7 +400,11 @@ still does not replace the connected-hardware gates.
 - [ ] With Bigscreen Beyond 2/2e, Quest 2 through official Meta Horizon Link,
   Quest 2 Touch controllers, two rigidly mounted Vive Trackers, and Lighthouse
   base stations, complete registration, restart, two-hand calibration, feed
-  start, active use, and clean stop through `Ltb.Gui.exe` only.
+  start, active use, and clean stop through `Ltb.Gui.exe` only. Verify first
+  paint, ordered onboarding and pre-press gates, immediate Start/state/Stop,
+  normalized placement after monitor/DPI changes, keyboard/screen-reader
+  accessibility, and opt-in diagnostics capped at `10 Hz` with exactly `600`
+  retained samples and gaps for unavailable evidence.
 - [ ] Confirm Beyond remains the sole SteamVR HMD throughout and Quest/Meta
   devices never appear as a second HMD or native SteamVR controller provider.
 - [ ] Verify static alignment at varied yaw, pitch, and roll for both hands and

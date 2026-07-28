@@ -9,6 +9,14 @@
 > Use [First-party internal driver operations](internal-drivers.md) and the
 > [Windows internal-driver checklist](windows-internal-driver-verification.md)
 > for the current path.
+>
+> The current desktop requires no ALVR/VMT/`TrackingOverrides` setup. Its
+> stopped evidence panel is read-only for unrelated registrations, recognized
+> recovery-backup metadata, and exact-path role drift; it does not remove an
+> external registration, read or restore backup contents, or rewrite tracker
+> roles. A missing or pending exact tracker-path observation is remediated by
+> one normal live first-party session, not by any command in this legacy
+> reference.
 
 ## Version 0.1 support boundary
 

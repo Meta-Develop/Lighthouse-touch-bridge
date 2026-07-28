@@ -79,6 +79,10 @@ X_eff = A_tracker * X_mount * A_controller
 T_output(t) = T_tracker(t) * X_eff
 ```
 
+`CoordinateConventions.RuntimeCompositionEquation` remains the public
+machine-readable name for this equation; UI and documentation work must not
+replace or reinterpret that compatibility surface.
+
 The hot loop reads one immutable effective-mount snapshot for both pose
 composition and the rotating lever-arm contribution to linear velocity.
 Consequently a live edit cannot mix an old pose transform with a new velocity
@@ -112,7 +116,12 @@ of schema-2 or schema-3 calibration profiles.
 With a manual binding, correlation becomes verification only. It reports
 agreement or a correction candidate, and the owner explicitly accepts the
 correction or retains the manual pair. Without a binding, the existing
-automatic association remains authoritative.
+automatic association remains authoritative. Verification evidence is bound
+to both exact serial values and the SHA-256 generation of the authoritative
+`internal-driver.json` bytes. Refreshing pre-session state always clears a
+pending GUI decision. A changed value or generation before commit also clears
+the decision, reloads the newer settings, and requires refresh plus a new
+motion-verification run; the stale decision never overwrites the newer file.
 
 Manual-binding neutralization is a pre-session gate. Both `vrserver` and
 `vrmonitor` must be stopped. Exactly two tracker roles may be changed only
@@ -121,13 +130,20 @@ with explicit provenance and freshness, proves the selected serial-to-live-
 registered-path relationships. Paired `config.json` supplies serial/model
 evidence only; it cannot authorize a write, cannot justify
 `/devices/lighthouse/<serial>` synthesis, and does not support an invented
-cache. The current App lacks that offline path authority and therefore exposes
-a typed unresolved state and blocks before any `steamvr.vrsettings` mutation.
+cache. A normal live LTB session records the exact OpenVR paths before any
+tracker-role mutation or feed creation. The bounded store retains the current
+path, last-observed UTC, and prior-path history for each serial. An interrupted
+path replacement leaves a pending marker: pre-session presentation may show
+the last committed values as evidence, but those values grant no mutation
+authority until one complete newer normal live observation reconciles them.
+Missing, malformed, ambiguous, or pending evidence produces a typed unresolved
+state and blocks before any `steamvr.vrsettings` mutation.
 
-After that evidence gap is closed, the backend transaction atomically changes
-only the two proven tracker paths to `TrackerRole_None`, records a durable
-receipt before mutation, and restores on Stop, disposal, window close,
-activation failure, or runtime recovery. Automatic crash recovery proceeds
+When preflight accepts this exact current evidence, the backend transaction
+atomically changes only the two proven tracker paths to `TrackerRole_None`,
+records a durable receipt before mutation, and restores on Stop, disposal,
+window close, activation failure, or runtime recovery. Automatic crash
+recovery proceeds
 only when current settings match the transaction-owned post-image and one
 unambiguous owned backup matches the captured original; an external writer is
 preserved and reported as an explicit restore failure. `TrackerRole_None`
@@ -145,6 +161,34 @@ takes effect only after restart and never claims already-published devices
 disappeared live. The next Start re-registers `driver_ltb` and may require one
 restart. `01spacecalibrator`, `bigscreenbeyond`, `vmt`, `alvr_server`, and all
 other unrelated external drivers remain outside this transaction.
+
+The same stopped refresh presents four read-only evidence surfaces. Typed
+warnings identify recognized unrelated registrations and state explicitly that
+registration does not prove an integration is loaded, running, or publishing;
+LTB never modifies them. Recovery discovery lists only recognized sibling
+backup metadata (path, sequence, byte length, and UTC write time); it does not
+read backup contents or restore automatically. Tracker-role drift compares the
+exact two receipt-bound paths and never rewrites, restores, or re-neutralizes a
+role. Stored-profile quality assesses the selected pair before headset use:
+full-6DoF position RMS at or above `20 mm` recommends recapture, a lever-arm
+magnitude difference at or above `20 mm` is material, and rotation-only or
+absent position evidence is insufficient rather than poor.
+
+`Ltb.Gui` keeps Start, state, and Stop on the immediate path. Snapshot
+presentation and every property/collection notification are dispatched to the
+Avalonia UI thread without making lifecycle cleanup wait on UI work. Window
+close is a single-flight, cancel-first handshake: fail-safe cleanup is
+attempted once, placement persistence is best effort, and either failure still
+allows the final UI-thread close. Diagnostic history is opt-in, samples no
+faster than `10 Hz`, retains exactly the newest `600` samples, and consumes
+only the same typed snapshots as the normal UI.
+
+Mount mutations are not coalesced. Every edit captures an immutable revision,
+hand, and adjustment value when queued; live apply, **Save**, **Revert
+unsaved**, and individual-slot **Reset** execute in exact request order.
+Each request retains its own acknowledgement or error, newer edits keep dirty
+state after an older save, and revert uses the last saved values captured when
+the request was made.
 
 Stopped-state calibration intent is explicit for left, right, or both hands.
 A selected-hand run needs one reusable opposite-hand profile but does not need

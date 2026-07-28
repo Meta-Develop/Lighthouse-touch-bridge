@@ -281,6 +281,23 @@ profile reuse therefore reports only persisted schema fields and never copies
 RMS or the one persisted inlier ratio into missing percentile or
 separate-inlier fields.
 
+The desktop shows both stored and newly completed per-hand quality before
+headset use. This presentation guidance does not change solver thresholds,
+model selection, or profile validity:
+
+- a full-6DoF hand with position RMS below `20 mm` is below the recapture
+  guidance boundary;
+- a full-6DoF hand with position RMS at or above `20 mm` is plainly described
+  as worth recapturing;
+- a stored left/right pair whose lever-arm magnitudes differ by at least
+  `20 mm` is materially different and should be inspected; and
+- rotation-only or absent position metrics provide insufficient position or
+  lever-arm evidence, not evidence of poor calibration.
+
+The lever-arm comparison uses magnitudes rather than vector direction, so
+mirrored equal-magnitude mounts do not trigger the material-difference
+guidance. The exact `20 mm` boundaries are inclusive.
+
 ### Manual binding and correlation verification
 
 The owner may choose one complete left/right tracker pair while the desktop is
@@ -306,6 +323,13 @@ assignment automatically:
   manual pair; and
 - failed correlation leaves a valid manual pair unchanged and reports that it
   could not be verified.
+
+Production verification records the SHA-256 generation of the authoritative
+settings bytes together with the exact left/right values. Any stopped-state
+refresh clears the pending GUI decision. If either value or generation changes
+before the explicit decision commits, LTB reloads the newer settings, writes
+nothing, clears the pending choice, and requires a new refresh and
+motion-verification run. A stale decision is never retried automatically.
 
 With no manual binding, `TrackerHandAssociator` retains the existing automatic
 one-to-one association and ambiguity gates.

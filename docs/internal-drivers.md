@@ -75,15 +75,33 @@ Before pressing **Start**:
    prompt so the left/right correlation pair is unambiguous.
 7. Run `Ltb.Gui.exe` from the complete extracted package and press **Start**.
 
-A manual binding currently cannot pass the next preflight stage. Paired
-`config.json` proves the selected uppercase serial and model, but it does not
-prove the live registered-device path/key SteamVR uses in its tracker-role
-settings. LTB reports this typed unresolved state and performs no
-`steamvr.vrsettings` write. The exact lowercase `lighthouse` directory is
-paired-device enumeration evidence only; LTB does not treat it as
-registered-path evidence, synthesize `/devices/lighthouse/<serial>`, or invent
-a serial/path cache. The required Windows evidence is described in the
-verification checklist.
+A manual binding passes exact-path preflight only after one normal live LTB
+session has observed and durably recorded the selected serial-to-OpenVR-path
+pair. Paired `config.json` proves the selected uppercase serial and model, but
+it does not prove the live registered-device path/key SteamVR uses in its
+tracker-role settings. The exact lowercase `lighthouse` directory remains
+paired-device enumeration evidence only; LTB never derives
+`/devices/lighthouse/<serial>` or treats prior history as the current path.
+When current evidence is missing, malformed, ambiguous, or guarded by a
+pending path-change marker, LTB reports a typed unresolved state and performs
+no `steamvr.vrsettings` write. Clear the manual binding to run one normal
+automatic-association session, then stop SteamVR, refresh, review the recorded
+current/history evidence, restore the intended manual pair, and retry.
+
+The stopped evidence panel shows the exact current path and bounded prior-path
+history with UTC provenance for every stored serial. If a path replacement was
+interrupted, the last committed values are shown only as read-only history and
+**Pending reconciliation** is `yes`; they cannot authorize neutralization
+until a complete newer normal live observation reconciles the marker.
+
+Refresh also presents typed recognized external-registration warnings.
+Registration alone is not evidence that an integration is loaded, running, or
+publishing, and LTB will not modify the registration. Recognized
+`steamvr.vrsettings` backup candidates are presented by path, sequence, byte
+length, and UTC write time only. The panel never reads backup contents and
+never restores one automatically. When a retained role-neutralization receipt
+exists, exact-path tracker-role drift is reported read-only; LTB does not
+rewrite, restore, or re-neutralize a drifted role from that report.
 
 Once both LTB controllers are ready, the physical left Touch Menu button opens
 and closes the SteamVR dashboard through OpenVR's reserved system input. VRChat
@@ -117,6 +135,13 @@ correction candidate; the owner must accept that correction or explicitly
 retain the manual pair. Correlation never silently swaps a saved pair. With no
 manual binding, existing automatic association remains unchanged.
 
+The pending decision is bound to the exact pair and SHA-256 generation of the
+authoritative settings bytes. Pressing **Refresh** clears the decision even
+when the same pair remains selected. A value or generation change before
+commit also clears it, reloads the newer settings, and requires refresh plus a
+new motion-verification run. LTB never overwrites newer settings or retries a
+stale decision automatically.
+
 Explicit recalibration stages both hand results against a private copy of the
 profile store. Cancellation and canonical commit share one explicit decision
 boundary after both hands validate: cancellation that wins before that boundary
@@ -136,6 +161,12 @@ the profile store changes only after **Save** succeeds. Saving upgrades the
 active schema-2 pair to schema 3; a failed Save does not relabel the current
 live/saved snapshot.
 
+Every edit captures its immutable revision, hand, and value before entering
+one exact-order mutation queue. Live apply, **Save**, **Revert unsaved**, and
+per-slot **Reset** are not lossy-coalesced: earlier errors remain attributable,
+newer edits remain dirty after an older save, and revert uses the last saved
+values captured when it was requested.
+
 While stopped, the panel can request left-only, right-only, or both-hand
 calibration. A selected-hand run requires one reusable opposite-hand profile
 but no prior profile for the selected hand. It captures only the requested
@@ -148,11 +179,26 @@ log is the durable evidence surface for exact staged/loaded identities, stable
 HMD metadata, per-hand capture measurements, selected calibration mode and
 reason, lag, and quality metrics.
 
-Use **Stop** before changing runtime or hardware state. Closing the window also
-requests the same bounded fail-safe stop and waits for session cleanup. A
-stopped or closed session is never reused; the next **Start** creates a new
-session. **Calibrate / Recalibrate** is available only while stopped and cannot
-overlap Start, driver removal, or window close.
+Before headset use, the pinned quality panel shows the stored selected pair and
+any newly completed per-hand results. A full-6DoF position RMS at or above
+`20 mm` plainly says that hand is worth recapturing. A stored pair with a
+lever-arm magnitude difference at or above `20 mm` is material. Rotation-only
+or missing position metrics are insufficient position or lever-arm evidence,
+not poor calibration.
+
+The normal Start/state/Stop path remains immediate. Detailed diagnostics are
+disabled by default; when explicitly enabled they consume only normal typed
+snapshots, sample at no more than `10 Hz`, and retain a fixed `600`-sample
+ring. Gaps remain unavailable evidence rather than interpolated values.
+
+Use **Stop** before changing runtime or hardware state. Closing the window uses
+one cancel-first, single-flight request for the same bounded fail-safe stop.
+Cleanup is attempted once; best-effort placement persistence or cleanup
+failure cannot trap the process, and final close plus all view-model
+notifications are dispatched on the Avalonia UI thread. A stopped or closed
+session is never reused; the next **Start** creates a new session.
+**Calibrate / Recalibrate** is available only while stopped and cannot overlap
+Start, driver removal, or window close.
 
 ## Automatic paths
 
@@ -166,6 +212,7 @@ fields. From a packaged build, the default paths are:
 | Calibration profiles | `%LOCALAPPDATA%\LighthouseTouchBridge\profiles\calibration-profiles.json` |
 | Registration receipts | `%LOCALAPPDATA%\LighthouseTouchBridge\driver\registration-receipts.json` |
 | Tracker-role recovery receipt | `%LOCALAPPDATA%\LighthouseTouchBridge\driver\tracker-role-recovery.json` |
+| Live tracker-path observations | `%LOCALAPPDATA%\LighthouseTouchBridge\settings\tracker-path-observations.json` |
 | Structured log | `%LOCALAPPDATA%\LighthouseTouchBridge\logs\internal-driver.jsonl` |
 
 `manual_tracker_binding` and `unregister_on_exit` live only in the settings
@@ -374,10 +421,13 @@ For a saved manual binding, this transaction is a pre-session operation. Both
 registered paths only after each uppercase bound serial's serial-to-live-path
 relationship is proven by an authoritative live descriptor or equally strong
 stored evidence with explicit provenance and defensible freshness. Paired
-`lighthouse/*/config.json` alone is insufficient. The current application has
-no such offline authority, so it fails closed before any tracker-role write.
-It never constructs a path from a serial or driver name and has no unproven
-cache.
+`lighthouse/*/config.json` alone is insufficient. One normal live LTB session
+records the selected pair's exact OpenVR paths before tracker-role mutation or
+feed creation; a later stopped preflight accepts only one complete distinct
+current pair from that bounded durable evidence. Missing, malformed,
+ambiguous, or pending-reconciliation evidence fails closed before any
+tracker-role write. LTB never constructs a path from a serial or driver name,
+never substitutes prior-path history, and has no unproven cache.
 
 Valve's documented tracker-role list does not include `TrackerRole_None`. The
 neutral value is supported here by observed deployed-configuration evidence:
