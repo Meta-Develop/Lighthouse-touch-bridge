@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Ltb.Configuration;
 using Ltb.Core;
 
 namespace Ltb.Configuration.Tests;
@@ -444,6 +445,228 @@ public sealed class CalibrationProfilePersistenceTests
         Assert.Equal("CTRL-TEST0001", loaded.ControllerIdentity);
         Assert.Null(loaded.Quality.PositionRmsMillimeters);
         Assert.Null(loaded.Quality.TranslationCondition);
+    }
+
+    [Theory]
+    [InlineData(19.999d, StoredCalibrationPositionGuidance.WithinOperationalGuidance, false)]
+    [InlineData(20d, StoredCalibrationPositionGuidance.RecaptureRecommended, true)]
+    [InlineData(20.001d, StoredCalibrationPositionGuidance.RecaptureRecommended, true)]
+    public void FullSixDofStoredQualityUsesConservativeTwentyMillimeterGuidance(
+        double positionRmsMillimeters,
+        StoredCalibrationPositionGuidance expectedGuidance,
+        bool expectedRecaptureRecommendation)
+    {
+        var profile = Profile(positionRmsMillimeters: positionRmsMillimeters);
+        var originalJson = CalibrationProfileJson.SerializeProfile(profile);
+
+        var assessment = StoredCalibrationProfileQualityAssessor.Assess(profile);
+
+        Assert.Equal(ControllerHand.Left, assessment.Hand);
+        Assert.Equal(ProfileCalibrationMode.FullSixDof, assessment.SelectedMode);
+        Assert.Equal(expectedGuidance, assessment.PositionGuidance);
+        Assert.Equal(positionRmsMillimeters, assessment.PositionRmsMillimeters);
+        Assert.Equal(expectedRecaptureRecommendation, assessment.RecaptureRecommended);
+        Assert.Equal(
+            20d,
+            StoredCalibrationProfileQualityAssessor.PositionRmsRecaptureGuidanceMillimeters);
+        Assert.Equal(originalJson, CalibrationProfileJson.SerializeProfile(profile));
+    }
+
+    [Fact]
+    public void RotationOnlyAndSchemaLimitedMissingPositionEvidenceRemainInsufficientNotBad()
+    {
+        var current = Profile(
+            mode: ProfileCalibrationMode.RotationOnly,
+            positionRmsMillimeters: null,
+            translationCondition: null);
+        var legacy = LegacyProfile();
+
+        foreach (var profile in new[] { current, legacy })
+        {
+            var assessment = StoredCalibrationProfileQualityAssessor.Assess(profile);
+
+            Assert.Equal(ProfileCalibrationMode.RotationOnly, assessment.SelectedMode);
+            Assert.Equal(
+                StoredCalibrationPositionGuidance.InsufficientEvidence,
+                assessment.PositionGuidance);
+            Assert.Null(assessment.PositionRmsMillimeters);
+            Assert.False(assessment.RecaptureRecommended);
+            Assert.Equal(0d, assessment.LeverArmMagnitudeMillimeters);
+        }
+
+        var rotationOnlyWithPersistedPositionEvidence = Profile(
+            mode: ProfileCalibrationMode.RotationOnly,
+            positionRmsMillimeters: 25d,
+            translationCondition: null);
+        var evidenceAssessment = StoredCalibrationProfileQualityAssessor.Assess(
+            rotationOnlyWithPersistedPositionEvidence);
+
+        Assert.Equal(
+            StoredCalibrationPositionGuidance.InsufficientEvidence,
+            evidenceAssessment.PositionGuidance);
+        Assert.Equal(25d, evidenceAssessment.PositionRmsMillimeters);
+        Assert.False(evidenceAssessment.RecaptureRecommended);
+    }
+
+    [Fact]
+    public void StoredQualityAssessmentPreservesSchemaTwoAndMigrationRoundTripBytes()
+    {
+        var schemaTwo = Profile(
+            schemaVersion: CalibrationProfileSchema.DriverProfileVersion,
+            positionRmsMillimeters: 20d);
+        var schemaTwoJson = CalibrationProfileJson.SerializeProfile(schemaTwo);
+        var reloadedSchemaTwo = CalibrationProfileJson.DeserializeProfile(schemaTwoJson);
+
+        var schemaTwoAssessment = StoredCalibrationProfileQualityAssessor.Assess(
+            reloadedSchemaTwo);
+
+        Assert.Equal(
+            StoredCalibrationPositionGuidance.RecaptureRecommended,
+            schemaTwoAssessment.PositionGuidance);
+        Assert.Equal(schemaTwoJson, CalibrationProfileJson.SerializeProfile(reloadedSchemaTwo));
+        Assert.DoesNotContain("\"mount_adjustment\"", schemaTwoJson, StringComparison.Ordinal);
+
+        var legacy = LegacyProfile();
+        var legacyJson = CalibrationProfileJson.SerializeProfile(legacy);
+        var migration = CalibrationProfileMigration.MigrateLegacyProfile(
+            legacy,
+            new CalibrationProfileTargetIdentity(
+                CalibrationDriverProfiles.LtbTouch,
+                ControllerRuntimeIdentities.LegacyAlvr,
+                "Quest 2 Touch",
+                "CTRL-TEST0001"));
+
+        var migratedAssessment = StoredCalibrationProfileQualityAssessor.Assess(
+            migration.MigratedProfile);
+
+        Assert.Equal(
+            StoredCalibrationPositionGuidance.InsufficientEvidence,
+            migratedAssessment.PositionGuidance);
+        Assert.Equal(legacyJson, CalibrationProfileJson.SerializeProfile(legacy));
+        Assert.Same(legacy, migration.Revert());
+        Assert.Equal(
+            CalibrationProfileJson.SerializeProfile(migration.MigratedProfile),
+            CalibrationProfileJson.SerializeProfile(
+                CalibrationProfileJson.DeserializeProfile(
+                    CalibrationProfileJson.SerializeProfile(migration.MigratedProfile))));
+    }
+
+    [Theory]
+    [InlineData(19.999d, StoredCalibrationLeverArmGuidance.WithinOperationalGuidance, false)]
+    [InlineData(20d, StoredCalibrationLeverArmGuidance.MaterialMagnitudeDisagreement, true)]
+    [InlineData(20.001d, StoredCalibrationLeverArmGuidance.MaterialMagnitudeDisagreement, true)]
+    public void PairAssessmentReportsLeverArmMagnitudeDisagreementAtBoundary(
+        double rightLeverArmMillimeters,
+        StoredCalibrationLeverArmGuidance expectedGuidance,
+        bool expectedMaterialDisagreement)
+    {
+        var left = Profile(
+            ControllerHand.Left,
+            "LHR-TEST0001",
+            translationMeters: Vector3.Zero);
+        var right = Profile(
+            ControllerHand.Right,
+            "LHR-TEST0002",
+            translationMeters: new Vector3(
+                -(float)(rightLeverArmMillimeters / 1000d),
+                0f,
+                0f));
+
+        var assessment = StoredCalibrationProfileQualityAssessor.AssessPair(left, right);
+
+        Assert.Equal(expectedGuidance, assessment.LeverArmGuidance);
+        Assert.Equal(expectedMaterialDisagreement, assessment.HasMaterialLeverArmDisagreement);
+        Assert.NotNull(assessment.LeverArmMagnitudeDifferenceMillimeters);
+        Assert.Equal(
+            rightLeverArmMillimeters,
+            assessment.LeverArmMagnitudeDifferenceMillimeters!.Value,
+            precision: 3);
+        Assert.Equal(
+            20d,
+            StoredCalibrationProfileQualityAssessor
+                .MaterialLeverArmMagnitudeDifferenceMillimeters);
+    }
+
+    [Fact]
+    public void PairAssessmentComparesMagnitudesRatherThanMirroredDirections()
+    {
+        var left = Profile(
+            ControllerHand.Left,
+            "LHR-TEST0001",
+            translationMeters: new Vector3(0.04f, 0f, 0f));
+        var right = Profile(
+            ControllerHand.Right,
+            "LHR-TEST0002",
+            translationMeters: new Vector3(-0.04f, 0f, 0f));
+
+        var assessment = StoredCalibrationProfileQualityAssessor.AssessPair(left, right);
+
+        Assert.Equal(
+            StoredCalibrationLeverArmGuidance.WithinOperationalGuidance,
+            assessment.LeverArmGuidance);
+        Assert.Equal(0d, assessment.LeverArmMagnitudeDifferenceMillimeters!.Value);
+        Assert.False(assessment.HasMaterialLeverArmDisagreement);
+    }
+
+    [Fact]
+    public void PairAssessmentDeclinesLeverArmComparisonForRotationOnlyProfiles()
+    {
+        var left = Profile(
+            ControllerHand.Left,
+            "LHR-TEST0001",
+            mode: ProfileCalibrationMode.RotationOnly,
+            positionRmsMillimeters: null,
+            translationCondition: null);
+        var right = Profile(ControllerHand.Right, "LHR-TEST0002");
+
+        var assessment = StoredCalibrationProfileQualityAssessor.AssessPair(left, right);
+
+        Assert.Equal(
+            StoredCalibrationLeverArmGuidance.InsufficientEvidence,
+            assessment.LeverArmGuidance);
+        Assert.Null(assessment.LeverArmMagnitudeDifferenceMillimeters);
+        Assert.False(assessment.HasMaterialLeverArmDisagreement);
+        Assert.False(assessment.Left.RecaptureRecommended);
+    }
+
+    [Fact]
+    public void PairAssessmentRejectsHandTrackerAndControllerContractMismatches()
+    {
+        var left = Profile(ControllerHand.Left, "LHR-TEST0001");
+        var right = Profile(ControllerHand.Right, "LHR-TEST0002");
+
+        Assert.Equal(
+            "leftProfile",
+            Assert.Throws<ArgumentException>(() =>
+                StoredCalibrationProfileQualityAssessor.AssessPair(right, left)).ParamName);
+        Assert.Equal(
+            "rightProfile",
+            Assert.Throws<ArgumentException>(() =>
+                StoredCalibrationProfileQualityAssessor.AssessPair(left, left)).ParamName);
+        Assert.Equal(
+            "rightProfile",
+            Assert.Throws<ArgumentException>(() =>
+                StoredCalibrationProfileQualityAssessor.AssessPair(
+                    left,
+                    Profile(ControllerHand.Right, "LHR-TEST0001"))).ParamName);
+        Assert.Equal(
+            "rightProfile",
+            Assert.Throws<ArgumentException>(() =>
+                StoredCalibrationProfileQualityAssessor.AssessPair(
+                    left,
+                    Profile(
+                        ControllerHand.Right,
+                        "LHR-TEST0002",
+                        controllerRuntime: "Different runtime"))).ParamName);
+        Assert.Equal(
+            "rightProfile",
+            Assert.Throws<ArgumentException>(() =>
+                StoredCalibrationProfileQualityAssessor.AssessPair(
+                    left,
+                    Profile(
+                        ControllerHand.Right,
+                        "LHR-TEST0002",
+                        controllerModel: "Different controller model"))).ParamName);
     }
 
     [Theory]

@@ -159,6 +159,255 @@ public sealed record CalibrationProfileQuality
 }
 
 /// <summary>
+/// Operational guidance derived from the persisted position evidence for one
+/// stored profile. This is presentation guidance, not a solver acceptance
+/// result or an automatic recalibration trigger.
+/// </summary>
+public enum StoredCalibrationPositionGuidance
+{
+    WithinOperationalGuidance,
+    RecaptureRecommended,
+    InsufficientEvidence,
+}
+
+/// <summary>
+/// Operational guidance from comparing the magnitudes of two calibrated
+/// tracker-to-controller lever arms.
+/// </summary>
+public enum StoredCalibrationLeverArmGuidance
+{
+    WithinOperationalGuidance,
+    MaterialMagnitudeDisagreement,
+    InsufficientEvidence,
+}
+
+/// <summary>
+/// Read-only stored-profile quality guidance for one hand.
+/// </summary>
+public sealed record StoredCalibrationProfileAssessment
+{
+    internal StoredCalibrationProfileAssessment(
+        ControllerHand hand,
+        ProfileCalibrationMode selectedMode,
+        StoredCalibrationPositionGuidance positionGuidance,
+        double? positionRmsMillimeters,
+        double leverArmMagnitudeMillimeters)
+    {
+        Hand = hand;
+        SelectedMode = selectedMode;
+        PositionGuidance = positionGuidance;
+        PositionRmsMillimeters = positionRmsMillimeters;
+        LeverArmMagnitudeMillimeters = leverArmMagnitudeMillimeters;
+    }
+
+    public ControllerHand Hand { get; }
+
+    public ProfileCalibrationMode SelectedMode { get; }
+
+    public StoredCalibrationPositionGuidance PositionGuidance { get; }
+
+    public double? PositionRmsMillimeters { get; }
+
+    /// <summary>
+    /// Magnitude of the calibrated <c>T_T_C</c> translation in millimeters.
+    /// Direction is deliberately not projected into another hand's mount frame.
+    /// </summary>
+    public double LeverArmMagnitudeMillimeters { get; }
+
+    public bool RecaptureRecommended =>
+        PositionGuidance == StoredCalibrationPositionGuidance.RecaptureRecommended;
+}
+
+/// <summary>
+/// Read-only quality guidance for an already selected left/right profile pair.
+/// This result does not select, replace, invalidate, or authorize reuse of
+/// either profile.
+/// </summary>
+public sealed record StoredCalibrationProfilePairAssessment
+{
+    internal StoredCalibrationProfilePairAssessment(
+        StoredCalibrationProfileAssessment left,
+        StoredCalibrationProfileAssessment right,
+        StoredCalibrationLeverArmGuidance leverArmGuidance,
+        double? leverArmMagnitudeDifferenceMillimeters)
+    {
+        Left = left;
+        Right = right;
+        LeverArmGuidance = leverArmGuidance;
+        LeverArmMagnitudeDifferenceMillimeters = leverArmMagnitudeDifferenceMillimeters;
+    }
+
+    public StoredCalibrationProfileAssessment Left { get; }
+
+    public StoredCalibrationProfileAssessment Right { get; }
+
+    public StoredCalibrationLeverArmGuidance LeverArmGuidance { get; }
+
+    /// <summary>
+    /// Absolute difference between left and right calibrated lever-arm
+    /// magnitudes in millimeters, or <see langword="null"/> when either profile
+    /// is rotation-only and therefore stores zero translation by convention
+    /// rather than a measured lever arm.
+    /// </summary>
+    public double? LeverArmMagnitudeDifferenceMillimeters { get; }
+
+    public bool HasMaterialLeverArmDisagreement =>
+        LeverArmGuidance == StoredCalibrationLeverArmGuidance.MaterialMagnitudeDisagreement;
+}
+
+/// <summary>
+/// Derives conservative, read-only operational guidance from already persisted
+/// calibration profiles without changing profile bytes, solver thresholds, or
+/// recalibration state.
+/// </summary>
+public static class StoredCalibrationProfileQualityAssessor
+{
+    private const double MillimeterComparisonTolerance = 1e-6d;
+
+    /// <summary>
+    /// A full-6DoF profile at or above 20 mm held-out position RMS is worth
+    /// recapturing. This deliberately conservative presentation threshold is
+    /// half the solver's initial configurable 40 mm maximum. It is operational
+    /// guidance only, not hardware-tuned acceptance evidence.
+    /// </summary>
+    public const double PositionRmsRecaptureGuidanceMillimeters = 20d;
+
+    /// <summary>
+    /// A 20 mm or greater difference between left and right calibrated
+    /// lever-arm magnitudes is material enough to present for inspection.
+    /// This is four times the solver's initial configurable 5 mm within-hand
+    /// split-stability gate, so it is not intended to amplify ordinary fit
+    /// jitter. It is not a symmetry requirement or hardware-tuned acceptance
+    /// threshold.
+    /// </summary>
+    public const double MaterialLeverArmMagnitudeDifferenceMillimeters = 20d;
+
+    /// <summary>
+    /// Assesses one stored profile. The position-RMS recapture guidance applies
+    /// only to full-6DoF profiles. Rotation-only profiles report insufficient
+    /// position evidence instead of being labeled poor because their zero
+    /// translation and optional missing position RMS are valid model semantics.
+    /// </summary>
+    public static StoredCalibrationProfileAssessment Assess(CalibrationProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        var positionGuidance = profile.SelectedMode switch
+        {
+            ProfileCalibrationMode.FullSixDof
+                when profile.Quality.PositionRmsMillimeters is { } positionRms =>
+                positionRms >= PositionRmsRecaptureGuidanceMillimeters
+                    ? StoredCalibrationPositionGuidance.RecaptureRecommended
+                    : StoredCalibrationPositionGuidance.WithinOperationalGuidance,
+            ProfileCalibrationMode.FullSixDof =>
+                StoredCalibrationPositionGuidance.InsufficientEvidence,
+            ProfileCalibrationMode.RotationOnly =>
+                StoredCalibrationPositionGuidance.InsufficientEvidence,
+            _ => throw new InvalidOperationException(
+                $"Unsupported stored calibration mode '{profile.SelectedMode}'."),
+        };
+
+        return new StoredCalibrationProfileAssessment(
+            profile.Hand,
+            profile.SelectedMode,
+            positionGuidance,
+            profile.Quality.PositionRmsMillimeters,
+            profile.TrackerToController.TranslationMeters.Length() * 1000d);
+    }
+
+    /// <summary>
+    /// Assesses an already selected compatible left/right pair. Direction
+    /// vectors are never subtracted because the two tracker mount frames may be
+    /// mirrored or otherwise unrelated; only translation magnitudes are
+    /// compared. Both profiles must be full-6DoF before a lever-arm comparison
+    /// is meaningful.
+    /// </summary>
+    public static StoredCalibrationProfilePairAssessment AssessPair(
+        CalibrationProfile leftProfile,
+        CalibrationProfile rightProfile)
+    {
+        ArgumentNullException.ThrowIfNull(leftProfile);
+        ArgumentNullException.ThrowIfNull(rightProfile);
+
+        RequireCompatiblePair(leftProfile, rightProfile);
+
+        var left = Assess(leftProfile);
+        var right = Assess(rightProfile);
+        if (left.SelectedMode != ProfileCalibrationMode.FullSixDof ||
+            right.SelectedMode != ProfileCalibrationMode.FullSixDof)
+        {
+            return new StoredCalibrationProfilePairAssessment(
+                left,
+                right,
+                StoredCalibrationLeverArmGuidance.InsufficientEvidence,
+                leverArmMagnitudeDifferenceMillimeters: null);
+        }
+
+        var difference = Math.Abs(
+            left.LeverArmMagnitudeMillimeters - right.LeverArmMagnitudeMillimeters);
+        var guidance =
+            difference + MillimeterComparisonTolerance >=
+            MaterialLeverArmMagnitudeDifferenceMillimeters
+            ? StoredCalibrationLeverArmGuidance.MaterialMagnitudeDisagreement
+            : StoredCalibrationLeverArmGuidance.WithinOperationalGuidance;
+
+        return new StoredCalibrationProfilePairAssessment(
+            left,
+            right,
+            guidance,
+            difference);
+    }
+
+    private static void RequireCompatiblePair(
+        CalibrationProfile leftProfile,
+        CalibrationProfile rightProfile)
+    {
+        if (leftProfile.Hand != ControllerHand.Left)
+        {
+            throw new ArgumentException(
+                "The left profile must have the semantic left-hand identity.",
+                nameof(leftProfile));
+        }
+
+        if (rightProfile.Hand != ControllerHand.Right)
+        {
+            throw new ArgumentException(
+                "The right profile must have the semantic right-hand identity.",
+                nameof(rightProfile));
+        }
+
+        if (string.Equals(
+                leftProfile.TrackerSerial,
+                rightProfile.TrackerSerial,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "A left/right profile pair must use two distinct tracker identities.",
+                nameof(rightProfile));
+        }
+
+        if (!string.Equals(
+                leftProfile.DriverProfile,
+                rightProfile.DriverProfile,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                leftProfile.ControllerRuntime,
+                rightProfile.ControllerRuntime,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                leftProfile.ControllerModel,
+                rightProfile.ControllerModel,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "A left/right quality comparison requires compatible driver, " +
+                "controller-runtime, and controller-model identities.",
+                nameof(rightProfile));
+        }
+    }
+}
+
+/// <summary>
 /// One complete calibration profile. Candidate profiles are
 /// located by the exact <see cref="TrackerSerial"/> plus <see cref="Hand"/>
 /// pair, then checked against the currently observed controller runtime and
