@@ -121,6 +121,136 @@ public sealed class JsonLinesInternalDriverSessionOutputTests
     }
 
     [Fact]
+    public void VolatileWritesDoNotHideARevertedGenuineTransition()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "session.jsonl");
+        var baseline = ActiveSnapshot();
+        var changed = baseline with
+        {
+            Diagnostic = "The feed entered a distinct diagnostic state.",
+        };
+
+        using (var output = new JsonLinesInternalDriverSessionOutput(path))
+        {
+            output.Write(baseline);
+            output.Write(baseline with
+            {
+                Left = baseline.Left with { PoseAge = TimeSpan.FromMilliseconds(7) },
+            });
+            output.Write(changed);
+            output.Write(changed with
+            {
+                Feed = changed.Feed with
+                {
+                    LastSuccessfulSequence = 202,
+                    LastSuccessfulSendAge = TimeSpan.FromMilliseconds(4),
+                },
+            });
+            output.Write(baseline);
+        }
+
+        var diagnostics = File.ReadLines(path)
+            .Select(line =>
+            {
+                using var document = JsonDocument.Parse(line);
+                return document.RootElement.GetProperty("diagnostic").GetString();
+            })
+            .ToArray();
+        Assert.Equal(
+            [
+                baseline.Diagnostic,
+                changed.Diagnostic,
+                baseline.Diagnostic,
+            ],
+            diagnostics);
+    }
+
+    [Fact]
+    public void EveryTransitionKeyFieldAndItsReversionAreEmitted()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "session.jsonl");
+        var baseline = ActiveSnapshot();
+        var trackerPaths = new InternalDriverTrackerPath[]
+        {
+            new(ProtocolHand.Left, "TRACKER-LEFT", "/devices/TRACKER-LEFT"),
+            new(ProtocolHand.Right, "TRACKER-RIGHT", "/devices/TRACKER-RIGHT"),
+        };
+        var variants = new InternalDriverSessionSnapshot[]
+        {
+            baseline with { State = InternalDriverSessionState.Reconnecting },
+            baseline with
+            {
+                Readiness = baseline.Readiness with { FeedReady = false },
+            },
+            baseline with
+            {
+                Left = baseline.Left with { TrackerTracked = false },
+            },
+            baseline with
+            {
+                Right = baseline.Right with
+                {
+                    Diagnostic = "The right hand entered a distinct diagnostic state.",
+                },
+            },
+            baseline with
+            {
+                Feed = baseline.Feed with { ReconnectAttempts = 1 },
+            },
+            baseline with
+            {
+                Driver = new InternalDriverDriverEvidence("driver_ltb-other"),
+            },
+            baseline with
+            {
+                LighthouseHmd = new InternalDriverLighthouseHmdEvidence(
+                    "HMD-OTHER",
+                    "/devices/HMD-OTHER",
+                    "lighthouse",
+                    "vendor_tracking",
+                    "lighthouse",
+                    "Example",
+                    "Other Lighthouse HMD"),
+            },
+            baseline with
+            {
+                TrackerNeutralization = new InternalDriverTrackerNeutralizationSnapshot(
+                    InternalDriverTrackerNeutralizationState.Neutralizing,
+                    trackerPaths,
+                    BackendSnapshotId: null,
+                    "capturing exact tracker state",
+                    Array.Empty<string>()),
+            },
+            baseline with
+            {
+                ManualBindingVerification =
+                    new InternalDriverManualBindingVerificationEvidence(
+                        InternalDriverManualBindingVerificationState.Agreement,
+                        "TRACKER-LEFT",
+                        "TRACKER-RIGHT",
+                        "The manual binding agrees with correlation."),
+            },
+            baseline with { RestartRequired = true },
+            baseline with { Diagnostic = "A distinct session diagnostic." },
+            baseline with { Remediation = "A distinct session remediation." },
+        };
+
+        using (var output = new JsonLinesInternalDriverSessionOutput(path))
+        {
+            output.Write(baseline);
+            foreach (var variant in variants)
+            {
+                output.Write(variant);
+                output.Write(baseline);
+            }
+        }
+
+        Assert.Equal(1 + (2 * variants.Length), File.ReadAllLines(path).Length);
+    }
+
+    [Fact]
     public void RotationKeepsTheActiveFileAndOnlyTheConfiguredNumberOfArchives()
     {
         using var directory = new TemporaryDirectory();

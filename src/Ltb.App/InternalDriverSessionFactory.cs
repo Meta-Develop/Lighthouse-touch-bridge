@@ -1482,8 +1482,7 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            var transition = LogTransition.From(snapshot);
-            if (_lastTransition == transition)
+            if (_lastTransition?.Matches(snapshot) == true)
             {
                 return;
             }
@@ -1498,7 +1497,7 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
 
             _writer.WriteLine(json);
             _currentFileSizeBytes += recordSizeBytes;
-            _lastTransition = transition;
+            _lastTransition = LogTransition.From(snapshot);
         }
     }
 
@@ -1645,6 +1644,20 @@ internal sealed class JsonLinesInternalDriverSessionOutput : IInternalDriverSess
         string Diagnostic,
         string Remediation)
     {
+        public bool Matches(InternalDriverSessionSnapshot snapshot) =>
+            State == snapshot.State &&
+            Readiness == snapshot.Readiness &&
+            Left == HandTransition.From(snapshot.Left) &&
+            Right == HandTransition.From(snapshot.Right) &&
+            Feed == FeedTransition.From(snapshot.Feed) &&
+            Driver == snapshot.Driver &&
+            LighthouseHmd == snapshot.LighthouseHmd &&
+            TrackerNeutralization == snapshot.TrackerNeutralization &&
+            ManualBindingVerification == snapshot.ManualBindingVerification &&
+            RestartRequired == snapshot.RestartRequired &&
+            string.Equals(Diagnostic, snapshot.Diagnostic, StringComparison.Ordinal) &&
+            string.Equals(Remediation, snapshot.Remediation, StringComparison.Ordinal);
+
         public static LogTransition From(InternalDriverSessionSnapshot snapshot) => new(
             snapshot.State,
             snapshot.Readiness,
