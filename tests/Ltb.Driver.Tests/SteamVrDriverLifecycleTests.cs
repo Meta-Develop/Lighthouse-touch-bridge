@@ -200,11 +200,56 @@ public sealed class SteamVrDriverLifecycleTests
             inspection.State);
         Assert.Empty(inspection.CanonicalLtbDriverRoots);
         Assert.Equal(unrelatedDrivers, inspection.UnrelatedExternalDriverRoots);
+        Assert.Equal(
+            [
+                ExternalSteamVrIntegrationIdentity.SpaceCalibrator,
+                ExternalSteamVrIntegrationIdentity.BigscreenBeyond,
+                ExternalSteamVrIntegrationIdentity.VirtualMotionTracker,
+                ExternalSteamVrIntegrationIdentity.AlvrServer,
+            ],
+            inspection.ExternalIntegrationWarnings.Select(warning => warning.Identity));
+        Assert.Equal(
+            [
+                ExternalSteamVrIntegrationCategory.AdjacentNonControllerPresentation,
+                ExternalSteamVrIntegrationCategory.AdjacentNonControllerPresentation,
+                ExternalSteamVrIntegrationCategory.PotentialControllerPresentationConflict,
+                ExternalSteamVrIntegrationCategory.PotentialControllerPresentationConflict,
+            ],
+            inspection.ExternalIntegrationWarnings.Select(warning => warning.Category));
         Assert.Empty(inspection.DurableReceipts);
         Assert.False(inspection.CanRemoveAutomatically);
         Assert.Equal(originalOpenVr, fixture.FileSystem.Read(fixture.OpenVrPathsFile));
         Assert.Equal(originalSettings, fixture.FileSystem.Read(fixture.SettingsFile));
         Assert.Empty(fixture.ProcessRunner.Calls);
+    }
+
+    [Fact]
+    public async Task StartupWarningsDoNotChangeRegistrationOrRemovalTransactions()
+    {
+        using var fixture = new SteamVrLifecycleFixture();
+        string[] originalDrivers =
+        [
+            Path.Combine(fixture.Root, "drivers", "vmt"),
+            fixture.OtherDriverRoot,
+            Path.Combine(fixture.Root, "drivers", "alvr_server"),
+        ];
+        fixture.FileSystem.Write(
+            fixture.OpenVrPathsFile,
+            fixture.OpenVrJson(originalDrivers));
+
+        var inspection = await fixture.Lifecycle.InspectStartupAsync(
+            fixture.StagedDriverRoot);
+        var registration = await fixture.Lifecycle.RegisterAsync(
+            fixture.StagedDriverRoot);
+
+        Assert.Equal(2, inspection.ExternalIntegrationWarnings.Count);
+        Assert.Equal(
+            [.. originalDrivers, fixture.StagedDriverRoot],
+            fixture.ExternalDrivers());
+
+        await fixture.Lifecycle.RemoveAsync(registration.Receipt);
+
+        Assert.Equal(originalDrivers, fixture.ExternalDrivers());
     }
 
     [Fact]

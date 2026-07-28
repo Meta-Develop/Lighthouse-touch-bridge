@@ -325,7 +325,12 @@ public sealed class SteamVrDriverLifecycle : ISteamVrDriverLifecycle
                 receipts,
                 matchingReceipt,
                 canRemoveAutomatically,
-                diagnostic);
+                diagnostic)
+            {
+                ExternalIntegrationWarnings =
+                    ExternalSteamVrIntegrationWarning.FromRegisteredDriverRoots(
+                        unrelatedDrivers),
+            };
         }
         finally
         {
