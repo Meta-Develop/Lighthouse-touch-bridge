@@ -105,7 +105,8 @@ public sealed record InternalDriverSettings
         string stagedDriverRoot,
         string calibrationProfileStorePath,
         InternalDriverTrackerBinding? manualTrackerBinding = null,
-        bool unregisterOnExit = true)
+        bool unregisterOnExit = true,
+        string? trackerPathObservationStorePath = null)
     {
         if (schemaVersion != InternalDriverSettingsSchema.CurrentVersion)
         {
@@ -126,6 +127,11 @@ public sealed record InternalDriverSettings
             nameof(calibrationProfileStorePath));
         ManualTrackerBinding = manualTrackerBinding;
         UnregisterOnExit = unregisterOnExit;
+        TrackerPathObservationStorePath = trackerPathObservationStorePath is null
+            ? null
+            : SettingsPathValidation.RequireCanonicalAbsoluteFilePath(
+                trackerPathObservationStorePath,
+                nameof(trackerPathObservationStorePath));
     }
 
     public int SchemaVersion { get; }
@@ -144,6 +150,12 @@ public sealed record InternalDriverSettings
     /// </summary>
     public bool UnregisterOnExit { get; }
 
+    /// <summary>
+    /// Optional private store containing live-observed tracker serial to exact
+    /// OpenVR registered-device-path evidence. No default is invented here.
+    /// </summary>
+    public string? TrackerPathObservationStorePath { get; }
+
     public InternalDriverSettings WithStagedDriverRoot(string stagedDriverRoot) =>
         new(
             SchemaVersion,
@@ -151,7 +163,8 @@ public sealed record InternalDriverSettings
             stagedDriverRoot,
             CalibrationProfileStorePath,
             ManualTrackerBinding,
-            UnregisterOnExit);
+            UnregisterOnExit,
+            TrackerPathObservationStorePath);
 
     public InternalDriverSettings WithManualTrackerBinding(
         InternalDriverTrackerBinding? manualTrackerBinding) =>
@@ -161,7 +174,8 @@ public sealed record InternalDriverSettings
             StagedDriverRoot,
             CalibrationProfileStorePath,
             manualTrackerBinding,
-            UnregisterOnExit);
+            UnregisterOnExit,
+            TrackerPathObservationStorePath);
 
     public InternalDriverSettings WithUnregisterOnExit(bool unregisterOnExit) =>
         new(
@@ -170,7 +184,19 @@ public sealed record InternalDriverSettings
             StagedDriverRoot,
             CalibrationProfileStorePath,
             ManualTrackerBinding,
-            unregisterOnExit);
+            unregisterOnExit,
+            TrackerPathObservationStorePath);
+
+    public InternalDriverSettings WithTrackerPathObservationStorePath(
+        string? trackerPathObservationStorePath) =>
+        new(
+            SchemaVersion,
+            OpenVrPathsDiscovery,
+            StagedDriverRoot,
+            CalibrationProfileStorePath,
+            ManualTrackerBinding,
+            UnregisterOnExit,
+            trackerPathObservationStorePath);
 }
 
 internal static class SettingsPathValidation

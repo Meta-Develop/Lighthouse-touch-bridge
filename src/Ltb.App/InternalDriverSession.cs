@@ -1,4 +1,5 @@
 using Ltb.Core;
+using Ltb.Configuration;
 using Ltb.Driver;
 using Ltb.MetaLink;
 using Ltb.OpenVr;
@@ -397,10 +398,31 @@ internal sealed class InternalDriverSession :
                     _profiles.Right.EffectiveTrackerFromController));
             PublishMountAdjustmentState(_profiles);
             EnsureProfileTrackersWereObserved(readyObservation, _profiles);
+            var selectedTrackerPaths = ResolveTrackerPaths(
+                readyObservation,
+                _profiles);
+            if (_runtime is IInternalDriverTrackerPathObservationRuntime observationRuntime)
+            {
+                try
+                {
+                    observationRuntime.RecordSelectedTrackerPaths(
+                        selectedTrackerPaths,
+                        DateTimeOffset.UtcNow);
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    throw new InvalidOperationException(
+                        "The selected tracker-path evidence could not be durably recorded " +
+                        "before tracker-role mutation or feed creation. Identity values, path " +
+                        "values, UTC provenance, and the private store location remain redacted.",
+                        exception);
+                }
+            }
+
             if (_trackerNeutralization is not null)
             {
                 await _trackerNeutralization.ActivateAsync(
-                    ResolveTrackerPaths(readyObservation, _profiles),
+                    selectedTrackerPaths,
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -1812,11 +1834,18 @@ internal sealed class InternalDriverSession :
         InternalDriverRuntimeObservation observation,
         InternalDriverProfilePair profiles)
     {
-        if (!observation.TrackerSamples.ContainsKey(profiles.Left.TrackerSerial) ||
-            !observation.TrackerSamples.ContainsKey(profiles.Right.TrackerSerial))
+        if (!observation.TrackerSamples.TryGetValue(
+                profiles.Left.TrackerSerial,
+                out var left) ||
+            !observation.TrackerSamples.TryGetValue(
+                profiles.Right.TrackerSerial,
+                out var right) ||
+            !IsTrackerPublishable(left) ||
+            !IsTrackerPublishable(right))
         {
             throw new InvalidOperationException(
-                "Profile resolution selected a controller-source tracker serial that was not observed.");
+                "Profile resolution selected a tracker pair that was not proven by two " +
+                "connected, fully tracked live samples. Identity values remain redacted.");
         }
     }
 
@@ -1831,29 +1860,38 @@ internal sealed class InternalDriverSession :
         };
         var paths = requested.Select(item =>
         {
+            var canonicalRequestedSerial = InternalDriverTrackerSerial.Require(
+                item.TrackerSerial,
+                nameof(profiles));
             var matches = observation.Devices.Where(device =>
                 device.Category == SteamVrDeviceCategory.GenericTracker &&
                 device.IsConnected &&
                 device.Capabilities.HasPosition &&
                 device.Capabilities.IsPhysicalPoseSourceEligible &&
-                !device.Capabilities.IsVirtualPoseSource &&
-                string.Equals(
-                    device.Identity.SerialNumber,
-                    item.TrackerSerial,
-                    StringComparison.Ordinal)).ToArray();
+                !device.Capabilities.IsVirtualPoseSource)
+                .Where(device => HasCanonicalSerial(
+                    device,
+                    canonicalRequestedSerial))
+                .ToArray();
             if (matches.Length != 1)
             {
                 throw new InvalidOperationException(
-                    $"Expected one connected physical tracker path for '{item.TrackerSerial}', " +
-                    $"but observed {matches.Length}.");
+                    "Expected exactly one connected position-capable physical non-virtual " +
+                    $"tracker descriptor for the selected {item.Hand} serial, but observed " +
+                    $"{matches.Length}. Identity values remain redacted.");
             }
 
             return new InternalDriverTrackerPath(
                 item.Hand,
-                item.TrackerSerial,
+                canonicalRequestedSerial,
                 matches[0].Identity.DevicePath);
         }).ToArray();
         InternalDriverTrackerNeutralizationLifecycle.ValidateExactPair(paths);
+        var left = paths.Single(path => path.Hand == ProtocolHand.Left);
+        var right = paths.Single(path => path.Hand == ProtocolHand.Right);
+        _ = new PhysicalTrackerRoleTargets(
+            left.DevicePath,
+            right.DevicePath);
         return paths;
     }
 
@@ -1887,11 +1925,9 @@ internal sealed class InternalDriverSession :
         foreach (var expected in active.TrackerPaths)
         {
             var matches = observation.Devices.Where(device =>
-                device.Category == SteamVrDeviceCategory.GenericTracker &&
-                string.Equals(
-                    device.Identity.SerialNumber,
-                    expected.TrackerSerial,
-                    StringComparison.Ordinal)).ToArray();
+                    device.Category == SteamVrDeviceCategory.GenericTracker &&
+                    HasCanonicalSerial(device, expected.TrackerSerial))
+                .ToArray();
             if (matches.Length == 0)
             {
                 // Temporary absence is handled by per-hand neutralization and
@@ -1915,6 +1951,25 @@ internal sealed class InternalDriverSession :
                     $"Tracker identity/path churn was detected for '{expected.TrackerSerial}'; " +
                     "the old exact-two receipt was restored and will not remain active.");
             }
+        }
+    }
+
+    private static bool HasCanonicalSerial(
+        SteamVrDeviceDescriptor device,
+        string expectedCanonicalSerial)
+    {
+        try
+        {
+            return string.Equals(
+                InternalDriverTrackerSerial.Require(
+                    device.Identity.SerialNumber,
+                    nameof(device)),
+                expectedCanonicalSerial,
+                StringComparison.Ordinal);
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 

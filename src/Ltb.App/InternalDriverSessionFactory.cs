@@ -50,7 +50,12 @@ public static class InternalDriverSessionFactory
             CanonicalFile(options.StructuredLogPath ??
                 Path.Combine(applicationRoot, "logs", "internal-driver.jsonl")),
             CanonicalFile(
-                Path.Combine(applicationRoot, "driver", "registration-receipts.json")));
+                Path.Combine(applicationRoot, "driver", "registration-receipts.json")),
+            CanonicalFile(options.TrackerPathObservationStorePath ??
+                Path.Combine(
+                    applicationRoot,
+                    "settings",
+                    "tracker-path-observations.json")));
     }
 
     private static string CanonicalDirectory(string path)
@@ -72,11 +77,23 @@ internal sealed record InternalDriverResolvedPaths(
     string CalibrationProfileStorePath,
     string StagedDriverRoot,
     string StructuredLogPath,
-    string DriverReceiptStorePath);
+    string DriverReceiptStorePath,
+    string? TrackerPathObservationStorePath = null)
+{
+    public string EffectiveTrackerPathObservationStorePath =>
+        TrackerPathObservationStorePath ??
+        Path.GetFullPath(
+            Path.Combine(
+                Path.GetDirectoryName(SettingsPath)
+                    ?? throw new InvalidOperationException(
+                        "The internal-driver settings path must have a parent directory."),
+                "tracker-path-observations.json"));
+}
 
 internal sealed class ProductionInternalDriverSessionRuntime :
     IInternalDriverSessionRuntime,
-    IInternalDriverTrackerNeutralizationRuntime
+    IInternalDriverTrackerNeutralizationRuntime,
+    IInternalDriverTrackerPathObservationRuntime
 {
     private const string ControllerModel = "Quest 2 Touch";
     private static readonly TimeSpan CaptureProgressInterval = TimeSpan.FromMilliseconds(250);
@@ -618,6 +635,23 @@ internal sealed class ProductionInternalDriverSessionRuntime :
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return new DriverFeed(new NamedPipeDriverTransportFactory());
+    }
+
+    public void RecordSelectedTrackerPaths(
+        IReadOnlyList<InternalDriverTrackerPath> trackerPaths,
+        DateTimeOffset observedAtUtc)
+    {
+        ArgumentNullException.ThrowIfNull(trackerPaths);
+        InternalDriverTrackerNeutralizationLifecycle.ValidateExactPair(trackerPaths);
+        var candidates = trackerPaths
+            .Select(path => new TrackerPathObservationCandidate(
+                path.TrackerSerial,
+                path.DevicePath,
+                observedAtUtc))
+            .ToArray();
+        _ = new TrackerPathObservationStore(
+                _paths.EffectiveTrackerPathObservationStorePath)
+            .RecordObservations(candidates);
     }
 
     public InternalDriverProfilePair SaveMountAdjustments(
@@ -1328,7 +1362,9 @@ internal sealed class ProductionInternalDriverSessionRuntime :
             InternalDriverSettingsSchema.CurrentVersion,
             OpenVrPathsDiscovery.Automatic,
             paths.StagedDriverRoot,
-            paths.CalibrationProfileStorePath);
+            paths.CalibrationProfileStorePath,
+            trackerPathObservationStorePath:
+                paths.EffectiveTrackerPathObservationStorePath);
         var loaded = InternalDriverSettingsFile.TryLoad(paths.SettingsPath);
         if (loaded.Status == InternalDriverSettingsLoadStatus.NotFound)
         {
@@ -1347,6 +1383,17 @@ internal sealed class ProductionInternalDriverSessionRuntime :
         {
             throw new InvalidDataException(
                 "Internal-driver settings must retain automatic OpenVR discovery and the zero-input calibration profile path.");
+        }
+
+        if (current.TrackerPathObservationStorePath is { } configuredStorePath &&
+            !string.Equals(
+                configuredStorePath,
+                expected.TrackerPathObservationStorePath,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "Internal-driver settings contain a tracker-path observation store path " +
+                "that differs from the resolved zero-input path.");
         }
 
         if (!string.Equals(
