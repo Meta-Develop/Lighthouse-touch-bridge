@@ -174,20 +174,21 @@ details below. For an offline inspector or replay session, record only the OS,
   response. The probe sends the `X-ALVR` request header required by ALVR
   20.14+, which rejects header-less HTTP API requests with HTTP 400. Stop
   ALVR, return an empty/error response if safely reproducible,
-  and change the dashboard port in separate startup runs; confirm `wizard` and
-  `daily` remain fail-closed with `DependencyUnavailable`. Restore port `8082`
-  afterward. Confirm the production probe issues no more than one request per
-  second. Version 0.1 has no configurable ALVR-port CLI option.
+  and change the dashboard port in separate startup runs; confirm
+  `legacy-wizard` and `legacy-daily` remain fail-closed with
+  `DependencyUnavailable`. Restore port `8082` afterward. Confirm the
+  production probe issues no more than one request per second. Version 0.1 has
+  no configurable ALVR-port CLI option.
 
 - [ ] **Enforce the active-Lighthouse-HMD dependency gate.** Start separate
-  `wizard` and `daily` runs with Quest/ALVR as the SteamVR display HMD. Confirm
-  `daily` remains in `DependencyCheck` with `DependencyUnavailable`, while
-  `wizard` returns to `Ready` with the same diagnostic. Confirm the diagnostic
-  explains that OpenVR index `0` reports Quest/ALVR/Meta/Oculus evidence and
-  directs the operator to configure ALVR in tracking-reference-only mode, make
-  the intended Lighthouse HMD active, restart SteamVR, and retry. Repeat with
-  missing or unknown driver/tracking-system metadata and confirm the gate fails
-  closed.
+  `legacy-wizard` and `legacy-daily` runs with Quest/ALVR as the SteamVR
+  display HMD. Confirm `legacy-daily` remains in `DependencyCheck` with
+  `DependencyUnavailable`, while `legacy-wizard` returns to `Ready` with the
+  same diagnostic. Confirm the diagnostic explains that OpenVR index `0`
+  reports Quest/ALVR/Meta/Oculus evidence and directs the operator to configure
+  ALVR in tracking-reference-only mode, make the intended Lighthouse HMD
+  active, restart SteamVR, and retry. Repeat with missing or unknown
+  driver/tracking-system metadata and confirm the gate fails closed.
   After the intended Lighthouse HMD becomes the connected
   `HeadMountedDisplay` at index `0` with positive Lighthouse evidence, confirm
   both commands proceed. No capture, VMT apply, or hand override may occur in
@@ -205,14 +206,15 @@ details below. For an offline inspector or replay session, record only the OS,
 ## Original Touch poses and override safety
 
 - [ ] **Release overrides before production-wizard recording.** Begin with
-  mappings active for both semantic hands, then run the production `wizard`.
-  Confirm `OverrideRelease` first removes and verifies every mapping that
-  references either selected application source or targets either semantic
-  hand. Only after every mapping release succeeds may it deactivate the two VMT
-  sources and open the original Touch pose sources. The recorder itself must
-  not write `TrackingOverrides`. Confirm the original poses are visible before
-  capture begins, unrelated settings remain unchanged, and a redacted
-  before/after settings snapshot is retained outside the repository.
+  mappings active for both semantic hands, then run the warning-gated
+  `legacy-wizard` command. Confirm `OverrideRelease` first removes and verifies
+  every mapping that references either selected application source or targets
+  either semantic hand. Only after every mapping release succeeds may it
+  deactivate the two VMT sources and open the original Touch pose sources. The
+  recorder itself must not write `TrackingOverrides`. Confirm the original
+  poses are visible before capture begins, unrelated settings remain unchanged,
+  and a redacted before/after settings snapshot is retained outside the
+  repository.
 
 - [ ] **Read the original, non-overridden Touch pose.** With the override
   released, move the Touch controller and its mounted tracker differently
@@ -334,19 +336,20 @@ timestamp semantics, reopen the affected checks.
 Milestone 3 adds deterministic Linux coverage for the UI-neutral wizard state
 machine, reversed-order serial association, guided coverage metrics, the real
 lag/alignment/Auto solver pipeline, mixed per-hand model selection, schema-1
-profile persistence, and serial-and-hand reload. The production `wizard`
-composition is now implemented. Run its live Windows path from an extracted
-package with:
+profile persistence, and serial-and-hand reload. The production wizard
+composition remains available only through the warning-gated
+`legacy-wizard` command. Run its live Windows path from an extracted package
+with:
 
 ```text
-Ltb.App.exe wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+Ltb.App.exe legacy-wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
-The deterministic `wizard-demo` command remains available with fake pose
+The deterministic `legacy-wizard-demo` command remains available with fake pose
 streams and fake serials:
 
 ```bash
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
+dotnet run --project src/Ltb.App -- legacy-wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 Linux fake-backed evidence proves that the production composition orders
@@ -361,14 +364,14 @@ from Linux tests alone.
 
 ### Guided capture and association
 
-- [ ] **Verify wizard JSONL behavior.** Run the production `wizard` twice with
-  the same `--log <events.jsonl>` path and confirm the
+- [ ] **Verify wizard JSONL behavior.** Run `legacy-wizard` twice with the same
+  `--log <events.jsonl>` path and confirm the
   second event sequence is appended rather than replacing the first. Run once
   without `--log` and confirm no default event file is created. With fake
   wizard inputs, exercise missing controller position, poor translation
   observability, and bad rotation; confirm the log uses respectively
   `NoPositionAvailable`, `PoorTranslationObservability`, and
-  `BadRotationCalibration`; use `wizard-demo` only for that deterministic
+  `BadRotationCalibration`; use `legacy-wizard-demo` only for that deterministic
   negative-path portion. The production logging check requires Windows and the
   live runtime.
 
@@ -468,7 +471,7 @@ For every checked item below, retain a dated evidence record containing:
   redacted consistently;
 - a redacted profile or its hash, including the tested hand, selected mode,
   translation, and quaternion;
-- redacted `devices` output and the relevant SteamVR System Report excerpt
+- redacted `legacy-devices` output and the relevant SteamVR System Report excerpt
   before activation, while active, and after SafeDisable when applicable;
 - a semantic before/after `steamvr.vrsettings` diff and hashes of any backups,
   retained outside the repository rather than committing settings or backups;
@@ -487,7 +490,7 @@ check an item merely because the Linux fake for that transition passes.
 - [ ] **Register a fresh slot, then discover the real VMT source.** With VMT
   installed and enabled, close VMT Manager so LTB can own response port
   `39571`, start a fresh SteamVR session, and record whether the requested slot
-  is absent from `devices`. Confirm LTB attempts both selected-slot VMT
+  is absent from `legacy-devices`. Confirm LTB attempts both selected-slot VMT
   deactivation and stale exact mapping release before any SteamVR enumeration
   or device-selection gate, reports either failure, and does not attempt a new
   activation unless both cleanup surfaces succeed. Confirm it then enumerates
@@ -514,8 +517,8 @@ check an item merely because the Linux fake for that transition passes.
   profile.
 
 - [ ] **Make the VMT device appear and apply the one-hand override.** Start from
-  no mapping for the selected semantic hand. Run the bridge and confirm the
-  chosen VMT slot becomes connected before the settings mapping is enabled.
+  no mapping for the selected semantic hand. Run `legacy-bridge` and confirm
+  the chosen VMT slot becomes connected before the settings mapping is enabled.
   Confirm LTB reads that VMT output through OpenVR and requires a connected,
   `RunningOk`, orientation-valid, position-valid, and tracking-valid pose before
   writing the mapping. Confirm the measured VMT output agrees with
@@ -581,8 +584,8 @@ check an item merely because the Linux fake for that transition passes.
   not prevent an attempted exact mapping release, every failure is reported,
   startup cleanup failure blocks new activation, and the command returns
   cleanup exit code `4`. On Ctrl+C cleanup failure, confirm output does not say
-  the bridge was safely disabled. Restore the environment manually before the
-  next test and confirm no unreviewed override remains.
+  that `legacy-bridge` was safely disabled. Restore the environment manually
+  before the next test and confirm no unreviewed override remains.
 
 - [ ] **Recover from an abrupt, unmanaged termination.** Use a controlled
   non-worn setup with the tracked area clear. After reaching `state: active`,
@@ -636,13 +639,13 @@ check an item merely because the Linux fake for that transition passes.
 
 ## Milestone 4 reliable daily use
 
-Milestone 4 includes a production `daily` composition, while its complete
-transition matrix and active-HMD dependency gate are exercised with
-deterministic fakes on Linux. Run the production path from an extracted package
-with this exact command form:
+Milestone 4 includes the warning-gated `legacy-daily` composition, while its
+complete transition matrix and active-HMD dependency gate are exercised with
+deterministic fakes on Linux. Run the live path from an extracted package with
+this exact command form:
 
 ```text
-Ltb.App.exe daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+Ltb.App.exe legacy-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 Use two distinct VMT slots from `0` through `57`. `--monitor-rate` defaults to
@@ -670,12 +673,14 @@ transition-matrix tests or a successful cross-publish alone.
   build/test/publish and every applicable Windows runtime and hardware check.
 
 - [ ] **Launch without a machine-wide .NET runtime or SDK.** On a representative
-  clean Windows x64 account, run `Ltb.App.exe --help` and `Ltb.App.exe devices`
-  and launch `Ltb.Gui.exe wizard-demo` from the complete extracted directory.
-  Confirm the GUI opens and renders its scripted wizard without a .NET
-  installation prompt, native-library search-path workaround, installer action,
-  or administrator elevation. Repeat both entry points from a directory
-  containing spaces.
+  clean Windows x64 account, run `Ltb.App.exe --help` and
+  `Ltb.App.exe legacy-devices` from the complete extracted directory. For
+  historical GUI-only evidence, launch `Ltb.Gui.exe wizard-demo`: the GUI
+  parser accepts its own `wizard` and `wizard-demo` mode selectors, which are
+  not accepted migration commands for `Ltb.App.exe`. Confirm the GUI opens and
+  renders its scripted wizard without a .NET installation prompt,
+  native-library search-path workaround, installer action, or administrator
+  elevation. Repeat both entry points from a directory containing spaces.
 
 - [ ] **Verify package boundaries.** Confirm the ZIP contains no build cache,
   symbols, source tree, settings, backups, logs, recordings, device identities,
@@ -685,20 +690,20 @@ transition-matrix tests or a successful cross-publish alone.
 ### Startup sequencing
 
 - [ ] **Observe the healthy later-run sequence.** With matching saved profiles
-  and all dependencies available, run the exact `daily` command above with two
-  distinct slots and `--log <events.jsonl>`. Record structured events for
-  `Stopped -> DependencyCheck -> WaitingForSteamVR -> WaitingForDevices -> Ready
-  -> ApplyProfile -> Active`. Confirm no override is active before
+  and all dependencies available, run the exact `legacy-daily` command above
+  with two distinct slots and `--log <events.jsonl>`. Record structured events
+  for `Stopped -> DependencyCheck -> WaitingForSteamVR -> WaitingForDevices ->
+  Ready -> ApplyProfile -> Active`. Confirm no override is active before
   `ApplyProfile` and `Active` appears only after the complete apply succeeds.
 
-- [ ] **Start before SteamVR.** Launch `daily` with SteamVR stopped. Because the
-  active-HMD gate cannot verify OpenVR index `0` yet, confirm it remains in
-  `DependencyCheck` with no active mapping rather than entering
-  `WaitingForSteamVR`. Launch `wizard` in the same condition and confirm it
-  returns to `Ready` with the actionable dependency diagnostic. Start SteamVR,
-  allow device enumeration to settle, and confirm a fresh run proceeds through
-  the remaining transitions once, without manual settings edits or duplicate
-  VMT sources.
+- [ ] **Start before SteamVR.** Launch `legacy-daily` with SteamVR stopped.
+  Because the active-HMD gate cannot verify OpenVR index `0` yet, confirm it
+  remains in `DependencyCheck` with no active mapping rather than entering
+  `WaitingForSteamVR`. Launch `legacy-wizard` in the same condition and confirm
+  it returns to `Ready` with the actionable dependency diagnostic. Start
+  SteamVR, allow device enumeration to settle, and confirm a fresh run proceeds
+  through the remaining transitions once, without manual settings edits or
+  duplicate VMT sources.
 
 - [ ] **Start with incomplete devices.** Repeat with each required tracker,
   Touch controller, and VMT surface absent. Confirm `WaitingForDevices`, a
@@ -752,7 +757,7 @@ transition-matrix tests or a successful cross-publish alone.
 - [ ] **Handle SteamVR stop and restart.** Stop SteamVR during `Active`.
   Confirm `SafeDisable -> Stopped`, no claim that persistent settings vanished
   with the runtime, and no frozen virtual hand after the runtime returns. Start
-  a new SteamVR session, rerun `daily`, and confirm fresh enumeration and
+  a new SteamVR session, rerun `legacy-daily`, and confirm fresh enumeration and
   stable-serial profile reuse rather than old transient-index reuse. The first
   invocation must not resume after SteamVR returns.
 
@@ -775,9 +780,9 @@ transition-matrix tests or a successful cross-publish alone.
   Stall or reject one source/semantic-hand mapping release. Confirm the
   operation is bounded to two seconds, the corresponding VMT source is
   deliberately left running, and cleanup continues with independent work for
-  the other hand. For the pre-capture wizard path, confirm no selected source
-  is deactivated when either release fails. Then allow mapping release and
-  separately stall the corresponding VMT deactivation; confirm that later
+  the other hand. For the pre-capture `legacy-wizard` path, confirm no selected
+  source is deactivated when either release fails. Then allow mapping release
+  and separately stall the corresponding VMT deactivation; confirm that later
   failure is also bounded and reported. Both cases must return exit code `4`;
   manually inspect both slots and all relevant mappings before reuse.
 
@@ -803,8 +808,8 @@ transition-matrix tests or a successful cross-publish alone.
   mapping rollback fail and confirm that source stays running while independent
   rollback work continues. Rollback failures must remain distinct, exit code
   `4` must report any failure, and both hands must be inspected before reuse.
-  Run this through the production `daily` adapter; the fake coordinator result
-  alone is insufficient.
+  Run this through the `legacy-daily` adapter; the fake coordinator result alone
+  is insufficient.
 
 - [ ] **Verify settings and profile rollback together.** Exercise malformed
   settings, denied ACL, lock contention, external-writer race, post-write
@@ -895,8 +900,8 @@ gate; HMDs provide no calibration or profile-pipeline evidence. None of this is
 live ALVR, SteamVR, driver, firmware, input-component, or tracking-quality
 evidence.
 
-The production guided-wizard adapter is implemented and the family rows can
-now exercise live guided capture through the production command. They remain
+The guided-wizard adapter is implemented and the family rows can exercise live
+guided capture through the warning-gated `legacy-wizard` command. They remain
 unchecked until that path is run with the named Windows/runtime/hardware
 combination. Synthetic wizard evidence proves composition, not live timing,
 input or pose provenance, or hardware compatibility.
@@ -974,7 +979,7 @@ inferred capabilities, and stable identity used by the decision.
 - [ ] **Bigscreen Beyond 2/2e active HMD.** Confirm SteamVR keeps the Beyond
   device at OpenVR index `0` while ALVR provides controller inputs only.
   Confirm positive Lighthouse driver or tracking-system evidence passes the
-  gate. Complete production-wizard capture, profile apply, input/pose
+  gate. Complete `legacy-wizard` capture, profile apply, input/pose
   provenance, managed shutdown, and one SteamVR restart without an HMD model-
   name dependency in LTB.
 
@@ -994,9 +999,9 @@ inferred capabilities, and stable identity used by the decision.
   confirm the device at index `0` receives HMD class/capability inference
   without a manufacturer or model allowlist and reports positive Lighthouse
   driver or tracking-system evidence. Confirm LTB does not attempt to choose or
-  replace the display device. Complete the full wizard, daily-use, and
-  SafeDisable acceptance before adding that model to release notes as hardware
-  validated.
+  replace the display device. Complete the full `legacy-wizard`,
+  `legacy-daily`, and SafeDisable acceptance before adding that model to
+  release notes as hardware validated.
 
 ### Cross-family profile and integration acceptance
 
