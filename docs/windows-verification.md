@@ -91,9 +91,9 @@ Windows driver artifact. The script verifies the staged build identity,
 required driver resources, pinned OpenVR header and license provenance, exact
 driver hash, and allowlisted archive contents before producing the ZIP. End
 users need none of those build tools or a separate .NET installation; they run
-`Ltb.Gui.exe` for the desktop wizard or `Ltb.App.exe` for the console commands
-from the extracted self-contained package. The script refuses to overwrite an
-existing same-version archive.
+`Ltb.Gui.exe` for the internal-driver desktop flow or `Ltb.App.exe` for the
+console commands from the extracted self-contained package. The script refuses
+to overwrite an existing same-version archive.
 
 The `Ltb.OpenVr` project copies `openvr_api.dll` into the application publish
 root beside `Ltb.App.exe`, `Ltb.Gui.exe`, and `Ltb.OpenVr.Interop.dll`. The
@@ -674,13 +674,12 @@ transition-matrix tests or a successful cross-publish alone.
 
 - [ ] **Launch without a machine-wide .NET runtime or SDK.** On a representative
   clean Windows x64 account, run `Ltb.App.exe --help` and
-  `Ltb.App.exe legacy-devices` from the complete extracted directory. For
-  historical GUI-only evidence, launch `Ltb.Gui.exe wizard-demo`: the GUI
-  parser accepts its own `wizard` and `wizard-demo` mode selectors, which are
-  not accepted migration commands for `Ltb.App.exe`. Confirm the GUI opens and
-  renders its scripted wizard without a .NET installation prompt,
-  native-library search-path workaround, installer action, or administrator
-  elevation. Repeat both entry points from a directory containing spaces.
+  `Ltb.App.exe legacy-devices` from the complete extracted directory, then
+  launch plain `Ltb.Gui.exe`. Confirm the current internal-driver GUI opens
+  without a .NET installation prompt, native-library search-path workaround,
+  installer action, or administrator elevation. The production composition
+  does not consume the legacy scripted-wizard command-line parser. Repeat both
+  entry points from a directory containing spaces.
 
 - [ ] **Verify package boundaries.** Confirm the ZIP contains no build cache,
   symbols, source tree, settings, backups, logs, recordings, device identities,
