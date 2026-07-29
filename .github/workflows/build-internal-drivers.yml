@@ -1,0 +1,263 @@
+name: Build internal drivers
+
+"on":
+  push:
+    branches:
+      - main
+      - feature/internal-drivers
+  pull_request: {}
+  schedule:
+    - cron: "29 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    internal-drivers-${{ github.workflow }}-${{
+    github.event.pull_request.head.repo.full_name || github.repository }}-${{
+    github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  linux-validation:
+    name: Linux managed and native-core validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.423
+
+      - name: Build managed solution
+        run: dotnet build
+
+      - name: Test managed solution
+        run: dotnet test --no-build
+
+      - name: Configure portable driver core
+        run: >-
+          cmake -S native/driver_ltb -B build/native-linux -G Ninja
+          -DLTB_BUILD_OPENVR_DRIVER=OFF
+          -DLTB_BUILD_TESTS=ON
+
+      - name: Build portable driver core
+        run: cmake --build build/native-linux
+
+      - name: Test portable driver core
+        run: ctest --test-dir build/native-linux --output-on-failure
+
+  windows-driver:
+    name: Windows x64 SteamVR driver
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.423
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.12"
+
+      - name: Test managed log archive pruning on Windows
+        run: >-
+          dotnet test tests/Ltb.Integration.Tests/Ltb.Integration.Tests.csproj
+          --configuration Release
+          --filter FullyQualifiedName~JsonLinesInternalDriverSessionOutputTests
+
+      - name: Configure driver_ltb
+        run: >-
+          cmake -S native/driver_ltb -B build/native-windows -A x64
+          -DLTB_BUILD_OPENVR_DRIVER=ON
+          -DLTB_BUILD_TESTS=ON
+
+      - name: Build driver_ltb
+        run: cmake --build build/native-windows --config Release
+
+      - name: Test portable core on Windows
+        run: ctest --test-dir build/native-windows -C Release --output-on-failure
+
+      - name: Verify staged external-driver root
+        shell: pwsh
+        run: |
+          $stageRoot = "build/native-windows/driver_ltb"
+          $requiredRelative = @(
+            "build-id.txt",
+            "driver.vrdrivermanifest",
+            "bin/win64/driver_ltb.dll",
+            "resources/input/ltb_touch_profile.json",
+            "resources/input/ltb_touch_remapping.json",
+            "resources/input/legacy_bindings_ltb_touch.json",
+            "resources/input/bindings/bindings_ltb_touch_vrchat.json",
+            "resources/settings/default.vrsettings",
+            "resources/localization/localization.json",
+            "resources/icons/ltb_touch.svg"
+          )
+          foreach ($relativePath in $requiredRelative) {
+            $path = Join-Path $stageRoot $relativePath
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required staged driver file is missing: $path"
+            }
+          }
+
+          $buildIdPath = Join-Path $stageRoot "build-id.txt"
+          $buildIdText = [IO.File]::ReadAllText($buildIdPath, [Text.Encoding]::ASCII)
+          $buildIdMatch = [Text.RegularExpressions.Regex]::Match(
+            $buildIdText,
+            '\A(?<identity>driver_ltb-[0-9]+\.[0-9]+\.[0-9]+-ipc-[0-9]+\.[0-9]+)\r?\n?\z',
+            [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+          if (-not $buildIdMatch.Success) {
+            throw "Staged build-id.txt does not contain one exact driver_ltb-X.Y.Z-ipc-X.Y identity."
+          }
+          Write-Host "Verified staged driver identity: $($buildIdMatch.Groups['identity'].Value)"
+
+      - name: Verify driver PE imports
+        run: >-
+          python native/driver_ltb/tools/check_pe_imports.py
+          --binary build/native-windows/driver_ltb/bin/win64/driver_ltb.dll
+
+      - name: Upload Windows driver artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: driver_ltb-win-x64
+          path: |
+            build/native-windows/driver_ltb/build-id.txt
+            build/native-windows/driver_ltb/driver.vrdrivermanifest
+            build/native-windows/driver_ltb/bin/win64/driver_ltb.dll
+            build/native-windows/driver_ltb/resources/input/ltb_touch_profile.json
+            build/native-windows/driver_ltb/resources/input/ltb_touch_remapping.json
+            build/native-windows/driver_ltb/resources/input/legacy_bindings_ltb_touch.json
+            build/native-windows/driver_ltb/resources/input/bindings/bindings_ltb_touch_vrchat.json
+            build/native-windows/driver_ltb/resources/settings/default.vrsettings
+            build/native-windows/driver_ltb/resources/localization/localization.json
+            build/native-windows/driver_ltb/resources/icons/ltb_touch.svg
+          if-no-files-found: error
+          retention-days: 14
+
+  package-win-x64:
+    name: Portable Windows x64 package
+    needs:
+      - linux-validation
+      - windows-driver
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.423
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.12"
+
+      - name: Download Windows driver artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: driver_ltb-win-x64
+          path: ${{ runner.temp }}/driver_ltb
+
+      - name: Build and verify portable package
+        env:
+          LTB_DRIVER_ROOT: ${{ runner.temp }}/driver_ltb
+        run: bash build/package-win-x64.sh
+
+      - name: Verify package outputs
+        shell: bash
+        env:
+          LTB_DRIVER_ROOT: ${{ runner.temp }}/driver_ltb
+        run: |
+          shopt -s nullglob
+          archives=(artifacts/package/LighthouseTouchBridge-*-win-x64.zip)
+          checksums=(artifacts/package/LighthouseTouchBridge-*-win-x64.zip.sha256)
+          if (( ${#archives[@]} != 1 || ${#checksums[@]} != 1 )); then
+            printf 'Expected exactly one portable ZIP and checksum, found %d and %d.\n' \
+              "${#archives[@]}" "${#checksums[@]}" >&2
+            exit 1
+          fi
+          checksum_name="$(basename -- "${checksums[0]}")"
+          (cd artifacts/package && sha256sum --check "$checksum_name")
+          python3 - "${archives[0]}" "$LTB_DRIVER_ROOT/bin/win64/driver_ltb.dll" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+          import zipfile
+
+          archive_path = pathlib.Path(sys.argv[1])
+          downloaded_driver_path = pathlib.Path(sys.argv[2])
+          with zipfile.ZipFile(archive_path, "r") as archive:
+              manifest_names = [
+                  name
+                  for name in archive.namelist()
+                  if len(pathlib.PurePosixPath(name).parts) == 2
+                  and pathlib.PurePosixPath(name).name == "release-manifest.txt"
+              ]
+              if len(manifest_names) != 1:
+                  raise SystemExit(
+                      f"Expected one package-root release-manifest.txt, found {manifest_names!r}"
+                  )
+              manifest_name = manifest_names[0]
+              manifest_lines = archive.read(manifest_name).decode("utf-8").splitlines()
+              dirty_lines = [
+                  line for line in manifest_lines if line.startswith("source_tree_dirty=")
+              ]
+              if dirty_lines != ["source_tree_dirty=false"]:
+                  raise SystemExit(
+                      f"Package source_tree_dirty evidence is not exactly false: {dirty_lines!r}"
+                  )
+
+              package_root = pathlib.PurePosixPath(manifest_name).parts[0]
+              driver_name = f"{package_root}/driver_ltb/bin/win64/driver_ltb.dll"
+              if archive.namelist().count(driver_name) != 1:
+                  raise SystemExit(
+                      f"Expected one archived Windows driver at {driver_name!r}"
+                  )
+              archived_driver_hash = hashlib.sha256(archive.read(driver_name)).hexdigest()
+
+          downloaded_driver_hash = hashlib.sha256(
+              downloaded_driver_path.read_bytes()
+          ).hexdigest()
+          if archived_driver_hash != downloaded_driver_hash:
+              raise SystemExit(
+                  "Archived driver_ltb.dll does not match the downloaded Windows artifact: "
+                  f"{archived_driver_hash} != {downloaded_driver_hash}"
+              )
+          print(
+              "Verified clean-source manifest and exact Windows driver artifact SHA-256: "
+              f"{downloaded_driver_hash}"
+          )
+          PY
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lighthouse-touch-bridge-win-x64
+          path: |
+            artifacts/package/LighthouseTouchBridge-*-win-x64.zip
+            artifacts/package/LighthouseTouchBridge-*-win-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
