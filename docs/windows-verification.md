@@ -1,4 +1,13 @@
-# Windows Runtime Verification
+# Legacy ALVR/VMT Windows Runtime Verification
+
+> [!IMPORTANT]
+> This fully historical checklist covers the legacy ALVR, VMT, and SteamVR
+> `TrackingOverrides` migration path, which now runs only behind warning-gated
+> `legacy-*` commands. It cannot establish support for
+> the first-party desktop **Start** path and is not a release gate for it. Use
+> [First-party internal driver operations](internal-drivers.md) and the
+> [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
+> instead.
 
 The automated suite has deterministic Linux tests for calibration, recording,
 replay, capability-based device enumeration and matching, one-hand bridge
@@ -75,11 +84,16 @@ manifest, and checksum with:
 bash build/package-win-x64.sh 0.1.0
 ```
 
-The packaging script requires .NET 8, Git, Bash, and Python 3 on the build
-machine. End users need none of those tools or a separate .NET installation;
-they run `Ltb.Gui.exe` for the desktop wizard or `Ltb.App.exe` for the console
-commands from the extracted self-contained package. The script refuses to
-overwrite an existing same-version archive.
+The current packaging script requires .NET 8, Git, Bash, Python 3, and a
+complete staged `driver_ltb` root. By default it reads
+`build/native-windows/driver_ltb`; CI sets `LTB_DRIVER_ROOT` to the downloaded
+Windows driver artifact. The script verifies the staged build identity,
+required driver resources, pinned OpenVR header and license provenance, exact
+driver hash, and allowlisted archive contents before producing the ZIP. End
+users need none of those build tools or a separate .NET installation; they run
+`Ltb.Gui.exe` for the desktop wizard or `Ltb.App.exe` for the console commands
+from the extracted self-contained package. The script refuses to overwrite an
+existing same-version archive.
 
 The `Ltb.OpenVr` project copies `openvr_api.dll` into the application publish
 root beside `Ltb.App.exe`, `Ltb.Gui.exe`, and `Ltb.OpenVr.Interop.dll`. The
@@ -90,13 +104,14 @@ generated binding imports `openvr_api`, so .NET resolves the app-local
 This deployment supplies the OpenVR client library; SteamVR must still be
 installed and running for live initialization.
 
-The portable ZIP must contain both `Ltb.App.exe` and `Ltb.Gui.exe`,
-`release-manifest.txt`, `LICENSE.txt`, the full packaged documentation set
-including `specification.md`, and the shared publish layout. Its adjacent
-`.sha256` file covers the complete ZIP. The package is unsigned; signing,
-SmartScreen, native launch, GUI visual behavior, and hardware behavior are
-Windows-only release checks rather than properties established by Linux
-publish.
+The portable ZIP must contain both `Ltb.App.exe` and `Ltb.Gui.exe`, the exact
+staged `driver_ltb` root, `release-manifest.txt`, `LICENSE.txt`, the Valve
+notice, the full packaged documentation set including `specification.md`, and
+the shared publish layout. Its adjacent `.sha256` file covers the complete ZIP.
+The package is unsigned; signing, SmartScreen, native launch, SteamVR driver
+load, GUI visual behavior, Meta runtime behavior, and connected-hardware
+behavior are Windows-only release checks rather than properties established by
+the build and package gates.
 
 For a live-runtime or hardware verification session, record the applicable
 details below. For an offline inspector or replay session, record only the OS,
@@ -886,7 +901,7 @@ unchecked until that path is run with the named Windows/runtime/hardware
 combination. Synthetic wizard evidence proves composition, not live timing,
 input or pose provenance, or hardware compatibility.
 
-Use the [setup support matrix](setup.md#milestone-5-device-combinations) to
+Use the [setup support matrix](setup.md#legacy-milestone-5-device-combinations) to
 record the intended combination. For each item below, retain the common
 environment record defined at the top of this file plus the redacted OpenVR
 category, role, registered path, driver, controller family, input-profile path,

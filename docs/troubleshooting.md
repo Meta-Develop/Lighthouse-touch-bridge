@@ -1,4 +1,13 @@
-# Troubleshooting
+# Legacy ALVR/VMT Troubleshooting Reference
+
+> [!IMPORTANT]
+> This document preserves legacy ALVR, VMT, and SteamVR `TrackingOverrides`
+> migration diagnostics for paths that run only behind warning-gated
+> `legacy-*` commands. It does not troubleshoot the
+> supported first-party desktop **Start** path. Use
+> [First-party internal driver operations](internal-drivers.md) for current
+> readiness and fail-safe behavior, and keep live results in the
+> [Windows internal-driver checklist](windows-internal-driver-verification.md).
 
 This guide starts from the state or symptom visible to the operator. Preserve
 the structured event code, application state, and redacted context when a
@@ -10,20 +19,22 @@ serials, recordings, or owner-local paths.
 ### Windows asks for .NET
 
 Use the self-contained `win-x64` ZIP produced by `build/package-win-x64.sh`.
-The supported package contains the .NET runtime and does not require a separate
-.NET installation. A framework-dependent output from an older development
-command is not the supported Version 0.1 package.
+The package contains the .NET runtime and does not require a separate .NET
+installation. A framework-dependent output from an older development command
+is not the current portable package.
 
-Confirm that the extracted directory still contains `Ltb.App.exe`, the managed
-assemblies, runtime files, `openvr_api.dll`, and the `licenses` directory. Do
-not copy only the executable.
+Confirm that the extracted directory still contains `Ltb.Gui.exe`,
+`Ltb.App.exe`, the complete `driver_ltb` directory, managed assemblies,
+runtime files, `openvr_api.dll`, and the `licenses` directory. Do not copy only
+an executable or only the driver directory.
 
-### The package hash or OpenVR DLL hash does not match
+### A package or component hash does not match
 
 Do not run the package. Verify that the ZIP and `.sha256` came from the same
-approved release. The expected `openvr_api.dll` SHA-256 is also recorded in
-`release-manifest.txt`. Re-extracting cannot make a mismatched download
-trustworthy; obtain the package again through the approved channel.
+approved release. `release-manifest.txt` records the expected
+`openvr_api.dll`, `driver_ltb.dll`, driver build-identity file, pinned OpenVR
+driver header, and Valve-license hashes. Re-extracting cannot make a mismatched
+download trustworthy; obtain the package again through the approved channel.
 
 ### Windows displays an unsigned-application warning
 
@@ -33,9 +44,9 @@ channel before proceeding. Signing acceptance remains a Windows release task.
 
 ## Startup states
 
-For live first-run capture, use the exact production `wizard` command from
-[setup.md](setup.md#run-the-production-two-hand-wizard). For the two-hand
-later-run path, use `daily`. Both require the profile store, two distinct VMT
+For legacy live first-run capture, use the exact `legacy-wizard` command from
+[setup.md](setup.md#run-the-legacy-two-hand-wizard). For the two-hand later-run
+path, use `legacy-daily`. Both require the profile store, two distinct VMT
 slots from `0` through `57`, and the explicit `steamvr.vrsettings` path.
 
 ### Stuck at `DependencyCheck`
@@ -45,7 +56,8 @@ SteamVR, ALVR, or VMT. Install, enable, and configure missing third-party
 components separately, then restart the affected runtime. Do not expect LTB to
 change driver or firmware installation state.
 
-For `wizard` or `daily`, verify that `http://127.0.0.1:8082/api/version` returns
+For `legacy-wizard` or `legacy-daily`, verify that
+`http://127.0.0.1:8082/api/version` returns
 a successful, nonempty response on the same Windows account. If ALVR uses a
 customized dashboard web-server port, restore the default port `8082` and
 restart ALVR.
@@ -74,7 +86,7 @@ runtime is not proof that a persistent `TrackingOverrides` entry was removed.
 
 ### Waiting at `WaitingForDevices`
 
-Run the `devices` command locally. Its output contains raw stable serials and
+Run the `legacy-devices` command locally. Its output contains raw stable serials and
 registered device paths, so inspect and compare them on the machine; redact
 both fields before sharing any transcript. Use the readiness diagnostic and,
 when needed, a locally inspected SteamVR property report to review inferred
@@ -93,7 +105,7 @@ with the saved profiles. Common causes are:
 - a device reconnected with a new transient OpenVR index and enumeration has
   not yet stabilized.
 
-The production `daily` gate also reads the current OpenVR properties. It needs
+The `legacy-daily` gate also reads the current OpenVR properties. It needs
 exactly one recognized Meta Touch controller per hand. A central classifier
 uses current category, role, driver metadata, controller family, and input
 profile; the application does not keep a separate allowlist of model strings.
@@ -121,8 +133,9 @@ and cannot be used as the physical source even when SteamVR classifies it as
 `GenericTracker`.
 
 A connected HMD descriptor is not filtered by a manufacturer/model allowlist,
-and LTB does not choose the active display. The `wizard` and `daily` dependency
-gate instead requires the connected device at OpenVR index `0` to be an HMD
+and LTB does not choose the active display. The `legacy-wizard` and
+`legacy-daily` dependency gate instead requires the connected device at
+OpenVR index `0` to be an HMD
 with positive Lighthouse driver or tracking-system evidence. If a newly named
 HMD, controller, or tracker has no completed hardware row in
 [windows-verification.md](windows-verification.md), treat the combination as
@@ -161,14 +174,14 @@ calibration-quality result.
 Use broader pitch, yaw, and roll with valid tracking. Static motion,
 single-axis motion, corrupted orientation, or ambiguous tracker association
 cannot establish the mount rotation. The previous usable profile is not
-silently replaced by a failed capture. In the production wizard, existing hand
+silently replaced by a failed capture. In the legacy wizard, existing hand
 overrides were released before capture and remain released after this failure;
 the stored profile surviving on disk does not imply that its mapping is active.
 
 ### Original Touch motion is missing during capture
 
 Stop the attempt and inspect the structured state sequence. `OverrideRelease`
-must complete before `Recording`; otherwise the wizard must not treat the
+must complete before `Recording`; otherwise `legacy-wizard` must not treat the
 observed pose as original Touch evidence. Confirm ALVR is exposing both Touch
 roles, the original hand mappings are absent from the selected settings file,
 and Quest cameras can observe the controllers when position is needed. Do not
@@ -196,7 +209,7 @@ The expected sequence is `Active -> SafeDisable -> WaitingForDevices`. LTB
 first releases and verifies mappings that reference each application source or
 target its semantic hand, then disables the corresponding two-hand VMT profile.
 A mapping-release failure leaves that source running and makes cleanup
-incomplete. The one-hand `bridge` instead retains its legacy VMT-first order.
+incomplete. The one-hand `legacy-bridge` instead retains its VMT-first order.
 Reconnecting a different same-class device or reusing a transient index must
 not satisfy the gate.
 
@@ -217,8 +230,8 @@ another apply attempt.
 ### SteamVR stops
 
 The expected sequence is `Active -> SafeDisable -> Stopped`. A SteamVR stop is
-also terminal if it occurs while `wizard` or `daily` is recovering from VMT or
-device loss.
+also terminal if it occurs while `legacy-wizard` or `legacy-daily` is
+recovering from VMT or device loss.
 After an OpenVR session has been acquired, the current invocation never reopens
 it or reapplies profiles; successful bounded cleanup returns exit code `3`.
 Start a new SteamVR session, allow device identities to settle, and rerun the
@@ -228,8 +241,9 @@ restart.
 ### A virtual hand appears frozen
 
 Stop interaction immediately and keep the setup non-worn. Request a managed
-shutdown. For `wizard` or `daily`, confirm exact mapping release precedes the
-corresponding VMT deactivation; for `bridge`, confirm its legacy VMT-first
+shutdown. For `legacy-wizard` or `legacy-daily`, confirm exact mapping release
+precedes the corresponding VMT deactivation; for `legacy-bridge`, confirm its
+VMT-first
 sequence completes. If LTB cannot report successful cleanup, inspect every
 selected VMT slot and every `TrackingOverrides` entry that references an
 application source or targets its semantic hand before reusing either hand. Do
@@ -239,7 +253,7 @@ not remove unrelated mappings or infer safety from a SteamVR restart alone.
 
 ### Exit code `4` or a cleanup-failure event
 
-For active production two-hand `wizard` and `daily` cleanup, LTB first releases
+For active `legacy-wizard` and `legacy-daily` cleanup, LTB first releases
 or rolls back and verifies all mappings that reference the configured or
 discovered application source or target its semantic hand. It deactivates that
 VMT source only after the bounded settings operation succeeds. If mapping
@@ -248,7 +262,7 @@ running so a surviving override does not immediately point at a stale source.
 It records the failure, skips deactivation for that source, and continues
 independent cleanup for the other hand.
 
-The production wizard's pre-capture `OverrideRelease` is stricter: it attempts
+The legacy wizard's pre-capture `OverrideRelease` is stricter: it attempts
 the source/semantic-hand release for both hands before any selected VMT source
 is deactivated. If either release fails, it leaves both sources running and
 does not start recording. Exit code `4` means at least one operation could not
@@ -265,13 +279,13 @@ reviewed manual recovery in
 [setup.md](setup.md). Do not start another active session until no unreviewed
 mapping remains.
 
-The legacy one-hand `bridge` retains its VMT-first cleanup order and still
+The one-hand `legacy-bridge` retains its VMT-first cleanup order and still
 attempts exact settings release after a deactivation failure. Interpret cleanup
 messages in the context of the command that produced them.
 
 ### Two-hand application fails partway through
 
-The production wizard and daily-use coordinator treat a two-hand apply as one
+The legacy wizard and daily-use coordinator treat a two-hand apply as one
 transaction. If either hand fails, they roll back effects created by that
 attempt and do not report `Active`. A rollback failure is surfaced as a
 structured error and requires manual inspection of both hands. Never assume
@@ -296,15 +310,16 @@ Console destruction, OS crash, and power loss require the same manual review.
 
 ## Structured logs and evidence
 
-Each `wizard`, `daily`, or `wizard-demo` event has a stable event code,
+Each `legacy-wizard`, `legacy-daily`, or `legacy-wizard-demo` event has a
+stable event code,
 severity, state, message, and UTC timestamp, with optional affected-hand,
 dependency, or wizard context.
 Enable the local event file with:
 
 ```text
-Ltb.App.exe wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> --log <events.jsonl>
-Ltb.App.exe daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> --log <events.jsonl>
-Ltb.App.exe wizard-demo --profiles <profile-store.json> --log <events.jsonl>
+Ltb.App.exe legacy-wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> --log <events.jsonl>
+Ltb.App.exe legacy-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> --log <events.jsonl>
+Ltb.App.exe legacy-wizard-demo --profiles <profile-store.json> --log <events.jsonl>
 ```
 
 All three commands use the same sink. `--log` appends one JSON object per event and

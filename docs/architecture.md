@@ -1,5 +1,72 @@
 # Architecture
 
+## Current integration direction: Meta Link and `driver_ltb`
+
+The primary architecture uses Quest through official Meta Quest Link while
+Bigscreen Beyond remains SteamVR's sole HMD. Quest and its Touch controllers
+stay in the Meta PC runtime and never enter SteamVR. SteamVR and official Meta
+Quest Link are the only external runtime dependencies of this path.
+
+```text
+Quest + Touch controllers
+        |
+        | Meta Quest Link
+        v
+Meta PC runtime -- installed LibOVR, invisible session --> Ltb.MetaLink
+                                                               |
+                                                               | Touch poses + inputs
+                                                               v
+Lighthouse trackers ----------------------------------------> Ltb.App
+                                                               |
+                                                               | calibrate and compose
+                                                               | T_output = T_tracker * X_mount
+                                                               v
+                                              same-user local IPC
+                                                               |
+                                                               v
+                                                        driver_ltb
+                                                               |
+                                                               v
+                                                SteamVR controllers
+```
+
+`Ltb.MetaLink` is a C# adapter over the LibOVR runtime installed with Meta
+Quest Link. It opens an invisible session, samples Touch poses and full input
+state, maps timestamps into the application clock, and exposes project-owned
+runtime-neutral contracts. The application associates the Touch and tracker
+streams, runs calibration, and composes each final controller pose as
+`T_output = T_tracker * X_mount`.
+
+The application sends the final pose and Touch input state over versioned,
+same-user local IPC. `driver_ltb` is intentionally thin: it exposes the two
+composed controllers to SteamVR, applies fresh state, and atomically
+neutralizes inputs while marking a controller untracked when the feed is
+stale. It does not calibrate, associate devices, estimate lag, or independently
+follow a tracker.
+
+The integration is split across four explicit modules:
+
+```text
+src/Ltb.MetaLink    installed-LibOVR adapter and Touch-source boundary
+src/Ltb.Protocol    versioned IPC schema, codecs, validation, golden vectors
+src/Ltb.Driver      C# driver-feed port, transport, readiness, registration
+native/driver_ltb   thin native SteamVR driver and portable protocol core
+```
+
+Platform-specific code remains behind these narrow boundaries.
+`Ltb.Calibration` retains its existing dependency direction and remains free of
+UI, SteamVR, OpenVR, Meta Link, LibOVR, driver, and application dependencies.
+The detailed protocol, lifecycle, packaging, safety, and verification contract
+is documented in [Internal Drivers](internal-drivers.md).
+
+## Existing v0.1 architecture history
+
+The milestone sections below retain the implemented ALVR, VMT, and
+`TrackingOverrides` architecture as a buildable fallback only. It receives no
+new configuration or orchestration automation, remains runnable only behind
+warning-gated `legacy-*` commands until the Meta Link and `driver_ltb` path
+passes its documented Windows exit gates, and is then scheduled for removal.
+
 ## Milestone 0 boundary
 
 Milestone 0 proves the mount-calibration mathematics from deterministic,
@@ -300,7 +367,16 @@ in calibration or profile code.
 ### Discovered device paths and settings ownership
 
 The OpenVR adapter reads `Prop_RegisteredDeviceType_String` and normalizes a
-valid `<driver>/<device>` value to `/devices/<driver>/<device>`. A fresh VMT
+valid `<driver>/<device>` value to `/devices/<driver>/<device>`. It reads the
+remaining device metadata independently, so an unavailable registered-device
+type does not discard observed manufacturer, model, controller, input-profile,
+version, or tracking-system evidence. `Prop_TrackingSystemName_String` and
+`Prop_ActualTrackingSystemName_String` remain separate observations: the latter
+is not collapsed into, or discarded in favor of, the former. Active-HMD policy
+uses both for positive Lighthouse evidence and runtime-exclusion vetoes. The
+driver ID remains unavailable when it cannot be parsed from a canonical
+registered-device path and is never inferred from those other properties. A
+fresh VMT
 slot might not exist in OpenVR until its first enabled Joint command, so the
 coordinator does not require a descriptor before activation. It uses the
 bounded VMT slot's canonical path only to remove a stale exact LTB mapping,
@@ -361,12 +437,13 @@ half the VMT heartbeat timeout. The effective rate is printed on activation.
 This prevents a low requested rate from making the health loop itself slower
 than the freshness limits it enforces.
 
-The legacy one-hand `bridge` keeps its original VMT-first managed-exit order:
+The legacy one-hand `legacy-bridge` command keeps its original VMT-first
+managed-exit order:
 it sends the disabled Joint configuration, then attempts exact settings release
 even if VMT deactivation failed. Cleanup failures are returned and produce a
 distinct command exit code rather than being hidden. This order is specific to
-the one-hand coordinator; the production two-hand `wizard` and `daily` paths
-use the source-preserving order described below. Touch
+the one-hand coordinator; the two-hand `legacy-wizard` and `legacy-daily`
+paths use the source-preserving order described below. Touch
 disconnect, VMT device loss or identity change, stale VMT heartbeat, invalid or
 stale VMT output pose, invalid tracker pose, reported tracker staleness,
 cancellation, and handled activation failures all enter this cleanup path once
@@ -422,8 +499,8 @@ desktop UI framework; that decision was recorded here before the dependency was
 introduced in the separate `Ltb.Gui` project. The owner directed the choice to
 minimize OS dependency: Avalonia is
 cross-platform, so the GUI is developed and headless-tested on Linux and
-cross-published to win-x64, and specification section 22 lists it among the
-candidate frameworks.
+cross-published to win-x64. Specification section 22 records `Ltb.Gui` as the
+isolated desktop presentation layer.
 
 The GUI lives in a separate `Ltb.Gui` project as a thin view over the existing
 UI-neutral ports: the `TwoHandCalibrationWizard` state machine, its
@@ -432,24 +509,25 @@ code contains rendering and binding only; sequencing, device, calibration, and
 persistence policy stay in the existing wizard, runtime, and backend types.
 `Ltb.Calibration` and `Ltb.Configuration` remain free of UI dependencies.
 
-The desktop shell defaults to the deterministic scripted-demo mode, so it can
-be opened without SteamVR, OpenVR, VMT, or host-settings access. The user can
-select production mode with the in-window radio buttons or start the executable
-with the `wizard` verb; `wizard-demo` explicitly selects the scripted path.
-The same launch values remain editable in the window. Both modes expose
-`--profiles` and optional `--log`; production additionally exposes
-`--left-vmt-slot`, `--right-vmt-slot`, `--steamvr-settings`, `--duration`,
-`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration is locked
-while a session runs, and Abort or a window close requests cancellation and
-waits for the session's cleanup path.
+The historical legacy desktop composition defaulted to the deterministic
+scripted-demo mode, so it could be opened without SteamVR, OpenVR, VMT, or
+host-settings access. Its production mode used the `legacy-wizard` verb;
+`legacy-wizard-demo` explicitly selected the scripted path. The same launch
+values remained editable in the window. Both modes exposed `--profiles` and
+optional `--log`; production additionally exposed `--left-vmt-slot`,
+`--right-vmt-slot`, `--steamvr-settings`, `--duration`, `--rate`,
+`--monitor-rate`, and `--reconnect-delay`. Configuration was locked while a
+session ran, and Abort or a window close requested cancellation and waited for
+the session's cleanup path.
 
 `CalibrationWizardViewModel` parses the editable values using invariant numeric
 formats and rejects invalid configuration before creating a session. The public
 `ProductionCalibrationWizardSessionOptions` contract in `Ltb.App` performs the
 authoritative range and cross-field validation, including distinct VMT slots in
 the supported `0..57` range. `ProductionCalibrationWizardSessionFactory` is the
-shared composition seam used by both the console `wizard` command and the GUI:
-it owns the live runtime, file-backed profile store, UI-neutral wizard,
+shared composition seam used by both the console `legacy-wizard` command and
+the historical legacy GUI: it owns the live runtime, file-backed profile store,
+UI-neutral wizard,
 post-activation watchdog, structured log, SafeDisable behavior, and native
 resource lifetime. `Ltb.Gui` adapts the completed lifecycle result to
 `ICalibrationWizardSession`; neither its view nor its view model sequences
@@ -545,17 +623,17 @@ path and atomically replaces the incompatible store after both new profiles
 validate; malformed JSON remains a fail-safe diagnostic. Apply remains behind
 the runtime port.
 
-Two runtime compositions now implement that port. `wizard-demo` uses
+Two legacy runtime compositions implement that port. `legacy-wizard-demo` uses
 `ScriptedCalibrationWizardRuntime` and deterministic fake streams without
-opening SteamVR, OpenVR, VMT, or host settings. The production `wizard` opens
-the live OpenVR session, uses the Milestone 1 recorder for the original Touch
-and tracker streams, and reuses the same VMT, SteamVR settings, two-hand apply
-transaction, watchdog, and SafeDisable boundaries as `daily`.
+opening SteamVR, OpenVR, VMT, or host settings. The `legacy-wizard` command
+opens the live OpenVR session, uses the Milestone 1 recorder for the original
+Touch and tracker streams, and reuses the same VMT, SteamVR settings, two-hand
+apply transaction, watchdog, and SafeDisable boundaries as `legacy-daily`.
 
 The production composition is:
 
 ```text
-wizard CLI -> TwoHandCalibrationWizard -> live OpenVR recorder
+legacy-wizard CLI -> TwoHandCalibrationWizard -> live OpenVR recorder
                                   |     -> CalibrationWizardBackend
                                   |     -> schema-1 profile store
                                   v
@@ -586,13 +664,13 @@ source.
 The production command is:
 
 ```text
-dotnet run --project src/Ltb.App -- wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+dotnet run --project src/Ltb.App -- legacy-wizard --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--duration <seconds>] [--rate <hz>] [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 The deterministic command remains:
 
 ```bash
-dotnet run --project src/Ltb.App -- wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
+dotnet run --project src/Ltb.App -- legacy-wizard-demo --profiles <profile-store.json> [--log <events.jsonl>]
 ```
 
 It uses deterministic fake controllers and fake tracker serials, intentionally
@@ -615,7 +693,7 @@ transition matrix can run with deterministic fakes on Linux.
 The production composition is:
 
 ```text
-daily CLI -> FileCalibrationWizardBackend + JsonLinesLtbLogSink
+legacy-daily CLI -> FileCalibrationWizardBackend + JsonLinesLtbLogSink
           -> ReliableDailyUseCoordinator
           -> ProductionReliableDailyUseRuntime
           -> shared OpenVR session + one VMT client + SteamVrSettingsManager
@@ -626,14 +704,14 @@ slots. The CLI requires the complete profile store, left and right slots in
 `0..57`, and an explicit settings path:
 
 ```text
-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
+legacy-daily --profiles <profile-store.json> --left-vmt-slot <0..57> --right-vmt-slot <0..57> --steamvr-settings <steamvr.vrsettings> [--log <events.jsonl>] [--monitor-rate <hz>] [--reconnect-delay <seconds>]
 ```
 
 The monitor rate defaults to `20` Hz and reconnect delay to `0.25` seconds.
 The live adapter uses an internal `0.5`-second pose-staleness threshold and a
 five-second VMT heartbeat/discovery bound.
 
-The `daily` composition proves input and active-HMD readiness with three
+The `legacy-daily` composition proves input and active-HMD readiness with three
 independent current observations before it can become `Ready`:
 
 1. `AlvrLocalDashboardProbe` requires a successful, nonempty response from the
@@ -736,7 +814,7 @@ driver-requested quit is also classified as stopped. A process-quit event for
 another client is ignored. A terminal runtime event therefore drives the
 normal `SteamVrStopped` diagnostic and SafeDisable path.
 
-SteamVR startup retry is allowed only before this `daily` invocation has
+SteamVR startup retry is allowed only before this `legacy-daily` invocation has
 acquired its OpenVR session. If SteamVR stops after acquisition, including
 while recovering from VMT loss, the stop is terminal for that invocation. The
 coordinator performs bounded cleanup, emits `SteamVrStopped`, enters `Stopped`,
@@ -796,12 +874,13 @@ The stable code vocabulary is grouped by purpose:
   `RollbackCompleted`, and `RollbackFailed`.
 
 `JsonLinesLtbLogSink` is the local append-only JSON Lines destination exposed
-by `wizard --log <events.jsonl>`, `daily --log <events.jsonl>`, and
-`wizard-demo --log <events.jsonl>`. It creates a missing parent directory,
-appends one JSON object per event, and flushes each event. Omitting the option
-disables the JSONL sink and creates no default event file. Log-write failures
-are swallowed at the coordinator boundary so they cannot alter calibration or
-prevent SafeDisable or rollback.
+by `legacy-wizard --log <events.jsonl>`,
+`legacy-daily --log <events.jsonl>`, and
+`legacy-wizard-demo --log <events.jsonl>`. It creates a missing parent
+directory, appends one JSON object per event, and flushes each event. Omitting
+the option disables the JSONL sink and creates no default event file.
+Log-write failures are swallowed at the coordinator boundary so they cannot
+alter calibration or prevent SafeDisable or rollback.
 
 Wizard logging uses the same event envelope and records state transitions plus
 the distinct calibration results `NoPositionAvailable`,
@@ -824,11 +903,13 @@ and backups are not repository or package inputs.
 
 Version 0.1 is distributed as a self-contained, untrimmed, non-single-file
 `win-x64` portable ZIP. Keeping separate files preserves app-local
-`openvr_api.dll`, managed interop assemblies, and third-party licenses without
-native extraction or trimming assumptions. The publish profile writes ignored
-output under `artifacts/`; the packaging script stamps the version, verifies
-the pinned OpenVR DLL and license, adds a release manifest, and emits a ZIP plus
-SHA-256.
+`openvr_api.dll`, managed interop assemblies, third-party licenses, and the
+staged `driver_ltb` manifest, binary, input resources, settings, localization,
+icons, and build identity without native extraction or trimming assumptions.
+The publish profile writes ignored output under `artifacts/`; the packaging
+script requires an allowlisted staged driver root, stamps the version, verifies
+the pinned OpenVR DLL and licenses, verifies the driver build and protocol
+identity, records the packaged binary hashes, and emits a ZIP plus SHA-256.
 
 `RuntimeFrameworkVersion` is pinned to `8.0.28`, and the packager records both
 that expected version and the actual runtime-pack version found in
@@ -838,10 +919,14 @@ release work: review the update, change the pin, rerun build/test/publish, and
 repeat Windows runtime and hardware acceptance instead of allowing an
 unreviewed runtime pack to float.
 
-This is packaging, not an installer. It does not install or update SteamVR,
-ALVR, VMT, drivers, firmware, or .NET, and it does not create shortcuts or a
-background service. The bundle includes the .NET runtime. Signing, SmartScreen,
-native launch, and live integration remain Windows release checks.
+This is portable packaging, not an operating-system installer. The bundle
+contains the staged `driver_ltb` assets and the .NET runtime, but extraction
+alone does not register the driver. The application owns requested
+registration and removal through its transactional `vrpathreg` boundary. The
+package does not install or update SteamVR, Meta Quest Link, ALVR, VMT,
+firmware, or .NET, and it does not create shortcuts or a background service.
+Signing, SmartScreen, native launch, registration, and live integration remain
+Windows release checks.
 
 The complete product requirements remain in the [project
 specification](specification.md); the implemented calibration details are in
@@ -891,7 +976,7 @@ This gives each role one explicit acceptance rule:
 | --- | --- | --- |
 | Meta Touch input controller | A connected input controller has a left/right role and matches a known Meta Touch family. When OpenVR supplies an input-profile path, it must also match that family. Orientation-only calibration may proceed when controller position is unavailable; full 6DoF still requires valid position samples. | Current controller runtime, family/model, optional input profile, role, and optional exact serial are runtime observations. A stored profile cannot make an unknown live descriptor supported. |
 | Physical Lighthouse pose source | `CanUseAsPhysicalPoseSource` is true. A connected positional `GenericTracker` can satisfy this without a Vive-specific or Tundra-specific model check. | Exact stable serial remains the profile and reconnect key. VMT registered paths are marked virtual and excluded even though VMT also enumerates as `GenericTracker`, preventing a virtual output from following itself. |
-| Lighthouse HMD | The connected `HeadMountedDisplay` at transient OpenVR index `0` must report positive Lighthouse driver or tracking-system evidence. No manufacturer or model allowlist is used, and LTB does not use an HMD as a physical controller-pose source. | SteamVR chooses the active display. `wizard` and `daily` reject Quest/ALVR/Meta/Oculus evidence and fail closed on missing, duplicate, conflicting, or unknown active-HMD evidence. Windows verification must still prove each real HMD/runtime combination. |
+| Lighthouse HMD | The connected `HeadMountedDisplay` at transient OpenVR index `0` must report positive Lighthouse driver, tracking-system, or actual-tracking-system evidence. No manufacturer or model allowlist is used, and LTB does not use an HMD as a physical controller-pose source. | SteamVR chooses the active display. `legacy-wizard` and `legacy-daily` reject Quest/ALVR/Meta/Oculus evidence across both tracking-system observations and fail closed on missing, duplicate, conflicting, or unknown active-HMD evidence. Windows verification must still prove each real HMD/runtime combination. |
 
 Stable identity and capability answer different questions. The exact serial
 answers whether a re-enumerated device is the same physical mount; capability
