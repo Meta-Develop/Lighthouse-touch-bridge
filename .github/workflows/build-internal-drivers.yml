@@ -21,6 +21,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-capabilities:
+    name: Driver and package source prerequisites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      complete: ${{ steps.openvr.outputs.complete }}
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Detect pinned OpenVR source prerequisites
+        id: openvr
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_paths=(
+            "src/Ltb.OpenVr/ThirdParty/OpenVR/openvr_driver.h"
+            "src/Ltb.OpenVr/runtimes/win-x64/native/openvr_api.dll"
+          )
+          missing_paths=()
+          for path in "${required_paths[@]}"; do
+            if [[ ! -f "$path" ]]; then
+              missing_paths+=("$path")
+            fi
+          done
+
+          if (( ${#missing_paths[@]} == 0 )); then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+            echo "The pinned OpenVR source prerequisites are present; full Windows driver and package validation is enabled." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "complete=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Full Windows driver and package validation is deferred"
+            echo
+            echo "The clean source tree is missing these documented pinned OpenVR inputs:"
+            printf -- "- \`%s\`\n" "${missing_paths[@]}"
+            echo
+            echo "Portable managed/native validation remains required below. Restoring the pinned inputs is tracked by [#16](https://github.com/Meta-Develop/Lighthouse-touch-bridge/issues/16); this workflow does not download or substitute untracked build inputs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   linux-validation:
     name: Linux managed and native-core validation
     runs-on: ubuntu-24.04
@@ -56,7 +102,9 @@ jobs:
         run: ctest --test-dir build/native-linux --output-on-failure
 
   windows-driver:
-    name: Windows x64 SteamVR driver
+    name: Windows validation and driver readiness
+    needs:
+      - source-capabilities
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -82,19 +130,32 @@ jobs:
           --configuration Release
           --filter FullyQualifiedName~JsonLinesInternalDriverSessionOutputTests
 
-      - name: Configure driver_ltb
+      - name: Configure Windows native validation
         run: >-
           cmake -S native/driver_ltb -B build/native-windows -A x64
-          -DLTB_BUILD_OPENVR_DRIVER=ON
+          -DLTB_BUILD_OPENVR_DRIVER=${{
+          needs.source-capabilities.outputs.complete == 'true' && 'ON' || 'OFF'
+          }}
           -DLTB_BUILD_TESTS=ON
 
-      - name: Build driver_ltb
+      - name: Build Windows native validation
         run: cmake --build build/native-windows --config Release
 
       - name: Test portable core on Windows
         run: ctest --test-dir build/native-windows -C Release --output-on-failure
 
+      - name: Report deferred full-driver coverage
+        if: needs.source-capabilities.outputs.complete != 'true'
+        shell: pwsh
+        run: |
+          @"
+          ### Full Windows driver coverage is deferred
+
+          The portable native core was built and tested on Windows. The complete SteamVR driver build remains disabled until the documented pinned OpenVR source inputs tracked by [#16](https://github.com/Meta-Develop/Lighthouse-touch-bridge/issues/16) are restored.
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
       - name: Verify staged external-driver root
+        if: needs.source-capabilities.outputs.complete == 'true'
         shell: pwsh
         run: |
           $stageRoot = "build/native-windows/driver_ltb"
@@ -129,11 +190,13 @@ jobs:
           Write-Host "Verified staged driver identity: $($buildIdMatch.Groups['identity'].Value)"
 
       - name: Verify driver PE imports
+        if: needs.source-capabilities.outputs.complete == 'true'
         run: >-
           python native/driver_ltb/tools/check_pe_imports.py
           --binary build/native-windows/driver_ltb/bin/win64/driver_ltb.dll
 
       - name: Upload Windows driver artifact
+        if: needs.source-capabilities.outputs.complete == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: driver_ltb-win-x64
@@ -152,41 +215,58 @@ jobs:
           retention-days: 14
 
   package-win-x64:
-    name: Portable Windows x64 package
+    name: Windows package readiness
     needs:
+      - source-capabilities
       - linux-validation
       - windows-driver
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
+      - name: Report deferred package coverage
+        if: needs.source-capabilities.outputs.complete != 'true'
+        shell: bash
+        run: |
+          {
+            echo "### Portable package coverage is deferred"
+            echo
+            echo "The clean source tree cannot produce the Windows package until the documented pinned OpenVR inputs tracked by [#16](https://github.com/Meta-Develop/Lighthouse-touch-bridge/issues/16) are restored."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check out source without persisted credentials
+        if: needs.source-capabilities.outputs.complete == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 1
 
       - name: Set up .NET SDK
+        if: needs.source-capabilities.outputs.complete == 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 8.0.423
 
       - name: Set up Python
+        if: needs.source-capabilities.outputs.complete == 'true'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13.12"
 
       - name: Download Windows driver artifact
+        if: needs.source-capabilities.outputs.complete == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: driver_ltb-win-x64
           path: ${{ runner.temp }}/driver_ltb
 
       - name: Build and verify portable package
+        if: needs.source-capabilities.outputs.complete == 'true'
         env:
           LTB_DRIVER_ROOT: ${{ runner.temp }}/driver_ltb
         run: bash build/package-win-x64.sh
 
       - name: Verify package outputs
+        if: needs.source-capabilities.outputs.complete == 'true'
         shell: bash
         env:
           LTB_DRIVER_ROOT: ${{ runner.temp }}/driver_ltb
@@ -253,6 +333,7 @@ jobs:
           PY
 
       - name: Upload portable package
+        if: needs.source-capabilities.outputs.complete == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: lighthouse-touch-bridge-win-x64
