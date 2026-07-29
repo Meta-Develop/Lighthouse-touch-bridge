@@ -1,1 +1,2 @@
 build/*.sh text eol=lf
+src/Ltb.OpenVr/ThirdParty/OpenVR/openvr_driver.h whitespace=-blank-at-eol,-blank-at-eof
