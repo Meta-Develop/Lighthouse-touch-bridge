@@ -271,6 +271,34 @@ public sealed class InternalDriverInputProfileTests
         Assert.Contains("/actions/global/in/grip_axis", bindingJson, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PackageAndWindowsArtifactContractsIncludeEveryReferencedInputResource()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var packageScript = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "build",
+            "package-win-x64.sh"));
+        var workflow = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            ".github",
+            "workflows",
+            "build-internal-drivers.yml"));
+        var requiredResources = new[]
+        {
+            "resources/input/ltb_touch_profile.json",
+            "resources/input/ltb_touch_remapping.json",
+            "resources/input/legacy_bindings_ltb_touch.json",
+            "resources/input/bindings/bindings_ltb_touch_vrchat.json",
+        };
+
+        foreach (var resource in requiredResources)
+        {
+            Assert.Contains(resource, packageScript, StringComparison.Ordinal);
+            Assert.Contains(resource, workflow, StringComparison.Ordinal);
+        }
+    }
+
     private static void AssertBindingOnlyUsesDeclaredSources(
         JsonElement binding,
         JsonElement declaredSources)
