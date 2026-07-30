@@ -16,6 +16,13 @@ internal sealed record RecordingInspectionSummaryOptions(
 internal static class RecordingInspectionSummaryRenderer
 {
     private const int MaximumAxisSamples = 256;
+    // Confidence combines platform-transcendental and accumulated correlation
+    // results. Three fractional digits retain 0.1 percentage-point report
+    // resolution without presenting incidental platform digits as a contract.
+    private const string LagConfidenceReportFormat = "F3";
+    // Runner-up and prominence are direct confidence evidence. Five fractional
+    // digits retain 0.001 percentage-point resolution across platform drift.
+    private const string CorrelationEvidenceReportFormat = "F5";
 
     public static string Render(
         PoseRecording recording,
@@ -80,12 +87,18 @@ internal static class RecordingInspectionSummaryRenderer
         var output = new StringBuilder();
         AppendLine(output, $"controller_lag_ms: {lag.LagSeconds * 1_000d:F3}");
         AppendLine(output, $"lag_correlation: {lag.CorrelationScore:F6}");
-        AppendLine(output, $"lag_confidence: {lag.Confidence:F6}");
+        AppendLine(
+            output,
+            $"lag_confidence: {lag.Confidence.ToString(LagConfidenceReportFormat, CultureInfo.InvariantCulture)}");
         AppendLine(output, $"lag_compared_samples: {lag.ComparedSampleCount}");
         AppendLine(output, $"coarse_correlation_lag_ms: {FormatMilliseconds(lag.CoarseLagSeconds)}");
         AppendLine(output, $"coarse_correlation_score: {FormatFinite(lag.CoarseCorrelationScore)}");
-        AppendLine(output, $"runner_up_correlation_score: {FormatFinite(lag.RunnerUpCorrelationScore)}");
-        AppendLine(output, $"correlation_peak_prominence: {FormatFinite(lag.PeakProminence)}");
+        AppendLine(
+            output,
+            $"runner_up_correlation_score: {FormatCorrelationEvidence(lag.RunnerUpCorrelationScore)}");
+        AppendLine(
+            output,
+            $"correlation_peak_prominence: {FormatCorrelationEvidence(lag.PeakProminence)}");
         AppendLine(
             output,
             $"correlation_interval_ms: [{FormatMilliseconds(lag.CorrelationIntervalMinimumSeconds)}, {FormatMilliseconds(lag.CorrelationIntervalMaximumSeconds)}]");
@@ -340,6 +353,11 @@ internal static class RecordingInspectionSummaryRenderer
     private static string FormatFinite(double value) =>
         double.IsFinite(value)
             ? value.ToString("F6", CultureInfo.InvariantCulture)
+            : "unavailable";
+
+    private static string FormatCorrelationEvidence(double value) =>
+        double.IsFinite(value)
+            ? value.ToString(CorrelationEvidenceReportFormat, CultureInfo.InvariantCulture)
             : "unavailable";
 
     private static double Ratio(
