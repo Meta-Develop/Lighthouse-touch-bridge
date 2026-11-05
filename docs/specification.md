@@ -588,10 +588,11 @@ protocol and capability change.
 
 The producer and driver shall communicate through one local Windows named pipe
 named `\\.\pipe\lighthouse-touch-bridge-v1` (managed local name
-`lighthouse-touch-bridge-v1`). The pipe server ACL shall permit only the owning
-interactive user; remote clients and other users shall be rejected. Both ends
-shall verify that the peer belongs to the expected same-user session. The
-transport shall not use TCP, UDP, a remotely reachable pipe, or a shared
+`lighthouse-touch-bridge-v1`). The pipe server ACL shall permit only the current
+user identified by the server process token; remote clients and other users
+shall be rejected. The client shall require current-user-only access, and both
+ends shall separately verify that the peer belongs to the same Windows session.
+The transport shall not use TCP, UDP, a remotely reachable pipe, or a shared
 machine-wide unauthenticated endpoint.
 
 All fields are little-endian. IPC v1 contains fixed-layout `HandState` and
@@ -778,6 +779,9 @@ Stopped
   -> SaveProfile
   -> StartingFeed
   -> Active
+  -> Reconnecting -> Active (after feed recovery)
+
+Any state + unrecoverable failure -> Faulted
 ```
 
 Recovery transitions are:
@@ -786,9 +790,9 @@ Recovery transitions are:
 Any calibration state + recoverable failure -> Ready with diagnostic
 Active + one tracker lost                -> affected hand untracked and neutral
 Active + Meta readiness lost             -> both hands untracked and neutral
-Active + pipe/driver stale or disconnected-> both hands untracked and reconnect
+Active + feed reconnecting/faulted/stale   -> Reconnecting; both hands untracked and neutral
 Active + SteamVR stopped                 -> Stopped
-Recovered transport or runtime           -> new IPC session, then Active
+Reconnecting + recovered feed            -> new IPC session, then Active
 Unrecoverable fault                       -> Faulted until user action
 ```
 

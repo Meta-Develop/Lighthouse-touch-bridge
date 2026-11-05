@@ -264,7 +264,8 @@ depending on a machine-local capture.
 magnitudes and searches a bounded offset by normalized cross-correlation. A
 positive `LagEstimate.LagSeconds` means that the controller host timestamps
 occur later than tracker timestamps for the same motion; this is the negative
-of `tau` in specification section 10. `PoseStreamAligner` corrects controller
+of `tau` in [specification section 10](specification.md#10-stream-time-alignment).
+`PoseStreamAligner` corrects controller
 time, uses shortest-path SLERP for orientation and linear interpolation for
 position, and constructs `SynchronizedPosePair` values. Translation is
 attempted only after timing and rotation have passed their quality checks.
@@ -291,9 +292,10 @@ so replay has no dependency on device enumeration or live time.
 Milestone 2 applies one saved profile to one hand. It composes the portable
 transform contract with two platform adapters: VMT receives the tracker-local
 mount transform, and SteamVR receives one `TrackingOverrides` mapping from the
-discovered VMT device path to the selected semantic hand. This implements
-specification sections [15, 16, 18, and 24](specification.md) without moving
-VMT, OpenVR, SteamVR settings, or application policy into `Ltb.Core` or
+discovered VMT device path to the selected semantic hand. This implemented the
+pre-rewrite specification at `edd3382` (`docs/specification.md`), sections
+15 (VMT), 16 (`TrackingOverrides`), 18 (application state), and 24 (milestones),
+without moving VMT, OpenVR, SteamVR settings, or application policy into `Ltb.Core` or
 `Ltb.Calibration`.
 
 The activation and cleanup order is:
@@ -507,8 +509,17 @@ desktop UI framework; that decision was recorded here before the dependency was
 introduced in the separate `Ltb.Gui` project. The owner directed the choice to
 minimize OS dependency: Avalonia is
 cross-platform, so the GUI is developed and headless-tested on Linux and
-cross-published to win-x64, and specification section 22 lists it among the
-candidate frameworks.
+cross-published to win-x64. Current
+[specification section 22](specification.md#22-technology-and-project-layout)
+records Avalonia as the desktop presentation framework.
+
+The current `Ltb.Gui` entry point launches the first-party desktop flow:
+`App.OnFrameworkInitializationCompleted` constructs `InternalDriverViewModel`,
+and `MainWindow` opens on **Setup**. Users configure prerequisites there and
+choose **Start** to run the internal-driver session. See the
+[internal-driver operations guide](internal-drivers.md) for this workflow.
+
+The wizard details below describe the historical desktop shell.
 
 The GUI lives in a separate `Ltb.Gui` project as a thin view over the existing
 UI-neutral ports: the `TwoHandCalibrationWizard` state machine, its
@@ -517,16 +528,18 @@ code contains rendering and binding only; sequencing, device, calibration, and
 persistence policy stay in the existing wizard, runtime, and backend types.
 `Ltb.Calibration` and `Ltb.Configuration` remain free of UI dependencies.
 
-The desktop shell defaults to the deterministic scripted-demo mode, so it can
-be opened without SteamVR, OpenVR, VMT, or host-settings access. The user can
-select production mode with the in-window radio buttons or start the executable
-with the `wizard` verb; `wizard-demo` explicitly selects the scripted path.
-The same launch values remain editable in the window. Both modes expose
-`--profiles` and optional `--log`; production additionally exposes
+The historical desktop shell defaulted to deterministic scripted-demo mode,
+so it could be opened without SteamVR, OpenVR, VMT, or host-settings access.
+It offered production-mode radio buttons and parsed the `wizard` and
+`wizard-demo` launch values. The current `Ltb.Gui` entry point always constructs
+the first-party view model; these wizard modes and options belong to the
+earlier shell.
+The same launch values were editable in that window. Both modes exposed
+`--profiles` and optional `--log`; production additionally exposed
 `--left-vmt-slot`, `--right-vmt-slot`, `--steamvr-settings`, `--duration`,
-`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration is locked
-while a session runs, and Abort or a window close requests cancellation and
-waits for the session's cleanup path.
+`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration was locked
+while a session ran, and Abort or a window close requested cancellation and
+waited for the session's cleanup path.
 
 `CalibrationWizardViewModel` parses the editable values using invariant numeric
 formats and rejects invalid configuration before creating a session. The public

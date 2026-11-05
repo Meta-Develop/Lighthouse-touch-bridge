@@ -1,25 +1,41 @@
-# Custom SteamVR Driver Evaluation
+# Historical Custom SteamVR Driver Evaluation
 
-## Decision
+This note records the legacy ALVR/VMT evaluation against the pre-rewrite
+specification at commit `edd3382` (`docs/specification.md`). Its recommendation
+has been superseded by the first-party Meta Link and `driver_ltb` architecture.
+The current contracts are [section 15, first-party driver](specification.md#15-first-party-driver_ltb),
+[section 16, IPC and registration](specification.md#16-ipc-v1-and-driver-registration),
+[section 17, Meta Link and LibOVR](specification.md#17-meta-quest-link-and-libovr-contract),
+[section 21, target scope](specification.md#21-target-scope-non-goals-and-hardware-path),
+[section 24, milestones](specification.md#24-milestones), and
+[section 26, project assessment](specification.md#26-project-assessment).
+Windows acceptance belongs to the
+[internal-driver checklist](windows-internal-driver-verification.md).
+The evaluation below describes the earlier decision and evidence available at
+that time.
 
-Milestone 5 does not justify a custom SteamVR driver. Lighthouse Touch Bridge
-should continue to use VMT for the tracker-local virtual pose and SteamVR
+## Historical decision
+
+The evaluation concluded that Milestone 5 did not justify a custom SteamVR
+driver and recommended continuing to use VMT for the tracker-local virtual
+pose and SteamVR
 `TrackingOverrides` for pose substitution while Windows hardware verification
-collects evidence about that integration. This is the investigation requested
-by [specification section 24, "Milestone 5 — Generalization"](specification.md);
-it is not a driver design or implementation plan.
+collected evidence about that integration. This was the investigation requested
+by the pre-rewrite specification at `edd3382`, section 24,
+"Milestone 5 — Generalization"; it was not a driver design or implementation
+plan.
 
-The decision follows the scope set by [specification section 21, "MVP
-Scope"](specification.md), which excludes a custom controller driver, and
-[section 26, "Project Assessment"](specification.md), which says to reconsider
-one only if empirical testing shows that VMT or `TrackingOverrides` prevents
-reliable input/pose composition. The current Linux environment proves
-deterministic adapters and coordinator behavior but cannot supply that
+The decision followed the scope set by the pre-rewrite specification at
+`edd3382`, section 21, "MVP Scope", which excluded a custom controller driver,
+and section 26, "Project Assessment", which said to reconsider
+one only if empirical testing showed that VMT or `TrackingOverrides` prevented
+reliable input/pose composition. The Linux environment at the time proved
+deterministic adapters and coordinator behavior but could not supply that
 empirical SteamVR and hardware evidence.
 
 ## Existing integration boundaries
 
-The current path deliberately keeps calibration independent of SteamVR:
+The legacy path deliberately kept calibration independent of SteamVR:
 
 ```text
 physical tracked pose + T_T_C
@@ -34,14 +50,14 @@ physical tracked pose + T_T_C
  semantic left/right hand with Meta Touch inputs
 ```
 
-[Specification section 15, "VMT Integration"](specification.md), assigns one
-stable VMT device to each hand and requires any VMT convention conversion to
-remain in one adapter. [Section 16, "SteamVR
-TrackingOverrides"](specification.md), assigns settings backup, safe merge,
+The pre-rewrite specification at `edd3382`, section 15, "VMT Integration",
+assigned one stable VMT device to each hand and required any VMT convention
+conversion to remain in one adapter. Its section 16, "SteamVR
+TrackingOverrides", assigned settings backup, safe merge,
 validation, rollback, and stale-source cleanup to the coordinator. The
 implemented boundaries expose the following concrete limitations.
 
-| Boundary | Current responsibility | Limitation visible in the codebase |
+| Boundary | Responsibility at evaluation time | Limitation observed at evaluation time |
 | --- | --- | --- |
 | VMT OSC control | `VmtClient` enables automatic pose updates and sends the serial-following `T_T_C` transform with `/VMT/Joint/Driver`. | VMT is an external runtime dependency. LTB must observe its heartbeat, use bounded slots `0..57`, and own loopback response port `39571`, which cannot be shared with VMT Manager during a run. |
 | VMT device registration | LTB requests Tracker mode and then discovers the actual registered OpenVR path. | VMT honors a slot's device class on its first registration in a SteamVR process. A slot first registered in another mode requires a SteamVR restart before LTB can obtain the required tracker class. |
@@ -49,9 +65,9 @@ implemented boundaries expose the following concrete limitations.
 | `TrackingOverrides` | `SteamVrSettingsManager` maps one discovered `/devices/<driver>/<device>` source to one semantic hand, preserves unrelated settings, writes atomically, verifies the result, and supports reviewed rollback. | The mapping is persistent JSON owned by SteamVR, not a transaction provided by the runtime. External writers do not honor LTB's sibling lock, conflicting source/hand owners must fail closed, and abrupt process or OS termination can prevent cleanup while leaving the persistent mapping in place. |
 | Input/pose composition | The original Meta Touch controller remains the input device while the VMT source supplies the overridden pose. | Linux fakes cannot prove real input provenance, haptics, application bindings, restart behavior, or end-to-end pose timing. Those are still unchecked Windows hardware requirements rather than demonstrated failures. |
 
-These constraints increase orchestration work, but none is currently evidence
-that correct input/pose composition is impossible. The coordinator already
-contains bounded dependency checks, exact-path ownership checks, composed-pose
+These constraints increased orchestration work, but none was then evidence
+that correct input/pose composition was impossible. The coordinator already
+contained bounded dependency checks, exact-path ownership checks, composed-pose
 verification, watchdog handling, SafeDisable, transactional two-hand apply,
 settings backups, and recovery diagnostics around them.
 
@@ -95,14 +111,14 @@ channel and strict validation of transforms, identities, and input messages;
 moving code into a SteamVR-loaded component increases the consequence of
 crashes and malformed data.
 
-Maintenance would expand from the current narrow OpenVR client, VMT OSC, and
+Maintenance would expand from the then-existing narrow OpenVR client, VMT OSC, and
 settings adapters to an installed runtime component whose behavior must be
 revalidated across SteamVR changes and every supported device combination.
 Packaging, signing, rollback, and security review would become release gates.
-The repository currently has no Windows driver harness or hardware evidence
-that would make this cost proportional to an observed defect.
+At evaluation time, the repository had no Windows driver harness or hardware
+evidence that would make this cost proportional to an observed defect.
 
-## Decision triggers
+## Historical decision triggers
 
 Reopen this decision only when redacted Windows evidence demonstrates at least
 one reproducible limitation that remains after the existing adapter and safety
@@ -125,7 +141,7 @@ criterion the current path misses, and a comparison with the smallest adapter
 or orchestration correction. A preference for fewer dependencies, by itself,
 is not sufficient.
 
-## Recommendation
+## Historical recommendation
 
 Retain VMT and `TrackingOverrides` for Milestone 5, complete the capability-
 based device generalization, and use the expanded Windows matrix to determine

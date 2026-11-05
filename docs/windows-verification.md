@@ -21,9 +21,13 @@ gate, and structured-event contracts. Milestone 5 fake descriptors cover
 multiple Meta Touch, physical Lighthouse pose-source, and HMD families. Those
 tests do not exercise a real SteamVR runtime, ALVR transport, OpenVR timing,
 Windows ACLs, USB reconnect behavior, code signing, or live device-index
-assignment. This file is the consolidated checklist for deferred Windows and
-hardware acceptance, including specification section 23.4. Each item states
-the environment and dependencies it needs.
+assignment. This file preserves the deferred legacy Windows and hardware
+acceptance checklist, including section 23.4 of the pre-rewrite specification
+at `edd3382` (`docs/specification.md`). Current
+[specification section 23.4](specification.md#234-windows-metasteamvr-hardware-exit-gates)
+is covered by the
+[Windows internal-driver verification checklist](windows-internal-driver-verification.md).
+Each legacy item below states the environment and dependencies it needs.
 
 Keep captured evidence free of credentials and owner-local absolute paths. Do
 not commit real device serials, SteamVR configuration backups, or hardware
@@ -90,8 +94,11 @@ bash build/package-win-x64.sh 0.1.0
 
 The packaging script requires .NET 8, Git, Bash, and Python 3 on the build
 machine. End users need none of those tools or a separate .NET installation;
-they run `Ltb.Gui.exe` for the desktop wizard or `Ltb.App.exe` for the console
-commands from the extracted self-contained package. The script refuses to
+the current `Ltb.Gui.exe` opens the first-party **Setup** tab, where **Start**
+runs the internal-driver session; see the
+[operations guide](internal-drivers.md). The desktop wizard described later in
+this checklist is historical. `Ltb.App.exe` provides console commands from the
+extracted self-contained package. The script refuses to
 overwrite an existing same-version archive.
 
 The `Ltb.OpenVr` project copies `openvr_api.dll` into the application publish
@@ -450,9 +457,10 @@ Touch controller remains the input source while VMT supplies its pose.
 
 Use the command and profile contract in [setup.md](setup.md). The transform,
 adapter, settings, and health decisions are recorded in
-[architecture.md](architecture.md), and the acceptance intent comes from
-specification sections [15, 16, 18, and 24](specification.md). VMT command and
-override behavior should be compared with the
+[architecture.md](architecture.md), and the legacy acceptance intent comes from
+the pre-rewrite specification at `edd3382` (`docs/specification.md`), sections
+15 (VMT), 16 (`TrackingOverrides`), 18 (application state), and 24 (milestones).
+VMT command and override behavior should be compared with the
 [official VMT API](https://gpsnmeajp.github.io/VirtualMotionTrackerDocument/api/);
 OpenVR registered-device properties and tracker classes should be compared with
 Valve's [driver API documentation](https://github.com/ValveSoftware/openvr/blob/master/docs/Driver_API_Documentation.md).
@@ -840,7 +848,11 @@ transition-matrix tests or a successful cross-publish alone.
   diagnostic set and confirm it contains no telemetry upload, credentials, raw
   settings/backups, recordings, real serials, or owner-local paths.
 
-### Consolidated specification 23.4 hardware acceptance
+### Historical hardware acceptance
+
+These items consolidate section 23.4 of the pre-rewrite specification at
+`edd3382` (`docs/specification.md`). Current section 23.4 is gated by the
+[Windows internal-driver checklist](windows-internal-driver-verification.md).
 
 - [ ] **Static alignment at varied orientations.** Compare the physical Touch
   reference and virtual output at several static yaw, pitch, and roll poses for
