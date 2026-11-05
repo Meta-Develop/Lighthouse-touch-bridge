@@ -1,4 +1,17 @@
-# Windows Runtime Verification
+# Legacy ALVR/VMT Windows Runtime Verification
+
+> [!IMPORTANT]
+> This fully historical checklist covers the legacy ALVR, VMT, and SteamVR
+> `TrackingOverrides` migration path, which now runs only behind warning-gated
+> `legacy-*` commands. It cannot establish support for
+> the first-party desktop **Start** path and is not a release gate for it. Use
+> [First-party internal driver operations](internal-drivers.md) and the
+> [Windows internal-driver verification checklist](windows-internal-driver-verification.md)
+> instead.
+> Historical examples below retain their original command spellings. Main
+> refuses unprefixed `devices`, `record`, `bridge`, `daily`, `wizard`, and
+> `wizard-demo` as parse-only migration aliases (exit code `1`); only the
+> corresponding warning-gated `legacy-*` forms execute.
 
 The automated suite has deterministic Linux tests for calibration, recording,
 replay, capability-based device enumeration and matching, one-hand bridge
