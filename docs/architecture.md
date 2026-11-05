@@ -1,5 +1,90 @@
 # Architecture
 
+## Current integration direction: Meta Link and `driver_ltb`
+
+This is the current implementation direction; Windows runtime and hardware
+acceptance remain unverified until the
+[Windows internal-driver checklist](windows-internal-driver-verification.md)
+is completed.
+
+The primary architecture uses Quest through official Meta Quest Link while
+Bigscreen Beyond remains SteamVR's sole HMD. Quest and its Touch controllers
+stay in the Meta PC runtime and never enter SteamVR. SteamVR and official Meta
+Quest Link are the only external runtime dependencies of this path.
+
+```text
+Quest + Touch controllers
+        |
+        | Meta Quest Link
+        v
+Meta PC runtime -- installed LibOVR, invisible session --> Ltb.MetaLink
+                                                               |
+                                                               | Touch poses + inputs
+                                                               v
+Lighthouse trackers ----------------------------------------> Ltb.App
+                                                               |
+                                                               | calibrate and compose
+                                                               | T_output = T_tracker * X_mount
+                                                               v
+                                              same-user local IPC
+                                                               |
+                                                               v
+                                                        driver_ltb
+                                                               |
+                                                               v
+                                                SteamVR controllers
+```
+
+`Ltb.MetaLink` is a C# adapter over the LibOVR runtime installed with Meta
+Quest Link. It opens an invisible session, samples Touch poses and full input
+state, maps timestamps into the application clock, and exposes project-owned
+runtime-neutral contracts. The application associates the Touch and tracker
+streams, runs calibration, and composes each final controller pose as
+`T_output = T_tracker * X_mount`.
+
+The application sends the final pose and Touch input state over versioned,
+same-user local IPC. `driver_ltb` is intentionally thin: it exposes the two
+composed controllers to SteamVR, applies fresh state, and marks a controller
+untracked with neutral inputs when that hand has no valid state for 500 ms.
+Heartbeats and other-hand traffic cannot refresh a stale hand; session-wide
+silence for 500 ms neutralizes both hands. It does not calibrate, associate
+devices, estimate lag, or independently follow a tracker.
+
+The application selects one unique left/right tracker pair by exact saved
+profile identities or fresh motion association. Unrelated physical trackers may
+remain connected; their connection or device-index changes do not replace the
+selected pair. Raw poses come from shared, identity-verified OpenVR batch
+acquisition with zero prediction offset.
+
+The integration is split across four explicit modules:
+
+```text
+src/Ltb.MetaLink    installed-LibOVR adapter and Touch-source boundary
+src/Ltb.Protocol    versioned IPC schema, codecs, validation, golden vectors
+src/Ltb.Driver      C# driver-feed port, transport, readiness, registration
+native/driver_ltb   thin native SteamVR driver and portable protocol core
+```
+
+Platform-specific code remains behind these narrow boundaries.
+`Ltb.Calibration` retains its existing dependency direction and remains free of
+UI, SteamVR, OpenVR, Meta Link, LibOVR, driver, and application dependencies.
+The detailed protocol, lifecycle, packaging, safety, and verification contract
+is documented in [Internal Drivers](internal-drivers.md).
+
+## Existing v0.1 architecture history
+
+The milestone sections below retain the implemented ALVR, VMT, and
+`TrackingOverrides` architecture as unsupported historical migration material.
+It receives no new configuration or orchestration automation, remains runnable
+only behind
+warning-gated `legacy-*` commands until the Meta Link and `driver_ltb` path
+passes its documented Windows exit gates, and is then scheduled for removal.
+Command spellings below are historical: unprefixed `devices`, `record`,
+`bridge`, `daily`, `wizard`, and `wizard-demo` are parse-only migration aliases
+that refuse execution with exit code `1`; only their warning-gated `legacy-*`
+forms execute. Historical packaging and schema-1 statements below describe
+those milestones, not the current schema-2 first-party release.
+
 ## Milestone 0 boundary
 
 Milestone 0 proves the mount-calibration mathematics from deterministic,
@@ -179,7 +264,8 @@ depending on a machine-local capture.
 magnitudes and searches a bounded offset by normalized cross-correlation. A
 positive `LagEstimate.LagSeconds` means that the controller host timestamps
 occur later than tracker timestamps for the same motion; this is the negative
-of `tau` in specification section 10. `PoseStreamAligner` corrects controller
+of `tau` in [specification section 10](specification.md#10-stream-time-alignment).
+`PoseStreamAligner` corrects controller
 time, uses shortest-path SLERP for orientation and linear interpolation for
 position, and constructs `SynchronizedPosePair` values. Translation is
 attempted only after timing and rotation have passed their quality checks.
@@ -206,9 +292,10 @@ so replay has no dependency on device enumeration or live time.
 Milestone 2 applies one saved profile to one hand. It composes the portable
 transform contract with two platform adapters: VMT receives the tracker-local
 mount transform, and SteamVR receives one `TrackingOverrides` mapping from the
-discovered VMT device path to the selected semantic hand. This implements
-specification sections [15, 16, 18, and 24](specification.md) without moving
-VMT, OpenVR, SteamVR settings, or application policy into `Ltb.Core` or
+discovered VMT device path to the selected semantic hand. This implemented the
+pre-rewrite specification at `edd3382` (`docs/specification.md`), sections
+15 (VMT), 16 (`TrackingOverrides`), 18 (application state), and 24 (milestones),
+without moving VMT, OpenVR, SteamVR settings, or application policy into `Ltb.Core` or
 `Ltb.Calibration`.
 
 The activation and cleanup order is:
@@ -422,8 +509,17 @@ desktop UI framework; that decision was recorded here before the dependency was
 introduced in the separate `Ltb.Gui` project. The owner directed the choice to
 minimize OS dependency: Avalonia is
 cross-platform, so the GUI is developed and headless-tested on Linux and
-cross-published to win-x64, and specification section 22 lists it among the
-candidate frameworks.
+cross-published to win-x64. Current
+[specification section 22](specification.md#22-technology-and-project-layout)
+records Avalonia as the desktop presentation framework.
+
+The current `Ltb.Gui` entry point launches the first-party desktop flow:
+`App.OnFrameworkInitializationCompleted` constructs `InternalDriverViewModel`,
+and `MainWindow` opens on **Setup**. Users configure prerequisites there and
+choose **Start** to run the internal-driver session. See the
+[internal-driver operations guide](internal-drivers.md) for this workflow.
+
+The wizard details below describe the historical desktop shell.
 
 The GUI lives in a separate `Ltb.Gui` project as a thin view over the existing
 UI-neutral ports: the `TwoHandCalibrationWizard` state machine, its
@@ -432,16 +528,18 @@ code contains rendering and binding only; sequencing, device, calibration, and
 persistence policy stay in the existing wizard, runtime, and backend types.
 `Ltb.Calibration` and `Ltb.Configuration` remain free of UI dependencies.
 
-The desktop shell defaults to the deterministic scripted-demo mode, so it can
-be opened without SteamVR, OpenVR, VMT, or host-settings access. The user can
-select production mode with the in-window radio buttons or start the executable
-with the `wizard` verb; `wizard-demo` explicitly selects the scripted path.
-The same launch values remain editable in the window. Both modes expose
-`--profiles` and optional `--log`; production additionally exposes
+The historical desktop shell defaulted to deterministic scripted-demo mode,
+so it could be opened without SteamVR, OpenVR, VMT, or host-settings access.
+It offered production-mode radio buttons and parsed the `wizard` and
+`wizard-demo` launch values. The current `Ltb.Gui` entry point always constructs
+the first-party view model; these wizard modes and options belong to the
+earlier shell.
+The same launch values were editable in that window. Both modes exposed
+`--profiles` and optional `--log`; production additionally exposed
 `--left-vmt-slot`, `--right-vmt-slot`, `--steamvr-settings`, `--duration`,
-`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration is locked
-while a session runs, and Abort or a window close requests cancellation and
-waits for the session's cleanup path.
+`--rate`, `--monitor-rate`, and `--reconnect-delay`. Configuration was locked
+while a session ran, and Abort or a window close requested cancellation and
+waited for the session's cleanup path.
 
 `CalibrationWizardViewModel` parses the editable values using invariant numeric
 formats and rejects invalid configuration before creating a session. The public
